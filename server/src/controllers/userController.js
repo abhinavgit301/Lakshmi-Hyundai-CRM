@@ -133,8 +133,9 @@ export async function createUser(req, res) {
     });
   } catch (error) {
     const target = error?.meta?.target;
+    const targetFields = Array.isArray(target) ? target : [target];
     if (error?.code === 'P2002'
-      && (target === 'username' || (Array.isArray(target) && target.includes('username')))) {
+      && targetFields.some((field) => String(field || '').toLowerCase().includes('username'))) {
       return res.status(409).json({ message: 'This username is already in use.' });
     }
     throw error;
@@ -283,6 +284,9 @@ export async function updateUserStatus(req, res) {
   if (!allowedStatuses.includes(String(status || '').toLowerCase())) {
     return res.status(400).json({ message: 'Status must be active or inactive.' });
   }
+  if (req.user?.id === id && String(status).toLowerCase() === 'inactive') {
+    return res.status(403).json({ message: 'You cannot deactivate your own account.' });
+  }
 
   const existing = await prisma.user.findUnique({ where: { id }, select: { id: true, role: true, ccmId: true, status: true } });
   if (!existing || !MANAGED_ROLES.includes(existing.role)) {
@@ -340,6 +344,10 @@ export async function assignUserToCcm(req, res) {
 }
 
 export async function deleteManagedUser(req, res) {
+  if (req.user?.id === req.params.id) {
+    return res.status(403).json({ message: 'You cannot delete your own account.' });
+  }
+
   const existing = await prisma.user.findUnique({ where: { id: req.params.id } });
   if (!existing || !MANAGED_ROLES.includes(existing.role)) {
     return res.status(404).json({ message: 'User not found.' });

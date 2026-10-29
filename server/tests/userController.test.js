@@ -6,7 +6,12 @@ import jwt from 'jsonwebtoken';
 process.env.DATABASE_URL ||= 'postgresql://test-only.invalid/test';
 process.env.JWT_SECRET ||= 'user-controller-test-secret';
 
-const [{ prisma }, { createUser }, { login }, { authMiddleware, requireRole }] = await Promise.all([
+const [
+  { prisma },
+  { createUser, updateManagedUser, updateUserStatus, deleteManagedUser },
+  { login },
+  { authMiddleware, requireRole },
+] = await Promise.all([
   import('../src/config/prisma.js'),
   import('../src/controllers/userController.js'),
   import('../src/controllers/authController.js'),
@@ -55,7 +60,8 @@ function replaceMethod(t, target, methodName, implementation) {
 function setupUserStore(t) {
   const users = [];
   replaceMethod(t, prisma.user, 'findUnique', async ({ where }) => (
-    users.find(({ username }) => username === where.username) || null
+    users.find((user) => (where.id && user.id === where.id)
+      || (where.username && user.username === where.username)) || null
   ));
   replaceMethod(t, prisma.user, 'findFirst', async ({ where }) => {
     if (where?.OR) {
@@ -72,6 +78,17 @@ function setupUserStore(t) {
   replaceMethod(t, prisma, '$transaction', async (callback) => callback({
     user: {
       findMany: async () => [],
+      update: async ({ where, data }) => {
+        const index = users.findIndex((user) => user.id === where.id);
+        if (index < 0) throw new Error('Test user does not exist.');
+        users[index] = { ...users[index], ...data };
+        return users[index];
+      },
+      delete: async ({ where }) => {
+        const index = users.findIndex((user) => user.id === where.id);
+        if (index < 0) throw new Error('Test user does not exist.');
+        return users.splice(index, 1)[0];
+      },
       create: async ({ data }) => {
         const user = {
           id: `created-${users.length + 1}`,
@@ -84,6 +101,7 @@ function setupUserStore(t) {
         return user;
       },
     },
+    auditLog: { create: async () => ({}) },
     $queryRaw: async () => [],
     masterCallList: { findMany: async () => [] },
     allocation: { findMany: async () => [] },
@@ -179,7 +197,7 @@ test('server role authorization rejects unauthenticated and non-Admin user creat
 test('username uniqueness race returns a conflict instead of a server error', async (t) => {
   replaceMethod(t, prisma.user, 'findUnique', async () => null);
   replaceMethod(t, prisma, '$transaction', async () => {
-    throw { code: 'P2002', meta: { target: ['username'] } };
+    throw { code: 'P2002', meta: { target: 'users_username_key' } };
   });
   const response = responseRecorder();
   await createUser(requestForUser({
@@ -191,6 +209,54 @@ test('username uniqueness race returns a conflict instead of a server error', as
   assert.equal(response.statusCode, 409);
 });
 
+test('database-backed login and JWT authorization preserve every supported user role', async (t) => {
+  const users = setupUserStore(t);
+  const password = 'a-strong-password';
+  const passwordHash = await bcrypt.hash(password, 10);
+  const roles = ['ADMIN', 'GM', 'CCM', 'CRE', 'FREE_SERVICE_CRE'];
+  for (const [index, role] of roles.entries()) {
+    users.push({
+      id: `existing-${role.toLowerCase()}`,
+      username: `${role.toLowerCase()}login`,
+      email: null,
+      password: passwordHash,
+      role,
+      status: 'active',
+      ccmId: role === 'CCM' || role === 'CRE' || role === 'FREE_SERVICE_CRE' ? 'test-ccm' : null,
+    });
+  }
+
+  for (const role of roles) {
+    const username = `${role.toLowerCase()}login`;
+    const loginResponse = responseRecorder();
+    await login({ body: { username, password } }, loginResponse);
+    assert.equal(loginResponse.statusCode, 200, role);
+    assert.equal(loginResponse.body.user.role, role === 'ADMIN' ? 'Admin' : role);
+
+    const middlewareResponse = responseRecorder();
+    const authRequest = {
+      headers: { authorization: `Bearer ${loginResponse.body.token}` },
+      cookies: {},
+    };
+    await authMiddleware(
+      authRequest,
+      middlewareResponse,
+      () => {},
+    );
+    assert.equal(middlewareResponse.statusCode, 200, role);
+    assert.equal(authRequest.user.role, role === 'ADMIN' ? 'Admin' : role);
+    let authorized = false;
+    requireRole(role === 'ADMIN' ? 'Admin' : role)(authRequest, middlewareResponse, () => {
+      authorized = true;
+    });
+    assert.equal(authorized, true, role);
+  }
+
+  const invalidResponse = responseRecorder();
+  await login({ body: { username: 'adminlogin', password: 'incorrect-password' } }, invalidResponse);
+  assert.equal(invalidResponse.statusCode, 401);
+});
+
 test('unsupported roles are rejected by the user-creation API', async () => {
   const response = responseRecorder();
   await createUser(requestForUser({
@@ -200,4 +266,86 @@ test('unsupported roles are rejected by the user-creation API', async () => {
     role: 'SUPERADMIN',
   }), response);
   assert.equal(response.statusCode, 400);
+});
+
+test('Admin can edit their own account but cannot deactivate or delete it', async (t) => {
+  const users = setupUserStore(t);
+  const admin = {
+    id: 'existing-admin',
+    name: 'Current Administrator',
+    username: 'current.admin',
+    email: null,
+    password: await bcrypt.hash('a-strong-password', 10),
+    role: 'ADMIN',
+    status: 'active',
+    phone: null,
+    ccmId: null,
+    gmId: null,
+    dealerCode: null,
+    freeServiceEnabled: false,
+    warrantyEnabled: false,
+  };
+  users.push(admin);
+  const request = {
+    user: { id: admin.id, role: 'Admin' },
+    params: { id: admin.id },
+    body: { name: 'Updated Administrator', username: admin.username, role: 'ADMIN' },
+  };
+  const editResponse = responseRecorder();
+
+  await updateManagedUser(request, editResponse);
+  assert.equal(editResponse.body.user.name, 'Updated Administrator');
+  assert.equal(editResponse.body.user.role, 'ADMIN');
+
+  const deactivateResponse = responseRecorder();
+  await updateUserStatus({
+    user: { id: admin.id, role: 'Admin' },
+    params: { id: admin.id },
+    body: { status: 'inactive' },
+  }, deactivateResponse);
+  assert.equal(deactivateResponse.statusCode, 403);
+  assert.equal(deactivateResponse.body.message, 'You cannot deactivate your own account.');
+
+  const deleteResponse = responseRecorder();
+  await deleteManagedUser({
+    user: { id: admin.id, role: 'Admin' },
+    params: { id: admin.id },
+  }, deleteResponse);
+  assert.equal(deleteResponse.statusCode, 403);
+  assert.equal(deleteResponse.body.message, 'You cannot delete your own account.');
+  assert.equal(users.find(({ id }) => id === admin.id).status, 'active');
+});
+
+test('Admin can deactivate and delete a different account', async (t) => {
+  const users = setupUserStore(t);
+  users.push({
+    id: 'other-gm',
+    name: 'Other Manager',
+    username: 'other.manager',
+    email: null,
+    password: 'not-used',
+    role: 'GM',
+    status: 'active',
+    ccmId: null,
+    gmId: null,
+    dealerCode: null,
+    freeServiceEnabled: false,
+    warrantyEnabled: false,
+  });
+
+  const deactivateResponse = responseRecorder();
+  await updateUserStatus({
+    user: { id: 'existing-admin', role: 'Admin' },
+    params: { id: 'other-gm' },
+    body: { status: 'inactive' },
+  }, deactivateResponse);
+  assert.equal(deactivateResponse.body.user.status, 'inactive');
+
+  const deleteResponse = responseRecorder();
+  await deleteManagedUser({
+    user: { id: 'existing-admin', role: 'Admin' },
+    params: { id: 'other-gm' },
+  }, deleteResponse);
+  assert.equal(deleteResponse.body.deleted, true);
+  assert.equal(users.some(({ id }) => id === 'other-gm'), false);
 });

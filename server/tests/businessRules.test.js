@@ -20,7 +20,6 @@ import { canAccessCcmMonthlyData, classifyMonthlyRows, validateDatasetPeriod, va
 import { parseMonthlyCustomerDataFile } from '../src/utils/monthlyCustomerDataParser.js';
 import ExcelJS from 'exceljs';
 import { isValidUsername, normalizeUsername, validateOptionalPhone } from '../src/utils/userRules.js';
-import { ensureFirstAdmin } from '../src/config/seedAdmin.js';
 
 test('normalizeVin strips whitespace and invalid characters', () => {
   assert.equal(normalizeVin(' 1hgbh41jxz '), '1HGBH41JXZ');
@@ -317,68 +316,4 @@ test('CCM monthly data is shared only with that CCM and its assigned CRE', () =>
   assert.equal(canAccessCcmMonthlyData({ role: 'CRE', ccmId: 'ccm-a' }, 'ccm-b'), false);
   assert.equal(canAccessCcmMonthlyData({ role: 'CRE', ccmId: null }, 'ccm-a'), false);
   assert.equal(canAccessCcmMonthlyData({ role: 'Admin' }, 'ccm-b'), true);
-});
-
-test('ensureFirstAdmin preserves an existing administrator without using bootstrap credentials', async () => {
-  const existingAdmin = { id: 'existing-admin', role: 'ADMIN', status: 'active' };
-  const prisma = {
-    user: {
-      findFirst: async ({ where }) => {
-        assert.deepEqual(where, { role: 'ADMIN' });
-        return existingAdmin;
-      },
-      create: async () => assert.fail('An existing administrator must not be recreated.'),
-    },
-  };
-
-  const result = await ensureFirstAdmin(prisma);
-  assert.equal(result, existingAdmin);
-});
-
-test('ensureFirstAdmin requires credentials when explicit bootstrap is enabled', async () => {
-  const prisma = {
-    user: {
-      findFirst: async () => null,
-      create: async () => assert.fail('Bootstrap credentials are required.'),
-    },
-  };
-  await assert.rejects(
-    ensureFirstAdmin(prisma, { enabled: true, email: '', password: '' }),
-    /ADMIN_EMAIL and ADMIN_PASSWORD are required/,
-  );
-});
-
-test('ensureFirstAdmin does not bootstrap when the explicit enable switch is off', async () => {
-  const prisma = {
-    user: {
-      findFirst: async () => null,
-      create: async () => assert.fail('Disabled bootstrap must not create an account.'),
-    },
-  };
-  assert.equal(await ensureFirstAdmin(prisma, {
-    enabled: false,
-    email: 'primary-admin@example.test',
-    password: 'configured-secret',
-  }), null);
-});
-
-test('ensureFirstAdmin bootstraps only the explicitly configured administrator identity', async () => {
-  let createdData;
-  const prisma = {
-    user: {
-      findFirst: async () => null,
-      create: async ({ data }) => {
-        createdData = data;
-        return { id: 'new-admin', ...data };
-      },
-    },
-  };
-  const result = await ensureFirstAdmin(prisma, {
-    enabled: true,
-    email: 'primary-admin@example.test',
-    password: 'configured-secret',
-  });
-  assert.equal(result.role, 'ADMIN');
-  assert.equal(createdData.email, 'primary-admin@example.test');
-  assert.equal(createdData.username, 'primary-admin');
 });

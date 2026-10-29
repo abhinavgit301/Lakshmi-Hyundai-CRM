@@ -2495,7 +2495,7 @@ function App() {
                     <header className="user-modal-header">
                       <div>
                         <h3 id="user-form-dialog-title">{editingUserId ? 'Edit User' : 'Create New Account'}</h3>
-                        <p id="user-form-dialog-description">GM, CCM, CRE, and Free-Service CRE accounts</p>
+                        <p id="user-form-dialog-description">Admin, GM, CCM, CRE, and Free-Service CRE accounts</p>
                       </div>
                       <button
                         ref={userFormCloseButtonRef}
@@ -2516,7 +2516,7 @@ function App() {
                   <label>Username<input required minLength="3" maxLength="40" autoComplete="off" name="managed-username" value={userForm.username} onChange={(event) => setUserForm({ ...userForm, username: event.target.value.toLowerCase().replace(/[^a-z0-9@._-]/g, '') })} /></label>
                   <label>Password<input required={!editingUserId} minLength="8" type="password" autoComplete="new-password" name="managed-password" readOnly={!passwordUnlocked} onFocus={() => setPasswordUnlocked(true)} value={userForm.password} onChange={(event) => setUserForm({ ...userForm, password: event.target.value })} placeholder={editingUserId ? 'Leave empty to keep current password' : 'At least 8 characters'} /></label>
                   <label><span>Phone no. <span className="field-optional">(Optional)</span></span><input inputMode="tel" value={userForm.phone} onChange={(event) => setUserForm({ ...userForm, phone: event.target.value })} /></label>
-                  <label>Role<select value={userForm.role} onChange={(event) => setUserForm({ ...userForm, role: event.target.value, ccmId: '', gmId: '' })}><option value="GM">GM</option><option value="CCM">CCM</option><option value="CRE">CRE</option><option value="FREE_SERVICE_CRE">Free-Service CRE</option></select></label>
+                  <label>Role<select value={userForm.role} onChange={(event) => setUserForm({ ...userForm, role: event.target.value, ccmId: '', gmId: '' })}><option value="ADMIN">ADMIN</option><option value="GM">GM</option><option value="CCM">CCM</option><option value="CRE">CRE</option><option value="FREE_SERVICE_CRE">Free-Service CRE</option></select></label>
                   <label>Dealer code<input value={userForm.dealerCode} onChange={(event) => setUserForm({ ...userForm, dealerCode: event.target.value })} /></label>
                   {userForm.role === 'CCM' && <label>GM team<select required value={userForm.gmId} onChange={(event) => setUserForm({ ...userForm, gmId: event.target.value })}><option value="">Select GM</option>{managedTeams.gms.map((gm) => <option key={gm.id} value={gm.id}>{gm.name}{gm.dealerCode ? ` · ${gm.dealerCode}` : ''}</option>)}</select></label>}
                   {['CRE', 'FREE_SERVICE_CRE'].includes(userForm.role) && <label>CCM team<select required value={userForm.ccmId} onChange={(event) => setUserForm({ ...userForm, ccmId: event.target.value })}><option value="">Select CCM</option>{managedTeams.ccms.map((ccm) => <option key={ccm.id} value={ccm.ccmId}>{ccm.name}{ccm.dealerCode ? ` · ${ccm.dealerCode}` : ''}</option>)}</select></label>}

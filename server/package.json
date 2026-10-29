@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "test": "node --test",
+    "test": "node --import dotenv/config --test",
     "test:integration": "node scripts/run-import-integration-tests.js",
     "prisma:push:integration": "node scripts/push-import-integration-schema.js",
     "prisma:push": "npx prisma db push",

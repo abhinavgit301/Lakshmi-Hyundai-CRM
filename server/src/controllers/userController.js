@@ -8,7 +8,7 @@ import {
 } from '../utils/customerAllocation.js';
 import { resolveCreServicePermissions } from '../utils/creServicePermissions.js';
 
-const MANAGED_ROLES = ['GM', 'CCM', 'CRE', 'FREE_SERVICE_CRE'];
+const MANAGED_ROLES = ['ADMIN', 'GM', 'CCM', 'CRE', 'FREE_SERVICE_CRE'];
 
 function roleFromInput(role) {
   const normalized = String(role || '').trim().toUpperCase();
@@ -77,7 +77,7 @@ export async function createUser(req, res) {
 
   const normalizedRole = roleFromInput(role);
   if (!normalizedRole) {
-    return res.status(400).json({ message: 'Role must be GM, CCM, CRE, or Free-Service CRE.' });
+    return res.status(400).json({ message: 'Role must be Admin, GM, CCM, CRE, or Free-Service CRE.' });
   }
 
   const cleanName = String(name).trim();
@@ -108,27 +108,37 @@ export async function createUser(req, res) {
     return res.status(400).json({ message: 'CCM accounts must be assigned to an active GM.' });
   }
 
-  const created = await prisma.$transaction(async (transaction) => {
-    const user = await transaction.user.create({
-      data: {
-        username: normalizedUsername,
-        name: cleanName,
-        phone: phoneResult.value,
-        dealerCode: dealerCode ? String(dealerCode).trim() : null,
-        password: await bcrypt.hash(String(password), 10),
-        role: normalizedRole,
-        ccmId: cleanCcmId || null,
-        gmId: cleanGmId,
-        freeServiceEnabled: normalizedRole === 'CRE' && req.body?.freeServiceEnabled === true,
-        warrantyEnabled: normalizedRole === 'CRE' && req.body?.warrantyEnabled === true,
-        status: 'active',
-      },
+  let created;
+  try {
+    created = await prisma.$transaction(async (transaction) => {
+      const user = await transaction.user.create({
+        data: {
+          username: normalizedUsername,
+          name: cleanName,
+          phone: phoneResult.value,
+          dealerCode: dealerCode ? String(dealerCode).trim() : null,
+          password: await bcrypt.hash(String(password), 10),
+          role: normalizedRole,
+          ccmId: cleanCcmId || null,
+          gmId: cleanGmId,
+          freeServiceEnabled: normalizedRole === 'CRE' && req.body?.freeServiceEnabled === true,
+          warrantyEnabled: normalizedRole === 'CRE' && req.body?.warrantyEnabled === true,
+          status: 'active',
+        },
+      });
+      if (normalizedRole === 'CRE' && cleanCcmId) {
+        await allocateUnassignedMasterCallListEntries(transaction, cleanCcmId, req.user.id);
+      }
+      return user;
     });
-    if (normalizedRole === 'CRE' && cleanCcmId) {
-      await allocateUnassignedMasterCallListEntries(transaction, cleanCcmId, req.user.id);
+  } catch (error) {
+    const target = error?.meta?.target;
+    if (error?.code === 'P2002'
+      && (target === 'username' || (Array.isArray(target) && target.includes('username')))) {
+      return res.status(409).json({ message: 'This username is already in use.' });
     }
-    return user;
-  });
+    throw error;
+  }
 
   return res.status(201).json({ user: sanitizeUser(created) });
 }
@@ -149,7 +159,7 @@ export async function updateManagedUser(req, res) {
 
   const { name, username, password, role, phone, dealerCode, gmId, ccmId, freeServiceEnabled, warrantyEnabled } = req.body || {};
   const nextRole = role == null ? existing.role : roleFromInput(role);
-  if (!nextRole) return res.status(400).json({ message: 'Role must be GM, CCM, CRE, or Free-Service CRE.' });
+  if (!nextRole) return res.status(400).json({ message: 'Role must be Admin, GM, CCM, CRE, or Free-Service CRE.' });
 
   const nextName = name == null ? existing.name : String(name).trim();
   const nextUsername = normalizeUsername(username ?? existing.username ?? existing.email?.split('@')[0]);

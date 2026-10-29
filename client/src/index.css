@@ -984,7 +984,9 @@ tbody tr:hover td { background: #fafbfb; }
 @media (prefers-reduced-motion: reduce) {
   .user-modal-backdrop, .user-modal-dialog { animation-duration: 1ms !important; }
 }
-.compact-btn { min-height: 32px; border-radius: 6px; padding: 6px 9px; font-size: 0.73rem; }
+  .brand-mark { display: block; flex-shrink: 0; object-fit: contain; border: 0; background: transparent; box-shadow: none; }
+  .auth-brand-panel .brand-mark { border: 0; background: transparent; box-shadow: none; }
+  .compact-btn { min-height: 32px; border-radius: 6px; padding: 6px 9px; font-size: 0.73rem; }
 .customer-workspace { gap: 14px; }
 .form-grid { gap: 13px; }
 .form-grid label, .vehicle-form-row label, .auth-form label { color: #566469; font-size: 0.78rem; font-weight: 600; }

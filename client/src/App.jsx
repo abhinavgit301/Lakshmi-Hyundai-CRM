@@ -2197,7 +2197,7 @@ function App() {
     return (
       <main className="auth-shell">
         <section className="auth-brand-panel">
-          <div className="brand-mark">LH</div>
+          <img className="brand-mark" src="/favicon.png" alt="Lakshmi Hyundai logo" />
           <p className="eyebrow">Workshop CRM</p>
           <h1>Lakshmi Hyundai</h1>
           <p className="auth-caption">Service operations</p>
@@ -2219,7 +2219,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-block">
-          <div className="brand-mark">LH</div>
+          <img className="brand-mark" src="/favicon.png" alt="Lakshmi Hyundai logo" />
           <div>
             <p className="eyebrow">Workshop CRM</p>
             <h1>Lakshmi Hyundai</h1>

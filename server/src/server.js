@@ -9,8 +9,10 @@ import { prisma } from './config/prisma.js';
 const port = Number(process.env.PORT || 4000);
 
 async function startServer() {
+  if (process.env.NODE_ENV !== 'production') {
   await ensureFirstAdmin();
   await ensureDemoUsers();
+  }
   const repairedAssignments = await prisma.$transaction((transaction) => repairFreeServiceCreAssignments(transaction));
   if (repairedAssignments) console.log(`Reassigned ${repairedAssignments} Master Call List records away from Free-Service CRE accounts.`);
   const backfilled = await backfillVehicleSaleDates();

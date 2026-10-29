@@ -1,0 +1,480 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  ADMIN
+  GM
+  CCM
+  CRE
+  FREE_SERVICE_CRE
+}
+
+enum VehicleStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  RESCHEDULED
+  CANCELLED
+  NO_SHOW
+}
+
+enum CallOutcome {
+  CONTACTED
+  CALLBACK
+  NOT_INTERESTED
+  WRONG_NUMBER
+  APPOINTMENT_SET
+  FOLLOW_UP_LATER
+  NO_RESPONSE
+  OTHER
+}
+
+// Which customer list a call or follow-up originated from. 1-Year and 6-Month Due both use SERVICE.
+enum CallSource {
+  SERVICE
+  FREE_SERVICE
+  WARRANTY
+}
+
+model User {
+  id        String   @id @default(cuid())
+  username  String?  @unique
+  name      String
+  email     String?  @unique
+  phone     String?
+  password  String
+  role      UserRole
+  ccmId     String?
+  gmId      String?
+  dealerCode String?
+  freeServiceEnabled Boolean @default(false)
+  warrantyEnabled    Boolean @default(false)
+  status    String   @default("active")
+  team      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  createdCallLogs   CallLog[] @relation("CreatedCallLogs")
+  assignedCalls     CallLog[] @relation("AssignedCallLogs")
+  createdAppointments Appointment[] @relation("CreatedAppointments")
+  assignedAppointments Appointment[] @relation("AssignedAppointments")
+  assignedAllocations Allocation[]
+  auditLogs         AuditLog[]
+  managedMonthlyDatasets MonthlyCustomerDataset[] @relation("MonthlyDatasetCcm")
+  importedMonthlyData MonthlyCustomerDataImport[] @relation("MonthlyDataImporter")
+  createdMonthlyEntries MonthlyCustomerDataEntry[] @relation("MonthlyEntryCreator")
+  followUps         FollowUp[] @relation("FollowUpCre")
+  gm        User?   @relation("GmCcmTeam", fields: [gmId], references: [id], onDelete: SetNull)
+  managedCcms User[] @relation("GmCcmTeam")
+
+  @@map("users")
+}
+
+model Customer {
+  id             String   @id @default(cuid())
+  customerCode   String   @unique
+  fullName       String
+  mobileNumber   String?
+  alternatePhone String?
+  email          String?
+  ccmId          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  vehicles   Vehicle[]
+  visits     WorkshopVisit[]
+  callLogs  CallLog[]
+  followUps FollowUp[]
+  appointments Appointment[]
+  monthlyDataEntries MonthlyCustomerDataEntry[]
+
+  @@map("customers")
+}
+
+model Vehicle {
+  id                 String        @id @default(cuid())
+  vin                String        @unique
+  registrationNumber String?       @unique
+  make               String?
+  model              String?
+  variant            String?
+  year               Int?
+  // Original sale date; the single source for free-service milestones and warranty expiry.
+  saleDate           DateTime?
+  status             VehicleStatus @default(ACTIVE)
+  customerId         String
+  ccmId              String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  customer               Customer                 @relation(fields: [customerId], references: [id])
+  workshopVisits         WorkshopVisit[]
+  callLogs               CallLog[]
+  followUps              FollowUp[]
+  appointments           Appointment[]
+  ownershipHistory       VehicleOwnershipHistory[]
+  allocations           Allocation[]
+  masterCallListEntries  MasterCallList[]
+  monthlyDataEntries     MonthlyCustomerDataEntry[]
+  freeServiceMilestones  FreeServiceMilestone[]
+
+  @@index([saleDate])
+  @@map("vehicles")
+}
+
+// One row per vehicle per free-service milestone (1 = sale + 2 months, 2 = sale + 1 year, 3 = sale + 2 years).
+model FreeServiceMilestone {
+  id                  String    @id @default(cuid())
+  vehicleId           String
+  milestone           Int
+  dueDate             DateTime
+  status              String    @default("pending")
+  completedAt         DateTime?
+  completedByRepairOrderNo String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  vehicle   Vehicle    @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  callLogs  CallLog[]
+  followUps FollowUp[]
+
+  @@unique([vehicleId, milestone])
+  @@index([dueDate])
+  @@index([status, dueDate])
+  @@map("free_service_milestones")
+}
+
+model MasterCallList {
+  id                 String    @id @default(cuid())
+  customerName       String
+  mobileNumber       String
+  vin                String
+  registrationNumber String?
+  ccmId              String
+  ownerUserId        String?
+  status             String    @default("pending")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  vehicle Vehicle? @relation(fields: [vin], references: [vin], onDelete: SetNull)
+
+  @@map("master_call_lists")
+}
+
+model WorkshopVisit {
+  id             String   @id @default(cuid())
+  repairOrderNo  String   @unique
+  customerId     String
+  vehicleId      String
+  ccmId          String?
+  totalLaborCost Float?
+  totalPartsCost Float?
+  totalAmount    Float?
+  visitDate      DateTime?
+  closingDate    DateTime?
+  gpDate         DateTime?
+  importedDetails Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  vehicle  Vehicle  @relation(fields: [vehicleId], references: [id])
+
+  @@map("workshop_visits")
+}
+
+model Allocation {
+  id            String   @id @default(cuid())
+  vehicleId     String
+  creId         String?
+  ccmId         String
+  serviceType   String
+  category      String?
+  status        String   @default("assigned")
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id])
+  cre     User?   @relation(fields: [creId], references: [id], onDelete: SetNull)
+
+  @@map("allocations")
+}
+
+model CallLog {
+  id           String      @id @default(cuid())
+  customerId   String
+  vehicleId    String?
+  assignedToId String?
+  createdById  String?
+  outcome      CallOutcome
+  callSource   CallSource  @default(SERVICE)
+  milestoneId  String?
+  notes        String?
+  followUpAt   DateTime?
+  createdAt    DateTime    @default(now())
+
+  customer  Customer @relation(fields: [customerId], references: [id])
+  vehicle   Vehicle? @relation(fields: [vehicleId], references: [id])
+  milestone FreeServiceMilestone? @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  creator   User?    @relation("CreatedCallLogs", fields: [createdById], references: [id])
+  assignee  User?    @relation("AssignedCallLogs", fields: [assignedToId], references: [id])
+
+  @@index([createdById, createdAt])
+  @@index([vehicleId, callSource])
+  @@map("call_logs")
+}
+
+model FollowUp {
+  id          String     @id @default(cuid())
+  customerId  String
+  vehicleId   String?
+  creId       String?
+  source      CallSource @default(SERVICE)
+  milestoneId String?
+  followUpAt  DateTime
+  category    String
+  status      String     @default("pending")
+  notes       String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  customer  Customer              @relation(fields: [customerId], references: [id])
+  vehicle   Vehicle?              @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  cre       User?                 @relation("FollowUpCre", fields: [creId], references: [id], onDelete: SetNull)
+  milestone FreeServiceMilestone? @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+
+  @@index([source, status])
+  @@index([customerId, source, status])
+  @@map("follow_ups")
+}
+
+model Appointment {
+  id              String            @id @default(cuid())
+  customerId      String?
+  vehicleId       String?
+  customerName    String
+  vehicleName     String
+  scheduledAt     DateTime
+  status          AppointmentStatus @default(PENDING)
+  ccmId           String?
+  assigneeId      String?
+  createdById     String?
+  confirmationCall Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  creator   User? @relation("CreatedAppointments", fields: [createdById], references: [id])
+  assignee  User? @relation("AssignedAppointments", fields: [assigneeId], references: [id])
+  customer  Customer? @relation(fields: [customerId], references: [id])
+  vehicle   Vehicle? @relation(fields: [vehicleId], references: [id])
+
+  events AppointmentEvent[]
+
+  @@map("appointments")
+}
+
+model AppointmentEvent {
+  id           String   @id @default(cuid())
+  appointmentId String
+  eventType    String
+  notes        String?
+  createdAt    DateTime @default(now())
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id])
+
+  @@map("appointment_events")
+}
+
+model CRETarget {
+  id          String   @id @default(cuid())
+  creId       String
+  month       String
+  targetCalls Int
+  targetAppoints Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("cre_targets")
+}
+
+model ImportBatch {
+  id                String   @id @default(cuid())
+  fileName          String
+  importedByUserId  String?
+  totalRows         Int      @default(0)
+  createdRows       Int      @default(0)
+  appendedRows      Int      @default(0)
+  skippedRows       Int      @default(0)
+  rejectedRows      Int      @default(0)
+  flaggedRows       Int      @default(0)
+  status            String   @default("completed")
+  createdAt         DateTime @default(now())
+
+  rowErrors ImportRowError[]
+
+  @@map("import_batches")
+}
+
+model ImportRowError {
+  id            String   @id @default(cuid())
+  importBatchId String
+  rowNumber     Int
+  vin           String?
+  errorCode     String
+  errorMessage  String
+  createdAt     DateTime @default(now())
+
+  batch ImportBatch @relation(fields: [importBatchId], references: [id])
+
+  @@map("import_row_errors")
+}
+
+model VINConflictReview {
+  id              String   @id @default(cuid())
+  vin             String
+  sourceCcmId     String
+  targetCcmId     String
+  reason          String
+  status          String   @default("pending")
+  reviewNotes     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("vin_conflict_reviews")
+}
+
+model VehicleOwnershipHistory {
+  id           String   @id @default(cuid())
+  vehicleId    String
+  previousOwnerId String?
+  newOwnerId   String?
+  changedById  String?
+  reason       String?
+  changedAt    DateTime @default(now())
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id])
+
+  @@map("vehicle_ownership_history")
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  entityType  String
+  entityId    String?
+  action      String
+  details     String?
+  createdAt   DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
+
+model WorkshopConfiguration {
+  id                  String   @id @default(cuid())
+  serviceDueDays      Int      @default(180)
+  followUpWindowDays  Int      @default(30)
+  defaultTargetCalls  Int      @default(100)
+  updatedByUserId     String?
+  updatedAt           DateTime @updatedAt
+
+  @@map("workshop_configurations")
+}
+
+model MonthlyCustomerDataset {
+  id         String   @id @default(cuid())
+  ccmUserId  String?
+  ccmId      String?
+  year       Int
+  month      Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  ccmUser User?                      @relation("MonthlyDatasetCcm", fields: [ccmUserId], references: [id], onDelete: SetNull)
+  entries MonthlyCustomerDataEntry[]
+  imports MonthlyCustomerDataImport[]
+
+  @@unique([ccmUserId, year, month])
+  @@unique([ccmId, year, month])
+  @@map("monthly_customer_datasets")
+}
+
+model MonthlyCustomerDataEntry {
+  id                    String   @id @default(cuid())
+  datasetId             String
+  customerId            String?
+  vehicleId             String?
+  createdById           String?
+  dedupeKey             String
+  customerName          String
+  mobileNumber          String
+  email                 String?
+  vin                   String?
+  registrationNumber    String?
+  make                  String?
+  model                 String?
+  vehicleYear           Int?
+  serviceType           String?
+  lastVisitDate         DateTime?
+  nextServiceDueDate    DateTime?
+  notes                 String?
+  source                String   @default("manual")
+  createdAt             DateTime @default(now())
+
+  dataset  MonthlyCustomerDataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  customer Customer?              @relation(fields: [customerId], references: [id])
+  vehicle  Vehicle?               @relation(fields: [vehicleId], references: [id])
+  creator  User?                  @relation("MonthlyEntryCreator", fields: [createdById], references: [id])
+
+  @@index([datasetId, vin])
+  @@index([datasetId, mobileNumber])
+  @@unique([datasetId, dedupeKey])
+  @@map("monthly_customer_data_entries")
+}
+
+model MonthlyCustomerDataImport {
+  id             String   @id @default(cuid())
+  datasetId      String
+  importedById   String?
+  fileName       String
+  totalRows      Int      @default(0)
+  addedRows      Int      @default(0)
+  skippedRows    Int      @default(0)
+  rejectedRows   Int      @default(0)
+  status         String   @default("completed")
+  createdAt      DateTime @default(now())
+
+  dataset    MonthlyCustomerDataset            @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  importedBy User?                             @relation("MonthlyDataImporter", fields: [importedById], references: [id], onDelete: SetNull)
+  rowErrors  MonthlyCustomerDataImportRowError[]
+
+  @@map("monthly_customer_data_imports")
+}
+
+model MonthlyCustomerDataImportRowError {
+  id           String   @id @default(cuid())
+  importId     String
+  rowNumber    Int
+  errorCode    String
+  errorMessage String
+  customerName String?
+  mobileNumber String?
+  vin          String?
+  createdAt    DateTime @default(now())
+
+  monthlyImport MonthlyCustomerDataImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@map("monthly_customer_data_import_row_errors")
+}

@@ -994,7 +994,7 @@ tbody tr:hover td { background: #fafbfb; }
 .form-alert { border-radius: 7px; font-size: 0.84rem; }
 .auth-shell { max-width: 920px; border: 1px solid #e0e6e7; border-radius: 11px; box-shadow: 0 14px 40px rgba(23, 37, 42, 0.1); }
 .auth-brand-panel { background: #1d2b30; }
-.auth-brand-panel .brand-mark { background: #dc5c43; }
+.auth-brand-panel .brand-mark { background: transparent; }
 .auth-brand-panel h1, .auth-form h2 { font-family: 'Manrope', sans-serif; }
 .auth-form .eyebrow { color: #145a62; }
 .empty-state { padding: 38px 12px; color: #819095; font-size: 0.83rem; }
@@ -1192,13 +1192,10 @@ tbody tr:hover td { background: #fafbfb; }
   width: 58px;
   height: 58px;
   margin-bottom: 36px;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 17px;
-  background: #dc5c43;
-  box-shadow: 0 10px 24px rgba(12, 30, 33, 0.22);
-  font-family: 'Manrope', sans-serif;
-  font-size: 1.05rem;
-  letter-spacing: 0.03em;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .auth-brand-panel .eyebrow {

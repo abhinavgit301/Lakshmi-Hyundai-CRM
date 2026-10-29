@@ -6,7 +6,7 @@ function percent(part, whole) {
   return whole ? Math.min(100, Math.round((part / whole) * 100)) : 0;
 }
 
-export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmId = '', creId = '' }) {
+export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmId = '', creId = '' }, database = prisma) {
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12 || year < 2000 || year > 2100 || !Number.isFinite(tzOffset)) {
     return null;
   }
@@ -16,7 +16,7 @@ export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmI
   const monthEnd = new Date(Date.UTC(year, month, 1) + tzOffset * 60000);
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
 
-  const users = await prisma.user.findMany({
+  const users = await database.user.findMany({
     where: { role: { in: ['CCM', 'CRE'] }, ccmId: { not: null } },
     select: { id: true, name: true, role: true, ccmId: true },
     orderBy: { name: 'asc' },
@@ -25,8 +25,8 @@ export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmI
   let scopeUsers = users;
   let scope = { type: 'all', id: null, name: 'All teams' };
   if (creId) {
-    const cre = users.find((user) => user.id === creId && user.role === 'CRE');
-    if (!cre) return { error: 'CRE not found.' };
+    const cre = users.find((user) => user.id === creId && user.role === 'CRE' && (!ccmId || user.ccmId === ccmId));
+    if (!cre) return { error: ccmId ? 'CRE is not assigned to the selected CCM.' : 'CRE not found.' };
     scopeUsers = [cre];
     scope = { type: 'cre', id: cre.id, name: cre.name };
   } else if (ccmId) {
@@ -38,15 +38,15 @@ export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmI
 
   const userIds = scopeUsers.map((user) => user.id);
   const [calls, appointments, assigned] = await Promise.all([
-    prisma.callLog.findMany({
+    database.callLog.findMany({
       where: { createdById: { in: userIds }, createdAt: { gte: monthStart, lt: monthEnd } },
       select: { createdById: true, customerId: true, outcome: true, createdAt: true },
     }),
-    prisma.appointment.findMany({
+    database.appointment.findMany({
       where: { createdById: { in: userIds }, createdAt: { gte: monthStart, lt: monthEnd } },
       select: { createdById: true, createdAt: true },
     }),
-    prisma.masterCallList.groupBy({
+    database.masterCallList.groupBy({
       by: ['ownerUserId'],
       where: { ownerUserId: { in: userIds } },
       _count: { _all: true },

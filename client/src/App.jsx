@@ -524,8 +524,8 @@ function App() {
     setWpError('');
     try {
       const params = new URLSearchParams({ year: String(year), month: String(month), tzOffset: String(new Date().getTimezoneOffset()) });
+      if (ccmId) params.set('ccmId', ccmId);
       if (creId) params.set('creId', creId);
-      else if (ccmId) params.set('ccmId', ccmId);
       const response = await api.get(`/performance/workshop?${params}`);
       setWpData(response.data);
     } catch (error) {
@@ -537,20 +537,39 @@ function App() {
 
   async function openReports() {
     setActiveView('Reports');
+    setWpLoading(true);
+    setWpError('');
     try {
-      if (masterListCcms.length === 0) {
-        const teamsResponse = await api.get('/teams');
-        setMasterListCres(teamsResponse.data.cres || []);
-        setMasterListCcms(teamsResponse.data.ccms || []);
-      }
+      const teamsResponse = await api.get('/teams');
+      const ccms = teamsResponse.data.ccms || [];
+      const cres = teamsResponse.data.cres || [];
+      const selectedCcmId = ccms.some((ccm) => ccm.ccmId === wpCcmId) ? wpCcmId : '';
+      const selectedCreId = cres.some((cre) => cre.id === wpCreId && (!selectedCcmId || cre.ccmId === selectedCcmId))
+        ? wpCreId
+        : '';
+      setMasterListCres(cres);
+      setMasterListCcms(ccms);
+      setWpCcmId(selectedCcmId);
+      setWpCreId(selectedCreId);
+      await loadReports(wpYear, wpMonth, selectedCcmId, selectedCreId);
     } catch (error) {
       setWpError(error.response?.data?.message || 'Could not load teams.');
+      setWpData(null);
+      setWpLoading(false);
     }
-    await loadReports(wpYear, wpMonth, wpCcmId, wpCreId);
   }
 
   function changeWorkshopFilter(next) {
-    const filter = { year: wpYear, month: wpMonth, ccmId: wpCcmId, creId: wpCreId, ...next };
+    const ccmChanged = Object.hasOwn(next, 'ccmId') && next.ccmId !== wpCcmId;
+    const filter = {
+      year: wpYear,
+      month: wpMonth,
+      ccmId: wpCcmId,
+      creId: wpCreId,
+      ...next,
+    };
+    if (ccmChanged) filter.creId = '';
+    else if (!Object.hasOwn(next, 'creId')) filter.creId = wpCreId;
     setWpYear(filter.year);
     setWpMonth(filter.month);
     setWpCcmId(filter.ccmId);
@@ -1269,7 +1288,8 @@ function App() {
         year: String(wpYear),
         month: String(wpMonth),
         tzOffset: String(now.getTimezoneOffset()),
-        ...(wpCreId ? { creId: wpCreId } : wpCcmId ? { ccmId: wpCcmId } : {}),
+        ...(wpCcmId ? { ccmId: wpCcmId } : {}),
+        ...(wpCreId ? { creId: wpCreId } : {}),
       });
 
       const response = await api.get(`/export/reports/pdf?${params}`, {
@@ -2266,7 +2286,7 @@ function App() {
             <div className="header-actions">
               <button
                 type="button"
-                className="outline-btn"
+                className="outline-btn export-pdf-btn"
                 disabled={exportingPdf}
                 onClick={exportWorkshopPerformancePdf}
               >
@@ -2278,7 +2298,7 @@ function App() {
             <div className="header-actions">
               <button
                 type="button"
-                className="outline-btn"
+                className="outline-btn export-pdf-btn"
                 disabled={exportingPdf}
                 onClick={exportReportsPdf}
               >
@@ -2311,8 +2331,8 @@ function App() {
             {managedUsersError && <p className="form-alert error" role="alert">{managedUsersError}</p>}
             {managedUsersMessage && <p className="form-alert success" role="status">{managedUsersMessage}</p>}
             {userFormOpen && (
-              <form className="panel customer-form" onSubmit={submitManagedUser}>
-                <div className="panel-header"><h3>{editingUserId ? 'Edit account' : 'Create account'}</h3><span>GM, CCM, CRE, and Free-Service CRE accounts</span></div>
+              <form className="panel customer-form user-form-module" onSubmit={submitManagedUser}>
+                <div className="panel-header"><h3>{editingUserId ? 'Edit User' : 'Add User'}</h3><span>GM, CCM, CRE, and Free-Service CRE accounts</span></div>
                 <div className="form-grid">
                   <label>Full name<input required maxLength="200" value={userForm.name} onChange={(event) => setUserForm({ ...userForm, name: event.target.value })} /></label>
                   <label>Username<input required minLength="3" maxLength="40" autoComplete="off" name="managed-username" value={userForm.username} onChange={(event) => setUserForm({ ...userForm, username: event.target.value.toLowerCase().replace(/[^a-z0-9@._-]/g, '') })} /></label>
@@ -2616,7 +2636,8 @@ function App() {
               </label>
               <label>Individual CRE
                 <select value={wpCreId} onChange={(event) => changeWorkshopFilter({ creId: event.target.value })}>
-                  <option value="">Whole {wpCcmId ? 'team' : 'workshop'}</option>
+                  <option value="">{wpCcmId ? 'Whole Team (All CREs)' : 'Whole workshop'}</option>
+                  {wpCcmId && wpCres.length === 0 && <option disabled value="__none__">No CREs assigned to this CCM</option>}
                   {wpCres.map((cre) => <option key={cre.id} value={cre.id}>{cre.name}</option>)}
                 </select>
               </label>

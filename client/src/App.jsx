@@ -1,4 +1,5 @@
-import { Fragment, lazy, Suspense, useEffect, useState } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { useLocation, useNavigate, useNavigationType } from 'react-router-dom';
 import { Activity, ArrowLeft, BarChart3, CalendarCheck, CalendarClock, CalendarDays, CalendarPlus2, ChevronDown, ClipboardList, Clock3, Download, FileUp, Gift, LayoutDashboard, ListFilter, LogOut, PhoneCall, Plus, Save, ShieldCheck, Trash2, Upload, UserCog, UserRoundPlus, UsersRound } from 'lucide-react';
 import api from './lib/api.js';
 import { getMasterRepairTypePresentation, MASTER_REPAIR_TYPE_ORDER } from './utils/repairTypes.js';
@@ -6,6 +7,92 @@ import { getMasterRepairTypePresentation, MASTER_REPAIR_TYPE_ORDER } from './uti
 const WorkshopServicePerformance = lazy(() => import('./components/WorkshopServicePerformance.jsx'));
 
 const navItems = ['Dashboard', 'Customers', 'Follow-ups', 'Appointments', 'Allocations', 'Imports', 'Reports'];
+const routeByView = {
+  Dashboard: '/dashboard',
+  Customers: '/customers',
+  Appointments: '/appointments',
+  Allocations: '/allocations',
+  Imports: '/imports',
+  Reports: '/reports',
+  'Master list': '/master-call-list',
+  Performance: '/performance',
+  'Performance Board': '/performance-board',
+  'Workshop Performance': '/workshop-performance',
+  'User Management': '/user-management',
+  'Due 1-Year': '/customers/due-1-year',
+  'Due 6-Month': '/customers/due-6-month',
+  'Free Service': '/customers/free-service',
+  Warranty: '/customers/warranty',
+  'Follow-up Service': '/follow-ups/service',
+  'Follow-up Free Service': '/follow-ups/free-service',
+  'Follow-up Warranty': '/follow-ups/warranty',
+  'Free-Service Import': '/free-service/import',
+  'Free-Service Customer · 2 Months': '/free-service/customers/2-months',
+  'Free-Service Customer · 1 Year': '/free-service/customers/1-year',
+  'Free-Service Customer · 2 Years': '/free-service/customers/2-years',
+  'Free-Service Follow-up · 2 Months': '/free-service/follow-ups/2-months',
+  'Free-Service Follow-up · 1 Year': '/free-service/follow-ups/1-year',
+  'Free-Service Follow-up · 2 Years': '/free-service/follow-ups/2-years',
+};
+const viewByRoute = Object.fromEntries(Object.entries(routeByView).map(([view, path]) => [path, view]));
+
+function resolveRoute(pathname) {
+  const path = pathname.replace(/\/+$/, '') || '/';
+  const monthlyDataMatch = path.match(/^\/monthly-data(?:\/([^/]+))?$/);
+  if (monthlyDataMatch) {
+    let ccmId = monthlyDataMatch[1] || '';
+    try {
+      ccmId = decodeURIComponent(ccmId);
+    } catch {
+      ccmId = '';
+    }
+    return { view: 'CcmProfile', ccmId };
+  }
+  return { view: viewByRoute[path] || 'Dashboard', ccmId: '' };
+}
+
+function pathForView(view, ccmId = '') {
+  if (view === 'CcmProfile') return ccmId ? `/monthly-data/${encodeURIComponent(ccmId)}` : '/monthly-data';
+  return routeByView[view] || routeByView.Dashboard;
+}
+
+function canAccessRoute(view, role, user, ccmId = '') {
+  const teamRoles = ['CCM', 'CRE'];
+  const commonRoutes = ['Dashboard'];
+  if (commonRoutes.includes(view)) return true;
+  if (view === 'Master list') return teamRoles.includes(role);
+  if (view === 'Customers') return teamRoles.includes(role);
+  if (view === 'Appointments') return ['CCM', 'CRE', 'FREE_SERVICE_CRE'].includes(role);
+  if (view === 'Allocations') return ['ADMIN', 'CCM'].includes(role);
+  if (view === 'Imports') return ['ADMIN', 'GM', 'CCM'].includes(role);
+  if (view === 'Reports') return ['ADMIN', 'GM'].includes(role);
+  if (view === 'Workshop Performance') return ['ADMIN', 'GM', 'CCM'].includes(role);
+  if (view === 'Performance') return ['CCM', 'CRE', 'FREE_SERVICE_CRE'].includes(role);
+  if (view === 'Performance Board') return role === 'CCM';
+  if (view === 'User Management') return role === 'ADMIN';
+  if (view in dueViews) {
+    if (!teamRoles.includes(role)) return false;
+    if (role !== 'CRE') return true;
+    if (view === 'Free Service') return user?.freeServiceEnabled === true;
+    if (view === 'Warranty') return user?.warrantyEnabled === true;
+    return true;
+  }
+  if (view in followUpViews) {
+    if (!teamRoles.includes(role)) return false;
+    if (role !== 'CRE') return true;
+    if (view === 'Follow-up Free Service') return user?.freeServiceEnabled === true;
+    if (view === 'Follow-up Warranty') return user?.warrantyEnabled === true;
+    return true;
+  }
+  if (view === 'Free-Service Import' || view.startsWith('Free-Service Customer ·') || view.startsWith('Free-Service Follow-up ·')) {
+    return role === 'FREE_SERVICE_CRE';
+  }
+  if (view === 'CcmProfile') {
+    return Boolean(ccmId) && (role === 'ADMIN' || role === 'GM' || (role === 'CCM' && ccmId === user?.ccmId));
+  }
+  return false;
+}
+
 const navIcons = {
   Dashboard: LayoutDashboard,
   Import: Upload,
@@ -148,7 +235,10 @@ function buildUserTree(users) {
 }
 
 function App() {
-  const [activeView, setActiveView] = useState('Dashboard');
+  const navigate = useNavigate();
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const activeView = resolveRoute(location.pathname).view;
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -302,6 +392,14 @@ function App() {
   const [monthlyFile, setMonthlyFile] = useState(null);
   const [monthlyPreview, setMonthlyPreview] = useState(null);
   const [monthlyBusy, setMonthlyBusy] = useState(false);
+  const routeActionsRef = useRef({});
+  const lastLoadedRouteKeyRef = useRef('');
+
+  function setActiveView(view, options = {}) {
+    const ccmId = options.ccmId || selectedCcm?.ccmId || currentUser?.ccmId || '';
+    const targetPath = pathForView(view, ccmId);
+    if (location.pathname !== targetPath) navigate(targetPath, { replace: options.replace === true });
+  }
 
   useEffect(() => {
     let isMounted = true;
@@ -394,7 +492,7 @@ function App() {
       setCurrentUser(null);
       setAuthChecked(true);
       setLoading(false);
-      setActiveView('Dashboard');
+      navigate('/login', { replace: true });
       setCustomersMenuOpen(false);
       setFollowUpMenuOpen(false);
       setPerformanceMenuOpen(false);
@@ -706,7 +804,7 @@ function App() {
     };
     setSelectedCcm(selected);
     setCcmProfile(null);
-    setActiveView('CcmProfile');
+    setActiveView('CcmProfile', { ccmId: selected.ccmId });
     const year = new Date().getFullYear();
     const month = new Date().getMonth() + 1;
     setMonthlyYear(year);
@@ -718,7 +816,7 @@ function App() {
 
   async function openCcmProfile(user) {
     setSelectedCcm(user);
-    setActiveView('CcmProfile');
+    setActiveView('CcmProfile', { ccmId: user.ccmId });
     const year = new Date().getFullYear();
     const month = new Date().getMonth() + 1;
     setMonthlyYear(year);
@@ -1107,7 +1205,7 @@ function App() {
   }
 
   async function openDashboard() {
-    setActiveView('Dashboard');
+    navigate(routeByView.Dashboard, { replace: true });
     setLoading(true);
     try {
       const [summaryRes, apptRes] = await Promise.all([
@@ -1566,7 +1664,7 @@ function App() {
           || (activeView === 'Follow-up Free Service' && !freeServiceEnabled)
           || (activeView === 'Warranty' && !warrantyEnabled)
           || (activeView === 'Follow-up Warranty' && !warrantyEnabled)) {
-          setActiveView('Dashboard');
+          navigate(routeByView.Dashboard, { replace: true });
           setDueRecords([]);
           setFollowUps([]);
           setFollowUpListRecords([]);
@@ -1589,7 +1687,7 @@ function App() {
       window.removeEventListener('focus', refreshWhenVisible);
       document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
-  }, [currentRole, currentUser?.id, activeView]);
+  }, [currentRole, currentUser?.id, activeView, navigate]);
 
   const visibleDueViews = Object.fromEntries(Object.entries(dueViews).filter(([view]) => (
     (view !== 'Free Service' || canAccessFreeService) && (view !== 'Warranty' || canAccessWarranty)
@@ -1932,6 +2030,70 @@ function App() {
       </div>
     );
   }
+
+  useEffect(() => {
+    routeActionsRef.current = {
+      Dashboard: openDashboard,
+      Customers: openCustomers,
+      Appointments: openAppointments,
+      Allocations: openAllocations,
+      Imports: openImports,
+      Reports: openReports,
+      'Master list': openMasterList,
+      Performance: openPerformance,
+      'Performance Board': openPerformanceBoard,
+      'User Management': openUserManagement,
+      'Due 1-Year': () => openDueList('Due 1-Year'),
+      'Due 6-Month': () => openDueList('Due 6-Month'),
+      'Free Service': () => openDueList('Free Service'),
+      Warranty: () => openDueList('Warranty'),
+      'Follow-up Service': () => openFollowUpList('Follow-up Service'),
+      'Follow-up Free Service': () => openFollowUpList('Follow-up Free Service'),
+      'Follow-up Warranty': () => openFollowUpList('Follow-up Warranty'),
+      CcmProfile: (ccmId) => {
+        if (currentRole === 'CCM') {
+          openOwnMonthlyData();
+        } else if (ccmId) {
+          const ccm = managedTeams.ccms.find((team) => team.ccmId === ccmId);
+          openCcmProfile(ccm || { ccmId, name: `CCM ${ccmId}` });
+        }
+      },
+    };
+  });
+
+  useEffect(() => {
+    if (!authChecked) return;
+    if (!currentUser) {
+      if (location.pathname !== '/login') navigate('/login', { replace: true });
+      return;
+    }
+
+    const route = resolveRoute(location.pathname);
+    const canonicalPath = pathForView(route.view, route.ccmId);
+    if (location.pathname === '/' || location.pathname === '/login' || canonicalPath !== location.pathname) {
+      navigate(route.view === 'CcmProfile' && !route.ccmId ? '/dashboard' : canonicalPath, { replace: true });
+      return;
+    }
+    if (!canAccessRoute(route.view, currentRole, currentUser, route.ccmId)) {
+      navigate(routeByView.Dashboard, { replace: true });
+      return;
+    }
+    const routeKey = `${location.key}:${route.view}`;
+    if (navigationType === 'POP'
+      && (route.view !== 'Dashboard' || location.key !== 'default')
+      && lastLoadedRouteKeyRef.current !== routeKey) {
+      lastLoadedRouteKeyRef.current = routeKey;
+      routeActionsRef.current[route.view]?.(route.ccmId);
+    }
+  }, [
+    authChecked,
+    currentRole,
+    currentUser,
+    location.key,
+    location.pathname,
+    navigate,
+    navigationType,
+  ]);
 
   if (!authChecked) {
     return <main className="auth-loading" aria-live="polite">Checking session…</main>;

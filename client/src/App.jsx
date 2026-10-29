@@ -1,6 +1,6 @@
 import { Fragment, lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useNavigationType } from 'react-router-dom';
-import { Activity, ArrowLeft, BarChart3, CalendarCheck, CalendarClock, CalendarDays, CalendarPlus2, ChevronDown, ClipboardList, Clock3, Download, FileUp, Gift, LayoutDashboard, ListFilter, LogOut, PhoneCall, Plus, Save, ShieldCheck, Trash2, Upload, UserCog, UserRoundPlus, UsersRound } from 'lucide-react';
+import { Activity, ArrowLeft, BarChart3, CalendarCheck, CalendarClock, CalendarDays, CalendarPlus2, ChevronDown, ClipboardList, Clock3, Download, FileUp, Gift, LayoutDashboard, ListFilter, LogOut, PhoneCall, Plus, Save, ShieldCheck, Trash2, Upload, UserCog, UserRoundPlus, UsersRound, X } from 'lucide-react';
 import api from './lib/api.js';
 import { getMasterRepairTypePresentation, MASTER_REPAIR_TYPE_ORDER } from './utils/repairTypes.js';
 
@@ -375,6 +375,7 @@ function App() {
   const [managedUsersError, setManagedUsersError] = useState('');
   const [managedUsersMessage, setManagedUsersMessage] = useState('');
   const [userFormOpen, setUserFormOpen] = useState(false);
+  const [userFormClosing, setUserFormClosing] = useState(false);
   const [editingUserId, setEditingUserId] = useState(null);
   const [userSaving, setUserSaving] = useState(false);
   const [passwordUnlocked, setPasswordUnlocked] = useState(false);
@@ -393,12 +394,29 @@ function App() {
   const [monthlyPreview, setMonthlyPreview] = useState(null);
   const [monthlyBusy, setMonthlyBusy] = useState(false);
   const routeActionsRef = useRef({});
+  const userFormDialogRef = useRef(null);
+  const userFormCloseButtonRef = useRef(null);
+  const userFormCloseTimerRef = useRef(null);
+  const previousUserFormFocusRef = useRef(null);
+  const userSavingRef = useRef(false);
   const lastLoadedRouteKeyRef = useRef('');
 
   function setActiveView(view, options = {}) {
     const ccmId = options.ccmId || selectedCcm?.ccmId || currentUser?.ccmId || '';
     const targetPath = pathForView(view, ccmId);
     if (location.pathname !== targetPath) navigate(targetPath, { replace: options.replace === true });
+  }
+
+  function closeUserForm({ force = false } = {}) {
+    if (userSavingRef.current && !force) return;
+    if (userFormCloseTimerRef.current) window.clearTimeout(userFormCloseTimerRef.current);
+    setUserFormClosing(true);
+    userFormCloseTimerRef.current = window.setTimeout(() => {
+      setUserFormOpen(false);
+      setUserFormClosing(false);
+      setEditingUserId(null);
+      userFormCloseTimerRef.current = null;
+    }, 140);
   }
 
   useEffect(() => {
@@ -706,7 +724,12 @@ function App() {
       }
     }
 
+    if (userFormCloseTimerRef.current) {
+      window.clearTimeout(userFormCloseTimerRef.current);
+      userFormCloseTimerRef.current = null;
+    }
     setEditingUserId(account?.id || null);
+    setUserFormClosing(false);
     setPasswordUnlocked(false);
     setUserForm({
       name: account?.name || '',
@@ -766,8 +789,7 @@ function App() {
       setManagedUsers((current) => editingUserId
         ? current.map((user) => user.id === editingUserId ? response.data.user : user)
         : [response.data.user, ...current]);
-      setUserFormOpen(false);
-      setEditingUserId(null);
+      closeUserForm({ force: true });
       setManagedUsersMessage(editingUserId ? 'Account updated.' : 'Account created.');
       await refreshDashboardSummary();
     } catch (error) {
@@ -1709,6 +1731,58 @@ function App() {
     };
   }, [currentRole, currentUser?.id, activeView, navigate]);
 
+  useEffect(() => {
+    userSavingRef.current = userSaving;
+  }, [userSaving]);
+
+  useEffect(() => () => {
+    if (userFormCloseTimerRef.current) window.clearTimeout(userFormCloseTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!userFormOpen) return undefined;
+
+    previousUserFormFocusRef.current = document.activeElement;
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    userFormCloseButtonRef.current?.focus();
+
+    function handleDialogKeyDown(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (!userSavingRef.current) closeUserForm();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const focusable = [...(userFormDialogRef.current?.querySelectorAll(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+      ) || [])].filter((element) => element.getAttribute('aria-hidden') !== 'true');
+      if (!focusable.length) {
+        event.preventDefault();
+        userFormDialogRef.current?.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener('keydown', handleDialogKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleDialogKeyDown);
+      document.body.style.overflow = previousBodyOverflow;
+      previousUserFormFocusRef.current?.focus?.();
+    };
+  }, [userFormOpen]);
+
   const visibleDueViews = Object.fromEntries(Object.entries(dueViews).filter(([view]) => (
     (view !== 'Free Service' || canAccessFreeService) && (view !== 'Warranty' || canAccessWarranty)
   )));
@@ -2226,7 +2300,7 @@ function App() {
             <h2>{activeView === 'Free-Service Import' ? 'Import' : activeView.startsWith('Free-Service Customer') ? activeView.replace('Free-Service Customer · ', '') : activeView.startsWith('Free-Service Follow-up') ? `Follow-up · ${activeView.replace('Free-Service Follow-up · ', '')}` : activeView in dueViews ? dueViews[activeView].label : activeView in followUpViews ? `Follow-ups · ${followUpViews[activeView].label}` : activeView === 'Performance Board' ? 'Performance Board' : activeView === 'User Management' ? 'User Management' : activeView === 'CcmProfile' ? selectedCcm?.name || 'Monthly Customer Data' : activeView === 'Master list' ? 'Master call list' : activeView === 'Customers' ? 'Customers and vehicles' : activeView === 'Follow-ups' ? 'Follow-up queue' : activeView === 'Appointments' ? 'Appointments' : activeView === 'Allocations' ? 'Vehicle allocations' : activeView === 'Imports' ? 'Repair-order imports' : activeView === 'Performance' ? 'Performance' : activeView === 'Reports' ? 'Reports' : activeView === 'Workshop Performance' ? 'Workshop Performance' : 'Service operations dashboard'}</h2>
           </div>
           {activeView === 'User Management' ? (
-            <button type="button" className="primary-btn" onClick={() => startUserEdit()}><Plus size={16} aria-hidden="true" />New account</button>
+            <button type="button" className="primary-btn" onClick={() => startUserEdit()}><Plus size={16} aria-hidden="true" />New Account</button>
           ) : activeView === 'CcmProfile' ? (
             <button type="button" className="outline-btn" onClick={() => setActiveView(currentRole === 'ADMIN' ? 'User Management' : 'Dashboard')}><ArrowLeft size={16} aria-hidden="true" />{currentRole === 'ADMIN' ? 'Users' : 'Dashboard'}</button>
           ) : activeView in followUpViews ? (
@@ -2328,12 +2402,45 @@ function App() {
 
         {activeView === 'User Management' ? (
           <section className="customer-workspace">
-            {managedUsersError && <p className="form-alert error" role="alert">{managedUsersError}</p>}
+            {!userFormOpen && managedUsersError && <p className="form-alert error" role="alert">{managedUsersError}</p>}
             {managedUsersMessage && <p className="form-alert success" role="status">{managedUsersMessage}</p>}
             {userFormOpen && (
-              <form className="panel customer-form user-form-module" onSubmit={submitManagedUser}>
-                <div className="panel-header"><h3>{editingUserId ? 'Edit User' : 'Add User'}</h3><span>GM, CCM, CRE, and Free-Service CRE accounts</span></div>
-                <div className="form-grid">
+              <div
+                className={`user-modal-backdrop${userFormClosing ? ' is-closing' : ''}`}
+                onMouseDown={(event) => {
+                  if (event.target === event.currentTarget && !userSaving) closeUserForm();
+                }}
+              >
+                <section
+                  className="user-modal-dialog"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="user-form-dialog-title"
+                  aria-describedby="user-form-dialog-description"
+                  tabIndex={-1}
+                  ref={userFormDialogRef}
+                >
+                  <form className="user-modal-form" onSubmit={submitManagedUser}>
+                    <header className="user-modal-header">
+                      <div>
+                        <h3 id="user-form-dialog-title">{editingUserId ? 'Edit User' : 'Create New Account'}</h3>
+                        <p id="user-form-dialog-description">GM, CCM, CRE, and Free-Service CRE accounts</p>
+                      </div>
+                      <button
+                        ref={userFormCloseButtonRef}
+                        type="button"
+                        className="user-modal-close"
+                        aria-label="Close user form"
+                        title="Close"
+                        disabled={userSaving}
+                        onClick={() => closeUserForm()}
+                      >
+                        <X size={19} aria-hidden="true" />
+                      </button>
+                    </header>
+                    {managedUsersError && <p className="form-alert error user-modal-error" role="alert">{managedUsersError}</p>}
+                    <fieldset className="user-modal-fields" disabled={userSaving}>
+                      <div className="form-grid">
                   <label>Full name<input required maxLength="200" value={userForm.name} onChange={(event) => setUserForm({ ...userForm, name: event.target.value })} /></label>
                   <label>Username<input required minLength="3" maxLength="40" autoComplete="off" name="managed-username" value={userForm.username} onChange={(event) => setUserForm({ ...userForm, username: event.target.value.toLowerCase().replace(/[^a-z0-9@._-]/g, '') })} /></label>
                   <label>Password<input required={!editingUserId} minLength="8" type="password" autoComplete="new-password" name="managed-password" readOnly={!passwordUnlocked} onFocus={() => setPasswordUnlocked(true)} value={userForm.password} onChange={(event) => setUserForm({ ...userForm, password: event.target.value })} placeholder={editingUserId ? 'Leave empty to keep current password' : 'At least 8 characters'} /></label>
@@ -2359,9 +2466,18 @@ function App() {
                       </div>
                     </fieldset>
                   )}
-                </div>
-                <div className="form-actions"><button type="button" className="outline-btn" onClick={() => setUserFormOpen(false)}>Cancel</button><button type="submit" className="primary-btn" disabled={userSaving}><Save size={16} aria-hidden="true" />{userSaving ? 'Saving…' : editingUserId ? 'Save account' : 'Create account'}</button></div>
-              </form>
+                      </div>
+                    </fieldset>
+                    <div className="form-actions user-modal-actions">
+                      <button type="button" className="outline-btn" disabled={userSaving} onClick={() => closeUserForm()}>Cancel</button>
+                      <button type="submit" className="primary-btn" disabled={userSaving}>
+                        <Save size={16} aria-hidden="true" />
+                        {userSaving ? 'Saving…' : editingUserId ? 'Save account' : 'Create account'}
+                      </button>
+                    </div>
+                  </form>
+                </section>
+              </div>
             )}
             <section className="panel customer-list-panel">
               <div className="panel-header"><h3>Managed accounts</h3><span>{managedUsersLoading ? 'Loading…' : `${managedUsers.length} accounts`}</span></div>

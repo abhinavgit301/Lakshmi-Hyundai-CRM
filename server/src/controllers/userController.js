@@ -4,7 +4,6 @@ import { prisma } from '../config/prisma.js';
 import { isValidUsername, normalizeUsername, validateOptionalPhone } from '../utils/userRules.js';
 import {
   allocateUnassignedMasterCallListEntries,
-  lockCcmAllocationTeam,
   redistributeCreAssignments,
 } from '../utils/customerAllocation.js';
 import { resolveCreServicePermissions } from '../utils/creServicePermissions.js';
@@ -289,12 +288,6 @@ export async function updateUserStatus(req, res) {
 
   const nextStatus = String(status).toLowerCase();
   const updated = await prisma.$transaction(async (transaction) => {
-    if (existing.role === 'CRE' && existing.ccmId) {
-      await lockCcmAllocationTeam(transaction, existing.ccmId);
-      if (nextStatus === 'inactive' && existing.status !== 'inactive') {
-        await redistributeCreAssignments(transaction, { ccmId: existing.ccmId, departingCreId: id, actorId: req.user.id });
-      }
-    }
     const user = await transaction.user.update({ where: { id }, data: { status: nextStatus } });
     if (existing.role === 'CRE' && existing.ccmId && nextStatus === 'active') {
       await allocateUnassignedMasterCallListEntries(transaction, existing.ccmId, req.user.id);
@@ -353,14 +346,12 @@ export async function deleteManagedUser(req, res) {
   if (existing.role === 'CRE' || existing.role === 'FREE_SERVICE_CRE') {
     await prisma.$transaction(async (transaction) => {
       if (existing.ccmId) {
-        await lockCcmAllocationTeam(transaction, existing.ccmId);
         await redistributeCreAssignments(transaction, {
           ccmId: existing.ccmId,
           departingCreId: existing.id,
           actorId: req.user.id,
         });
       }
-      await transaction.user.update({ where: { id: existing.id }, data: { status: 'inactive' } });
       await transaction.auditLog.create({
         data: {
           userId: req.user.id,
@@ -368,14 +359,17 @@ export async function deleteManagedUser(req, res) {
           entityId: existing.id,
           action: 'ACCOUNT_DELETED',
           details: JSON.stringify({
+            name: existing.name,
             username: existing.username || existing.email?.split('@')[0],
             role: existing.role,
-            softDeleted: true,
+            ccmId: existing.ccmId,
+            deleted: true,
           }),
         },
       });
+      await transaction.user.delete({ where: { id: existing.id } });
     });
-    return res.json({ id: existing.id, deleted: true, softDeleted: true });
+    return res.json({ id: existing.id, deleted: true });
   }
 
   await prisma.$transaction(async (transaction) => {

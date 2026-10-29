@@ -671,7 +671,7 @@ function App() {
 
   async function deleteManagedAccount(user) {
     const confirmation = ['CRE', 'FREE_SERVICE_CRE'].includes(user.role)
-      ? `Remove ${user.username} (CRE)? Their customers will be reassigned. The account will be deactivated to preserve call and appointment history.`
+      ? `Permanently delete ${user.username} (${user.role === 'CRE' ? 'CRE' : 'Free-Service CRE'})? Their assigned customers will be redistributed to active CREs, or left unassigned if none are available. Repair and call history will be retained.`
       : `Delete ${user.username} (${user.role})? This cannot be undone.`;
     if (!window.confirm(confirmation)) return;
     setManagedUsersError('');
@@ -683,7 +683,9 @@ function App() {
         setManagedUsersMessage('Account deactivated and any customer assignments redistributed. Historical records are retained.');
       } else {
         setManagedUsers((current) => current.filter((entry) => entry.id !== user.id));
-        setManagedUsersMessage('Account deleted. Historical customer and monthly records are retained.');
+        setManagedUsersMessage(['CRE', 'FREE_SERVICE_CRE'].includes(user.role)
+          ? 'Account permanently deleted. Assigned customers were redistributed where possible; repair, call, and appointment records are retained.'
+          : 'Account deleted. Historical customer and monthly records are retained.');
       }
       await refreshDashboardSummary();
     } catch (error) {

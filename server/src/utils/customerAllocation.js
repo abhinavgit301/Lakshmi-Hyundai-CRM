@@ -50,8 +50,13 @@ export async function allocateUnassignedMasterCallListEntries(
   transaction,
   ccmId,
   actorId = null,
-  { spreadAcrossTeam = false } = {},
+  { spreadAcrossTeam = false, onBeforeMutation, onMutation } = {},
 ) {
+  const applyMutation = async (change, update) => {
+    if (onMutation) return onMutation(change, update);
+    await onBeforeMutation?.(change);
+    return update();
+  };
   await lockCcmAllocationTeam(transaction, ccmId);
   const activeCres = await transaction.user.findMany({
     where: { role: 'CRE', status: 'active', ccmId },
@@ -64,7 +69,7 @@ export async function allocateUnassignedMasterCallListEntries(
   const unassigned = await transaction.masterCallList.findMany({
     where: { ccmId, ownerUserId: null },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    select: { id: true, vin: true },
+    select: { id: true, vin: true, updatedAt: true },
   });
   if (!unassigned.length) return 0;
 
@@ -87,7 +92,13 @@ export async function allocateUnassignedMasterCallListEntries(
   for (const entry of unassigned) {
     const creId = allocationOwnerByVin.get(entry.vin);
     if (!creId) continue;
-    await transaction.masterCallList.update({ where: { id: entry.id }, data: { ownerUserId: creId } });
+    await applyMutation({
+      entityType: 'MasterCallList',
+      entityId: entry.id,
+      ccmId,
+      before: { ownerUserId: null, updatedAt: entry.updatedAt },
+      after: { ownerUserId: creId },
+    }, () => transaction.masterCallList.update({ where: { id: entry.id }, data: { ownerUserId: creId } }));
     await transaction.auditLog.create({
       data: {
         userId: actorId,
@@ -109,11 +120,28 @@ export async function allocateUnassignedMasterCallListEntries(
   for (const entry of remaining) {
     const creId = selectNextCre(activeCreIds, workloads, assignmentsThisBatch, perCreBatchLimit);
     if (!creId) break;
-    await transaction.masterCallList.update({ where: { id: entry.id }, data: { ownerUserId: creId } });
-    await transaction.allocation.updateMany({
+    await applyMutation({
+      entityType: 'MasterCallList',
+      entityId: entry.id,
+      ccmId,
+      before: { ownerUserId: null, updatedAt: entry.updatedAt },
+      after: { ownerUserId: creId },
+    }, () => transaction.masterCallList.update({ where: { id: entry.id }, data: { ownerUserId: creId } }));
+    const allocations = await transaction.allocation.findMany({
       where: { ccmId, status: 'assigned', vehicle: { is: { vin: entry.vin } } },
-      data: { creId },
+      select: { id: true, creId: true, updatedAt: true },
     });
+    for (const allocation of allocations) {
+      if (allocation.creId !== creId) {
+        await applyMutation({
+          entityType: 'Allocation',
+          entityId: allocation.id,
+          ccmId,
+          before: { creId: allocation.creId, updatedAt: allocation.updatedAt },
+          after: { creId },
+        }, () => transaction.allocation.update({ where: { id: allocation.id }, data: { creId } }));
+      }
+    }
     await transaction.auditLog.create({
       data: {
         userId: actorId,

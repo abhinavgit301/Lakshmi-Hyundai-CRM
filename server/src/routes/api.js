@@ -16,7 +16,7 @@ import { createAppointment, deleteAppointment, updateAppointment } from '../cont
 import { getWorkshopPerformance } from '../controllers/workshopPerformanceController.js';
 import { getWorkshopServicePerformance } from '../controllers/workshopServicePerformanceController.js';
 import { exportWorkshopPerformancePdf, exportReportsPdf } from '../controllers/pdfExportController.js';
-import { getImportHistory, importRepairOrders } from '../controllers/importController.js';
+import { deleteImport, getImportHistory, importRepairOrders, recoverImport } from '../controllers/importController.js';
 import { createAllocation, listAllocations, updateAllocation } from '../controllers/allocationController.js';
 import {
   createMonthlyCustomerEntry,
@@ -105,6 +105,8 @@ router.patch('/follow-ups/:id/status', authMiddleware, requireRole('CCM', 'CRE')
 
 router.get('/imports/history', authMiddleware, requireRole('Admin', 'GM', 'CCM'), getImportHistory);
 router.post('/imports/repair-orders', authMiddleware, requireRole('Admin', 'GM', 'CCM'), importRepairOrders);
+router.delete('/imports/:id', authMiddleware, requireRole('Admin'), deleteImport);
+router.post('/imports/:id/recover', authMiddleware, requireRole('Admin'), recoverImport);
 
 router.get('/audit-log', authMiddleware, requireRole('Admin', 'GM', 'CCM'), (_req, res) => {
   return res.json({

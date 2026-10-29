@@ -355,8 +355,13 @@ function App() {
   const [importsLoading, setImportsLoading] = useState(false);
   const [importUploading, setImportUploading] = useState(false);
   const [importError, setImportError] = useState('');
+  const [importMessage, setImportMessage] = useState('');
   const [importResult, setImportResult] = useState(null);
   const [importFile, setImportFile] = useState(null);
+  const [importRollbackBatch, setImportRollbackBatch] = useState(null);
+  const [importRollbackError, setImportRollbackError] = useState('');
+  const [importRollbackSaving, setImportRollbackSaving] = useState(false);
+  const [importRecoverySaving, setImportRecoverySaving] = useState(false);
   const [importCcmId, setImportCcmId] = useState('');
   const [customerFormOpen, setCustomerFormOpen] = useState(false);
   const [customerSaving, setCustomerSaving] = useState(false);
@@ -399,6 +404,7 @@ function App() {
   const userFormCloseTimerRef = useRef(null);
   const previousUserFormFocusRef = useRef(null);
   const userSavingRef = useRef(false);
+  const importRequestKeyRef = useRef(null);
   const lastLoadedRouteKeyRef = useRef('');
 
   function setActiveView(view, options = {}) {
@@ -1522,15 +1528,19 @@ function App() {
 
     setImportUploading(true);
     setImportError('');
+    setImportMessage('');
     setImportResult(null);
     try {
       const response = await api.post('/imports/repair-orders', {
         fileName: importFile.name,
         content: await importFile.text(),
         ccmId: importCcmId || undefined,
+      }, {
+        headers: { 'Idempotency-Key': importRequestKeyRef.current || (importRequestKeyRef.current = window.crypto.randomUUID()) },
       });
       setImportResult(response.data);
       setImportFile(null);
+      importRequestKeyRef.current = null;
       const history = await api.get('/imports/history');
       setImports(history.data.imports || []);
       const callListResponse = await api.get('/call-list');
@@ -1539,6 +1549,58 @@ function App() {
       setImportError(error.response?.data?.message || 'Import failed. Review the file and try again.');
     } finally {
       setImportUploading(false);
+    }
+  }
+
+  async function rollbackImport(batch) {
+    if (!batch || importRollbackSaving) return;
+    setImportRollbackSaving(true);
+    setImportRollbackError('');
+    setImportMessage('');
+    let rollbackCommitted = false;
+    try {
+      const response = await api.delete(`/imports/${encodeURIComponent(batch.id)}`);
+      rollbackCommitted = response.data.status === 'rolled_back';
+      if (!rollbackCommitted) throw new Error('The server did not confirm the rollback.');
+      importRequestKeyRef.current = null;
+      setImportRollbackBatch(null);
+      setImportMessage(`Import ${batch.fileName} was rolled back successfully. Reversed ${response.data.reversedChanges} recorded changes.`);
+      const [historyResponse, callListResponse, customersResponse] = await Promise.all([
+        api.get('/imports/history'),
+        api.get('/call-list'),
+        api.get('/customers'),
+      ]);
+      setImports(historyResponse.data.imports || []);
+      setCalls(callListResponse.data.records || []);
+      setCustomers(customersResponse.data.customers || []);
+      await refreshDashboardSummary();
+    } catch (error) {
+      const message = error.response?.data?.message || 'Could not refresh data after rollback.';
+      if (rollbackCommitted) {
+        setImportMessage(`Rollback committed, but some interface data could not refresh: ${message}`);
+      } else {
+        setImportRollbackError(message);
+      }
+    } finally {
+      setImportRollbackSaving(false);
+    }
+  }
+
+  async function recoverImport(batch) {
+    if (!batch || importRecoverySaving) return;
+    setImportRecoverySaving(true);
+    setImportError('');
+    setImportMessage('');
+    try {
+      const response = await api.post(`/imports/${encodeURIComponent(batch.id)}/recover`);
+      await openImports();
+      setImportMessage(response.data.message);
+    } catch (error) {
+      const message = error.response?.data?.message || 'Could not recover this import.';
+      await openImports();
+      setImportError(message);
+    } finally {
+      setImportRecoverySaving(false);
     }
   }
 
@@ -1782,6 +1844,15 @@ function App() {
       previousUserFormFocusRef.current?.focus?.();
     };
   }, [userFormOpen]);
+
+  useEffect(() => {
+    if (!importRollbackBatch) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && !importRollbackSaving) setImportRollbackBatch(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [importRollbackBatch, importRollbackSaving]);
 
   const visibleDueViews = Object.fromEntries(Object.entries(dueViews).filter(([view]) => (
     (view !== 'Free Service' || canAccessFreeService) && (view !== 'Warranty' || canAccessWarranty)
@@ -2846,6 +2917,7 @@ function App() {
         ) : activeView === 'Imports' ? (
           <section className="customer-workspace">
             {importError && <p className="form-alert error" role="alert">{importError}</p>}
+            {importMessage && <p className="form-alert success" role="status">{importMessage}</p>}
             {importResult && (
               <section className="panel import-result" role="status">
                 <div className="panel-header"><h3>Import completed</h3><span>{importResult.batch.fileName}</span></div>
@@ -2861,14 +2933,22 @@ function App() {
                 <p className="import-columns">Upload the service repair-order CSV. Required columns: Repair Order No, Vehicle VIN, Customer Name, and Mobile.</p>
                 {currentRole !== 'CCM' && (
                   <label className="import-team-select">Import customer records under CCM
-                    <select required value={importCcmId} onChange={(event) => setImportCcmId(event.target.value)}>
+                    <select required disabled={importUploading} value={importCcmId} onChange={(event) => {
+                      importRequestKeyRef.current = null;
+                      setImportMessage('');
+                      setImportCcmId(event.target.value);
+                    }}>
                       <option value="">Select CCM team</option>
                       {masterListCcms.map((ccm) => <option key={ccm.ccmId} value={ccm.ccmId}>{ccm.name}{ccm.dealerCode ? ` · ${ccm.dealerCode}` : ''}</option>)}
                     </select>
                   </label>
                 )}
                 <div className="upload-row">
-                  <label className="file-picker"><FileUp size={18} aria-hidden="true" /><span>{importFile?.name || 'Choose CSV file'}</span><input type="file" accept=".csv,text/csv" onChange={(event) => setImportFile(event.target.files?.[0] || null)} /></label>
+                  <label className="file-picker"><FileUp size={18} aria-hidden="true" /><span>{importFile?.name || 'Choose CSV file'}</span><input type="file" accept=".csv,text/csv" disabled={importUploading} onChange={(event) => {
+                    importRequestKeyRef.current = null;
+                    setImportMessage('');
+                    setImportFile(event.target.files?.[0] || null);
+                  }} /></label>
                   <button type="submit" className="primary-btn" disabled={!importFile || importUploading}>{importUploading ? 'Importing…' : 'Import file'}</button>
                 </div>
               </form>
@@ -2877,14 +2957,81 @@ function App() {
               <div className="panel-header"><h3>Import history</h3><span>{importsLoading ? 'Loading…' : `${imports.length} batches`}</span></div>
               <div className="table-scroll">
                 <table>
-                  <thead><tr><th>File</th><th>Imported</th><th>Rows</th><th>Created</th><th>Appended</th><th>Skipped</th><th>Rejected</th><th>Flagged</th></tr></thead>
+                  <thead><tr><th>File</th><th>Imported</th><th>Status</th><th>Row progress</th><th>Changed records</th><th>Created</th><th>Appended</th><th>Skipped</th><th>Rejected</th><th>Flagged</th>{currentRole === 'ADMIN' && <th>Rollback / recovery</th>}</tr></thead>
                   <tbody>
-                    {imports.map((batch) => <tr key={batch.id}><td>{batch.fileName}{batch.rowErrors?.length > 0 && <details className="row-error-details"><summary>{batch.rowErrors.length} row issues</summary><ImportErrors errors={batch.rowErrors.map((row) => ({ ...row, status: row.errorCode.toLowerCase().includes('conflict') ? 'flagged' : row.errorCode.toLowerCase().includes('duplicate') ? 'skipped' : 'rejected' }))} /></details>}</td><td>{new Date(batch.createdAt).toLocaleString()}</td><td>{batch.totalRows}</td><td>{batch.createdRows}</td><td>{batch.appendedRows}</td><td>{batch.skippedRows}</td><td>{batch.rejectedRows}</td><td>{batch.flaggedRows}</td></tr>)}
-                    {!importsLoading && imports.length === 0 && <tr><td colSpan="8" className="empty-state">No imports recorded.</td></tr>}
+                    {imports.map((batch) => {
+                      const changedRecords = (batch.affectedCustomers || 0)
+                        + (batch.affectedVehicles || 0)
+                        + (batch.affectedRepairOrders || 0)
+                        + (batch.affectedCallListEntries || 0)
+                        + (batch.affectedAllocations || 0);
+                      const legacyStoredOutcomes = batch.rowOutcomesProvenance === 'legacy-stored-unverified';
+                      const rowOutcomesAvailable = batch.statsComplete || legacyStoredOutcomes;
+                      const rowOutcomeSuffix = legacyStoredOutcomes ? '†' : '';
+                      return (
+                        <tr key={batch.id}>
+                          <td>{batch.fileName}{batch.rowErrors?.length > 0 && <details className="row-error-details"><summary>{batch.rowErrors.length} row issues</summary><ImportErrors errors={batch.rowErrors.map((row) => ({ ...row, status: row.errorCode.toLowerCase().includes('conflict') ? 'flagged' : row.errorCode.toLowerCase().includes('duplicate') ? 'skipped' : 'rejected' }))} /></details>}</td>
+                          <td>{new Date(batch.createdAt).toLocaleString()}</td>
+                          <td title={batch.recoveryBlockedReason || undefined}>{batch.status === 'rolled_back' ? 'Rolled back' : batch.status === 'completed' ? 'Completed' : batch.status}</td>
+                          <td>{batch.processedRows == null ? `Unknown / ${batch.totalRows} (unverified)` : `${batch.processedRows} / ${batch.totalRows}${batch.statsComplete ? '' : legacyStoredOutcomes ? ' (legacy status; row details unverified)' : ' (partial)'}`}</td>
+                          <td title={batch.affectedCountsComplete ? 'Distinct affected records verified from durable change logs.' : batch.processingStartedAt ? 'Distinct records currently represented in durable change logs; completeness is not verified.' : 'No verified change-log count is available for this historical import.'}>
+                            {batch.processingStartedAt ? `${changedRecords}${batch.affectedCountsComplete ? '' : ' logged (partial)'}` : 'Unavailable'}
+                          </td>
+                          <td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.createdRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.appendedRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.skippedRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.rejectedRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.flaggedRows}${rowOutcomeSuffix}` : '—'}</td>
+                          {currentRole === 'ADMIN' && <td>
+                            {['completed', 'failed'].includes(batch.status) && batch.rollbackSupported ? (
+                              <button type="button" className="outline-btn import-rollback-trigger" disabled={importRollbackSaving} onClick={() => {
+                                setImportRollbackBatch(batch);
+                                setImportRollbackError('');
+                              }}>Roll back</button>
+                            ) : batch.status === 'rolled_back' ? (
+                              <span className="import-rollback-unavailable">Already rolled back</span>
+                            ) : ['processing', 'failed'].includes(batch.status) && !batch.rollbackSupported ? (
+                              <button type="button" className="outline-btn import-rollback-trigger" disabled={importRecoverySaving} onClick={() => recoverImport(batch)}>
+                                {importRecoverySaving ? 'Checking…' : 'Recover'}
+                              </button>
+                            ) : batch.status === 'recovery_blocked' ? (
+                              <span className="import-rollback-unavailable" title={batch.recoveryBlockedReason}>Blocked</span>
+                            ) : (
+                              <span className="import-rollback-unavailable" title="This batch has no verified snapshots or is not in a completed state.">Unavailable</span>
+                            )}
+                          </td>}
+                        </tr>
+                      );
+                    })}
+                    {!importsLoading && imports.length === 0 && <tr><td colSpan={currentRole === 'ADMIN' ? 11 : 10} className="empty-state">No imports recorded.</td></tr>}
                   </tbody>
                 </table>
               </div>
             </section>
+            {importRollbackBatch && (
+              <div className="modal-backdrop" onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !importRollbackSaving) setImportRollbackBatch(null);
+              }}>
+                <section className="modal-card import-rollback-modal" role="dialog" aria-modal="true" aria-labelledby="import-rollback-title" aria-describedby="import-rollback-description">
+                  <h3 id="import-rollback-title">Roll back repair-order import?</h3>
+                  <p id="import-rollback-description">This will reverse only the recorded changes from this import. Any records that have changed since the import or have later dependencies will be preserved and block the rollback.</p>
+                  <dl className="import-rollback-details">
+                    <div><dt>File</dt><dd>{importRollbackBatch.fileName}</dd></div>
+                    <div><dt>Batch ID</dt><dd>{importRollbackBatch.id}</dd></div>
+                    <div><dt>Imported</dt><dd>{new Date(importRollbackBatch.createdAt).toLocaleString()}</dd></div>
+                    <div><dt>Status</dt><dd>{importRollbackBatch.status}</dd></div>
+                    <div><dt>Recorded changes</dt><dd>{importRollbackBatch._count?.changes ?? 'Unknown'}</dd></div>
+                    <div><dt>Affected records</dt><dd>{importRollbackBatch.affectedCountsComplete ? <>
+                      Customers {importRollbackBatch.affectedCustomers ?? 0}, Vehicles {importRollbackBatch.affectedVehicles ?? 0},
+                      Repair orders {importRollbackBatch.affectedRepairOrders ?? 0}, Call list {importRollbackBatch.affectedCallListEntries ?? 0},
+                      Allocations {importRollbackBatch.affectedAllocations ?? 0}
+                    </> : 'Incomplete; recovery verification is required before rollback.'}</dd></div>
+                  </dl>
+                  <p className="modal-warning">This action cannot be undone. A rollback conflict will leave the import and its data unchanged.</p>
+                  {importRollbackError && <p className="form-alert error" role="alert">{importRollbackError}</p>}
+                  <div className="form-actions">
+                    <button type="button" className="outline-btn" disabled={importRollbackSaving} onClick={() => setImportRollbackBatch(null)}>Cancel</button>
+                    <button type="button" className="danger-btn" disabled={importRollbackSaving} onClick={() => rollbackImport(importRollbackBatch)}>{importRollbackSaving ? 'Rolling back…' : 'Confirm rollback'}</button>
+                  </div>
+                </section>
+              </div>
+            )}
           </section>
         ) : activeView === 'Appointments' ? (
           <section className="customer-workspace">

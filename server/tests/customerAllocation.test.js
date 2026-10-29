@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectLeastLoadedCre, selectNextCre } from '../src/utils/customerAllocation.js';
+import {
+  allocateUnassignedMasterCallListEntries,
+  selectLeastLoadedCre,
+  selectNextCre,
+} from '../src/utils/customerAllocation.js';
 
 function distribute(creIds, workloads, customerCount) {
   const assignments = [];
@@ -51,4 +55,79 @@ test('import batches cap one CRE at half the new customers so teammates are not 
 
   assert.deepEqual(assignments, ['cre-c', 'cre-c', 'cre-c', 'cre-c', 'cre-a', 'cre-b', 'cre-a']);
   assert.deepEqual([...batchCounts.values()].sort(), [1, 2, 4]);
+});
+
+test('shared allocation continues to assign call-list entries without import-only mutation hooks', async () => {
+  const entry = { id: 'call-1', vin: 'VIN-1' };
+  let assignedOwner = null;
+  const transaction = {
+    $queryRaw: async () => [],
+    user: {
+      findMany: async () => [{ id: 'cre-1' }],
+    },
+    masterCallList: {
+      findMany: async ({ where }) => (where.ownerUserId === null ? [entry] : []),
+      update: async ({ data }) => {
+        assignedOwner = data.ownerUserId;
+        return { ...entry, ...data };
+      },
+    },
+    allocation: {
+      findMany: async () => [],
+    },
+    auditLog: {
+      create: async () => ({}),
+    },
+  };
+
+  const count = await allocateUnassignedMasterCallListEntries(transaction, 'ccm-1', 'admin-1');
+
+  assert.equal(count, 1);
+  assert.equal(assignedOwner, 'cre-1');
+});
+
+test('import mutation hook receives exact before and persisted after assignment snapshots', async () => {
+  const entry = {
+    id: 'call-tracked',
+    vin: 'VIN-TRACKED',
+    updatedAt: new Date('2025-01-01T00:00:00.000Z'),
+  };
+  const afterTimestamp = new Date('2025-01-02T00:00:00.000Z');
+  let assignedOwner = null;
+  const recordedChanges = [];
+  const transaction = {
+    $queryRaw: async () => [],
+    user: {
+      findMany: async () => [{ id: 'cre-1' }],
+    },
+    masterCallList: {
+      findMany: async ({ where }) => (where.ownerUserId === null ? [entry] : []),
+      update: async ({ data }) => {
+        assignedOwner = data.ownerUserId;
+        return { ...entry, ...data, updatedAt: afterTimestamp };
+      },
+    },
+    allocation: {
+      findMany: async () => [],
+    },
+    auditLog: {
+      create: async () => ({}),
+    },
+  };
+
+  await allocateUnassignedMasterCallListEntries(transaction, 'ccm-1', 'admin-1', {
+    onMutation: async (change, update) => {
+      const updated = await update();
+      recordedChanges.push({
+        before: change.before,
+        after: { ownerUserId: updated.ownerUserId, updatedAt: updated.updatedAt },
+      });
+    },
+  });
+
+  assert.equal(assignedOwner, 'cre-1');
+  assert.deepEqual(recordedChanges, [{
+    before: { ownerUserId: null, updatedAt: entry.updatedAt },
+    after: { ownerUserId: 'cre-1', updatedAt: afterTimestamp },
+  }]);
 });

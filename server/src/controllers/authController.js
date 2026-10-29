@@ -99,7 +99,7 @@ export function getCurrentUser(req, res) {
 export function logout(_req, res) {
   res.clearCookie('token', {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: 'none',
     secure: process.env.NODE_ENV === 'production',
   });
 

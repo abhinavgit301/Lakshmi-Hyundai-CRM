@@ -54,7 +54,7 @@ router.get('/health', (_req, res) => {
 });
 
 router.post('/auth/login', login);
-router.post('/auth/logout', authMiddleware, logout);
+router.post('/auth/logout', logout);
 router.get('/auth/me', authMiddleware, getCurrentUser);
 
 router.get('/dashboard/summary', authMiddleware, getDashboardSummary);

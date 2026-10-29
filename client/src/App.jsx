@@ -388,8 +388,12 @@ function App() {
   async function signOut() {
     try {
       await api.post('/auth/logout');
+    } catch (error) {
+      console.warn('Server sign-out request failed; clearing the local session.', error);
     } finally {
-      // Start the next session on the dashboard with every sidebar group collapsed.
+      setCurrentUser(null);
+      setAuthChecked(true);
+      setLoading(false);
       setActiveView('Dashboard');
       setCustomersMenuOpen(false);
       setFollowUpMenuOpen(false);
@@ -397,8 +401,8 @@ function App() {
       setQuotaNotices(null);
       setPerformance(null);
       setPerformanceCreId('');
-      setAuthChecked(false);
-      setSessionVersion((version) => version + 1);
+      setCalls([]);
+      setAppointments([]);
     }
   }
 

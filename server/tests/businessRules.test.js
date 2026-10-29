@@ -301,7 +301,10 @@ test('monthly XLSX parser reads workbook values and normalizes headers', async (
 test('managed account usernames normalize and validate independently of email', () => {
   assert.equal(normalizeUsername('  New.CRE_1 '), 'new.cre_1');
   assert.equal(isValidUsername('new.cre_1'), true);
+  assert.equal(isValidUsername('cre@lakshmi.com'), true);
+  assert.equal(isValidUsername('cre@team'), true);
   assert.equal(isValidUsername('x'), false);
+  assert.equal(isValidUsername('@cre'), false);
   assert.equal(validateOptionalPhone('').value, null);
   assert.equal(validateOptionalPhone('+1 212 555 0100').value, '+1 212 555 0100');
   assert.match(validateOptionalPhone('12').error, /7 to 15 digits/i);

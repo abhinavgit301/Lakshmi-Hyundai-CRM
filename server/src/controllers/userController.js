@@ -89,7 +89,7 @@ export async function createUser(req, res) {
     : ['CRE', 'FREE_SERVICE_CRE'].includes(normalizedRole) ? String(ccmId || '').trim() : null;
 
   if (!cleanName || cleanName.length > 200 || !isValidUsername(normalizedUsername) || String(password).length < 8) {
-    return res.status(400).json({ message: 'Name must be valid, username must be 3-40 lowercase letters/numbers/._-, and password must be at least 8 characters.' });
+    return res.status(400).json({ message: 'Name must be valid, username must be 3-40 characters using lowercase letters, numbers, @, ., _, or -, and password must be at least 8 characters.' });
   }
 
   const duplicateUsername = await prisma.user.findUnique({ where: { username: normalizedUsername }, select: { id: true } });

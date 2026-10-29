@@ -3,7 +3,7 @@ export function normalizeUsername(value) {
 }
 
 export function isValidUsername(value) {
-  return /^[a-z0-9][a-z0-9._-]{2,39}$/.test(String(value || ''));
+  return /^[a-z0-9][a-z0-9@._-]{2,39}$/.test(String(value || ''));
 }
 
 export function validateOptionalPhone(value) {

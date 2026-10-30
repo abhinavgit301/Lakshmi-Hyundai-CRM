@@ -215,6 +215,7 @@ model CallLog {
   id           String      @id @default(cuid())
   customerId   String
   vehicleId    String?
+  ccmId        String?
   assignedToId String?
   createdById  String?
   outcome      CallOutcome
@@ -230,6 +231,7 @@ model CallLog {
   creator   User?                 @relation("CreatedCallLogs", fields: [createdById], references: [id])
   assignee  User?                 @relation("AssignedCallLogs", fields: [assignedToId], references: [id])
 
+  @@index([ccmId, createdAt])
   @@index([createdById, createdAt])
   @@index([vehicleId, callSource])
   @@map("call_logs")
@@ -239,6 +241,7 @@ model FollowUp {
   id          String     @id @default(cuid())
   customerId  String
   vehicleId   String?
+  ccmId       String?
   creId       String?
   source      CallSource @default(SERVICE)
   milestoneId String?
@@ -254,6 +257,7 @@ model FollowUp {
   cre       User?                 @relation("FollowUpCre", fields: [creId], references: [id], onDelete: SetNull)
   milestone FreeServiceMilestone? @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
 
+  @@index([ccmId, source, status])
   @@index([source, status])
   @@index([customerId, source, status])
   @@map("follow_ups")

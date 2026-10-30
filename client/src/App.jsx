@@ -2366,7 +2366,6 @@ function App() {
                 ['Variant', getImportedDetail(details, 'variant') || vehicle.variant],
                 ['Registration', getImportedDetail(details, 'registrationNumber', 'regNo') || vehicle.registrationNumber],
                 ['VIN', getImportedDetail(details, 'vin') || vehicle.vin],
-                ['Year', getImportedDetail(details, 'year', 'vehicleYear') || vehicle.year],
                 ['Vehicle age', formatVehicleAge(vehicle.vehicleAgeMonths)],
                 ['Status', vehicle.status],
                 ['Sale date', getImportedDetail(details, 'saleDate') || (vehicle.saleDate ? formatDate(vehicle.saleDate) : '')],
@@ -2404,10 +2403,10 @@ function App() {
                   )}
                   {Object.keys(details).length > 0 && (
                     <details className="customer-profile-import-details">
-                      <summary>Imported vehicle and service data <span>{Object.keys(details).length} fields</span></summary>
+                      <summary>Imported vehicle and service data <span>{Object.entries(details).length} fields</span></summary>
                       <dl className="customer-profile-import-grid">
-                        {Object.entries(details).filter(([, value]) => value != null && value !== '').map(([key, value]) => (
-                          <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>
+                        {Object.entries(details).map(([key, value]) => (
+                          <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{value == null || value === '' ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>
                         ))}
                       </dl>
                     </details>

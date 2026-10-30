@@ -466,6 +466,8 @@ function App() {
   const [permanentDeletionSaving, setPermanentDeletionSaving] = useState(false);
   const [permanentDeletionError, setPermanentDeletionError] = useState('');
   const [importCcmId, setImportCcmId] = useState('');
+  const [importHistoryCcmId, setImportHistoryCcmId] = useState('');
+  const [importHistoryCcms, setImportHistoryCcms] = useState([]);
   const [customerFormOpen, setCustomerFormOpen] = useState(false);
   const [customerSaving, setCustomerSaving] = useState(false);
   const [customerMessage, setCustomerMessage] = useState('');
@@ -1695,23 +1697,48 @@ function App() {
     }
   }
 
+  async function refreshImportHistory(ccmId = importHistoryCcmId) {
+    const params = currentRole === 'ADMIN' && ccmId ? { ccmId } : {};
+    const response = await api.get('/imports/history', { params });
+    setImports(response.data.imports || []);
+    return response;
+  }
+
+  async function changeImportHistoryCcm(ccmId) {
+    setImportHistoryCcmId(ccmId);
+    setImportsLoading(true);
+    setImportError('');
+    try {
+      await refreshImportHistory(ccmId);
+    } catch (error) {
+      setImportError(error.response?.data?.message || 'Could not filter import history.');
+    } finally {
+      setImportsLoading(false);
+    }
+  }
+
   async function openImports() {
     setActiveView('Imports');
     setImportsLoading(true);
     setImportError('');
     try {
-      const requests = [api.get('/imports/history')];
+      const requests = [refreshImportHistory()];
       if (['ADMIN', 'GM'].includes(String(currentUser?.role || '').toUpperCase())) {
         requests.push(api.get('/teams'));
       }
-      const [response, teamsResponse] = await Promise.all(requests);
-      setImports(response.data.imports || []);
+      if (String(currentUser?.role || '').toUpperCase() === 'ADMIN') {
+        requests.push(api.get('/users'));
+      }
+      const [, teamsResponse, usersResponse] = await Promise.all(requests);
       if (teamsResponse) {
         const ccms = teamsResponse.data.ccms || [];
         setMasterListCcms(ccms);
         if (!ccms.some((ccm) => ccm.ccmId === importCcmId)) setImportCcmId(ccms.length === 1 ? ccms[0].ccmId : '');
-      } else {
+      } else if (String(currentUser?.role || '').toUpperCase() === 'CCM') {
         setImportCcmId(currentUser?.ccmId || '');
+      }
+      if (usersResponse) {
+        setImportHistoryCcms((usersResponse.data.users || []).filter((user) => user.role === 'CCM'));
       }
     } catch (error) {
       setImportError(error.response?.data?.message || 'Could not load import history. Sign in and try again.');
@@ -1746,9 +1773,10 @@ function App() {
       setImportResult(response.data);
       setImportFile(null);
       importRequestKeyRef.current = null;
-      const history = await api.get('/imports/history');
-      setImports(history.data.imports || []);
-      const callListResponse = await api.get('/call-list');
+      const [, callListResponse] = await Promise.all([
+        refreshImportHistory(),
+        api.get('/call-list'),
+      ]);
       setCalls(callListResponse.data.records || []);
     } catch (error) {
       setImportError(error.response?.data?.message || 'Import failed. Review the file and try again.');
@@ -1770,12 +1798,11 @@ function App() {
       importRequestKeyRef.current = null;
       setImportRollbackBatch(null);
       setImportMessage(`Import ${batch.fileName} was rolled back successfully. Reversed ${response.data.reversedChanges} recorded changes.`);
-      const [historyResponse, callListResponse, customersResponse] = await Promise.all([
-        api.get('/imports/history'),
+      const [, callListResponse, customersResponse] = await Promise.all([
+        refreshImportHistory(),
         api.get('/call-list'),
         api.get('/customers'),
       ]);
-      setImports(historyResponse.data.imports || []);
       setCalls(callListResponse.data.records || []);
       setCustomers(customersResponse.data.customers || []);
       await refreshDashboardSummary();
@@ -1838,12 +1865,11 @@ function App() {
       if (!deletionCommitted) throw new Error('The server did not confirm permanent deletion.');
       setPermanentDeletion(null);
       setImportMessage(`Import ${permanentDeletion.batch.fileName} and ${response.data.summary.totalRecordsDeleted} dependent records were permanently deleted.`);
-      const [historyResponse, callListResponse, customersResponse] = await Promise.all([
-        api.get('/imports/history'),
+      const [, callListResponse, customersResponse] = await Promise.all([
+        refreshImportHistory(),
         api.get('/call-list'),
         api.get('/customers'),
       ]);
-      setImports(historyResponse.data.imports || []);
       setCalls(callListResponse.data.records || []);
       setCustomers(customersResponse.data.customers || []);
       await refreshDashboardSummary();
@@ -2002,6 +2028,9 @@ function App() {
   const canAccessFreeService = currentRole !== 'CRE' || currentUser?.freeServiceEnabled === true;
   const canAccessWarranty = currentRole !== 'CRE' || currentUser?.warrantyEnabled === true;
   const viewingFreeServicePerformance = currentRole === 'FREE_SERVICE_CRE' || freeServiceCres.some((user) => user.id === performanceCreId);
+  const displayedImports = currentRole === 'ADMIN' && importHistoryCcmId
+    ? imports.filter((batch) => batch.ccmId === importHistoryCcmId)
+    : imports;
   const performanceDateLabel = performanceRange === 'month'
     ? `${monthOptions[performanceMonth - 1]} ${performanceYear}`
     : new Date(`${performanceDate}T12:00:00`).toLocaleDateString('en-IN', {
@@ -3829,12 +3858,28 @@ function App() {
               </form>
             ) : <p className="form-alert error">Import access is limited to Admin, GM, and CCM accounts.</p>}
             <section className="panel customer-list-panel">
-              <div className="panel-header"><h3>Import history</h3><span>{importsLoading ? 'Loading…' : `${imports.length} batches`}</span></div>
+              <div className="panel-header import-history-header">
+                <h3>Import history</h3>
+                {currentRole === 'ADMIN' && (
+                  <label className="import-history-filter">
+                    <span>CCM</span>
+                    <select aria-label="Filter import history by CCM" value={importHistoryCcmId} disabled={importsLoading} onChange={(event) => changeImportHistoryCcm(event.target.value)}>
+                      <option value="">All CCMs</option>
+                      {importHistoryCcms.map((ccm) => (
+                        <option key={ccm.ccmId} value={ccm.ccmId}>
+                          {ccm.name}{ccm.dealerCode ? ` · ${ccm.dealerCode}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <span aria-live="polite">{importsLoading ? 'Loading…' : `${displayedImports.length} batches`}</span>
+              </div>
               <div className="table-scroll">
-                <table>
-                  <thead><tr><th>File</th><th>Imported</th><th>Status</th><th>Row progress</th><th>Changed records</th><th>Created</th><th>Appended</th><th>Skipped</th><th>Rejected</th><th>Flagged</th>{currentRole === 'ADMIN' && <th>Rollback / recovery</th>}</tr></thead>
+                <table className="import-history-table">
+                  <thead><tr><th>Import ID</th><th>File</th><th>Imported by</th><th>CCM</th><th>Imported</th><th>Status</th><th>Row progress</th><th>Changed records</th><th>Created</th><th>Appended</th><th>Skipped</th><th>Rejected</th><th>Flagged</th>{currentRole === 'ADMIN' && <th>Rollback / recovery</th>}</tr></thead>
                   <tbody>
-                    {imports.map((batch) => {
+                    {displayedImports.map((batch) => {
                       const changedRecords = (batch.affectedCustomers || 0)
                         + (batch.affectedVehicles || 0)
                         + (batch.affectedRepairOrders || 0)
@@ -3843,9 +3888,16 @@ function App() {
                       const legacyStoredOutcomes = batch.rowOutcomesProvenance === 'legacy-stored-unverified';
                       const rowOutcomesAvailable = batch.statsComplete || legacyStoredOutcomes;
                       const rowOutcomeSuffix = legacyStoredOutcomes ? '†' : '';
+                      const ccm = importHistoryCcms.find((item) => item.ccmId === batch.ccmId);
                       return (
                         <tr key={batch.id}>
+                          <td><code className="import-batch-id" title={batch.id}>{batch.id}</code></td>
                           <td>{batch.fileName}{batch.rowErrors?.length > 0 && <details className="row-error-details"><summary>{batch.rowErrors.length} row issues</summary><ImportErrors errors={batch.rowErrors.map((row) => ({ ...row, status: row.errorCode.toLowerCase().includes('conflict') ? 'flagged' : row.errorCode.toLowerCase().includes('duplicate') ? 'skipped' : 'rejected' }))} /></details>}</td>
+                          <td title={batch.importedBy?.id || batch.importedByUserId || undefined}>
+                            {batch.importedBy?.name || (batch.importedByUserId ? 'Deleted account' : 'Unknown')}
+                            {batch.importedBy?.role && <small className="import-history-subtext">{batch.importedBy.role}</small>}
+                          </td>
+                          <td title={batch.ccmId || undefined}>{ccm?.name || batch.ccmId || '—'}</td>
                           <td>{new Date(batch.createdAt).toLocaleString()}</td>
                           <td title={batch.recoveryBlockedReason || undefined}>
                             {batch.status === 'rolled_back' ? 'Rolled back' : batch.status === 'permanently_deleted' ? 'Permanently deleted' : batch.status === 'completed' ? 'Completed' : batch.status}
@@ -3886,7 +3938,7 @@ function App() {
                         </tr>
                       );
                     })}
-                    {!importsLoading && imports.length === 0 && <tr><td colSpan={currentRole === 'ADMIN' ? 11 : 10} className="empty-state">No imports recorded.</td></tr>}
+                    {!importsLoading && displayedImports.length === 0 && <tr><td colSpan={currentRole === 'ADMIN' ? 14 : 13} className="empty-state">{importHistoryCcmId ? 'No imports recorded for this CCM.' : 'No imports recorded.'}</td></tr>}
                   </tbody>
                 </table>
               </div>

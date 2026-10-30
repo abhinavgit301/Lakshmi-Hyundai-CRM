@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { buildDuplicateKey, normalizeVin } from '../utils/roleAccess.js';
-import { evaluateRepairOrderRow } from '../utils/businessRules.js';
+import { evaluateRepairOrderRow, validateRepairOrderImportFields } from '../utils/businessRules.js';
 import { parseRepairOrderCsv, parseRepairOrderDate } from '../utils/repairOrderCsv.js';
 import { normalizeSaleDate } from '../utils/serviceCalendar.js';
 import { prisma } from '../config/prisma.js';
@@ -64,6 +64,21 @@ function parseOptionalMileage(value) {
   if (value == null || String(value).trim() === '') return null;
   const mileage = Number(String(value).replaceAll(',', '').trim());
   return Number.isFinite(mileage) && mileage >= 0 ? mileage : NaN;
+}
+
+function importDetailValues(row) {
+  const fields = [
+    'serialNo', 'roNumber', 'visitDate', 'closingDate', 'gpDate', 'workType', 'serviceStatus',
+    'serviceAdvisor', 'vin', 'registrationNumber', 'model', 'mileage', 'saleDealer', 'saleDate',
+    'ucSaleDealer', 'ucSaleDate', 'customerName', 'address', 'email', 'city', 'pin', 'mobileNumber',
+    'office', 'technician', 'specialMessage', 'visitType', 'demands', 'make', 'variant', 'year',
+    'ccmId', 'totalLaborCost', 'totalPartsCost',
+  ];
+  return Object.fromEntries([...new Set([...fields, ...Object.keys(row)])].map((key) => {
+    const value = row[key];
+    const text = value == null ? '' : String(value).trim();
+    return [key, text || '-'];
+  }));
 }
 
 function toRowError(row, rowNumber, code, message) {
@@ -263,27 +278,39 @@ export async function importRepairOrders(req, res) {
       const rowProgressId = rowProgressIds.get(rowNumber);
       const vin = normalizeVin(row.vin || '');
       const roNumber = String(row.roNumber || '').trim();
-      const customerName = String(row.customerName || '').trim();
-      const mobileNumber = String(row.mobileNumber || '').trim();
+      const registrationNumber = String(row.registrationNumber || '').trim().toUpperCase();
+      const customerName = String(row.customerName || '').trim() || '-';
+      const mobileNumber = String(row.mobileNumber || '').trim() || '-';
       const ccmId = await getTargetCcm(row.ccmId, req.user, req.body?.ccmId);
-      const laborCost = parseOptionalNumber(row.totalLaborCost);
-      const partsCost = parseOptionalNumber(row.totalPartsCost);
-      const visitDate = parseOptionalDate(row.visitDate);
-      const closingDate = parseOptionalDate(row.closingDate);
-      const gpDate = parseOptionalDate(row.gpDate);
-      const saleDate = parseOptionalDate(row.saleDate);
-      const ucSaleDate = parseOptionalDate(row.ucSaleDate);
-      const mileage = parseOptionalMileage(row.mileage);
-      const year = parseOptionalYear(row.year);
+      const parsedLaborCost = parseOptionalNumber(row.totalLaborCost);
+      const parsedPartsCost = parseOptionalNumber(row.totalPartsCost);
+      const parsedVisitDate = parseOptionalDate(row.visitDate);
+      const parsedClosingDate = parseOptionalDate(row.closingDate);
+      const parsedGpDate = parseOptionalDate(row.gpDate);
+      const parsedSaleDate = parseOptionalDate(row.saleDate);
+      const parsedUcSaleDate = parseOptionalDate(row.ucSaleDate);
+      const parsedMileage = parseOptionalMileage(row.mileage);
+      const parsedYear = parseOptionalYear(row.year);
+      const laborCost = Number.isNaN(parsedLaborCost) ? null : parsedLaborCost;
+      const partsCost = Number.isNaN(parsedPartsCost) ? null : parsedPartsCost;
+      const visitDate = Number.isNaN(parsedVisitDate) ? null : parsedVisitDate;
+      const closingDate = Number.isNaN(parsedClosingDate) ? null : parsedClosingDate;
+      const gpDate = Number.isNaN(parsedGpDate) ? null : parsedGpDate;
+      const saleDate = Number.isNaN(parsedSaleDate) ? null : parsedSaleDate;
+      const ucSaleDate = Number.isNaN(parsedUcSaleDate) ? null : parsedUcSaleDate;
+      const mileage = Number.isNaN(parsedMileage) ? null : parsedMileage;
+      const year = Number.isNaN(parsedYear) ? null : parsedYear;
 
       let earlyError = null;
-      if (!customerName || !mobileNumber) earlyError = toRowError(row, rowNumber, 'MISSING_CUSTOMER_FIELDS', 'Customer name and mobile number are required.');
-      else if (Number.isNaN(laborCost) || Number.isNaN(partsCost)) earlyError = toRowError(row, rowNumber, 'INVALID_COST', 'Labor and parts costs must be non-negative numbers.');
-      else if (Number.isNaN(visitDate)) earlyError = toRowError(row, rowNumber, 'INVALID_VISIT_DATE', 'Visit date is invalid.');
-      else if (Number.isNaN(closingDate) || Number.isNaN(gpDate) || Number.isNaN(saleDate) || Number.isNaN(ucSaleDate)) earlyError = toRowError(row, rowNumber, 'INVALID_DATE', 'A closing, G.P., sale, or UC sale date is invalid.');
-      else if (Number.isNaN(mileage)) earlyError = toRowError(row, rowNumber, 'INVALID_MILEAGE', 'Mileage must be a non-negative number.');
-      else if (Number.isNaN(year)) earlyError = toRowError(row, rowNumber, 'INVALID_VEHICLE_YEAR', 'Vehicle year is invalid.');
-      else if (!ccmId) earlyError = toRowError(row, rowNumber, 'INVALID_CCM', 'An active CCM assignment is required.');
+      const missingImportField = validateRepairOrderImportFields(row);
+      if (missingImportField) {
+        earlyError = toRowError(
+          row,
+          rowNumber,
+          missingImportField.code,
+          `${missingImportField.field} is required.`,
+        );
+      } else if (!ccmId) earlyError = toRowError(row, rowNumber, 'INVALID_CCM', 'An active CCM assignment is required.');
 
       if (earlyError) {
         await prisma.$transaction(async (transaction) => {
@@ -345,7 +372,7 @@ export async function importRepairOrders(req, res) {
           let customer = vehicle?.customer;
 
           if (!customer) {
-            customer = await transaction.customer.findFirst({
+            customer = mobileNumber === '-' ? null : await transaction.customer.findFirst({
               where: { mobileNumber, ccmId },
               orderBy: { createdAt: 'asc' },
             });
@@ -372,10 +399,10 @@ export async function importRepairOrders(req, res) {
             }, () => transaction.vehicle.create({
               data: {
                 vin,
-                registrationNumber: String(row.registrationNumber || '').trim().toUpperCase() || null,
-                make: String(row.make || '').trim() || null,
-                model: String(row.model || '').trim() || null,
-                variant: String(row.variant || '').trim() || null,
+                registrationNumber,
+                make: String(row.make || '').trim() || '-',
+                model: String(row.model || '').trim() || '-',
+                variant: String(row.variant || '').trim() || '-',
                 year: year || (saleDate ? saleDate.getFullYear() : null),
                 saleDate: normalizeSaleDate(saleDate),
                 customerId: customer.id,
@@ -408,7 +435,7 @@ export async function importRepairOrders(req, res) {
               visitDate,
               closingDate,
               gpDate,
-              importedDetails: row,
+              importedDetails: importDetailValues(row),
             },
           }));
 
@@ -420,8 +447,8 @@ export async function importRepairOrders(req, res) {
               registrationNumber: callListEntry.registrationNumber,
             };
             const after = {
-              customerName,
-              mobileNumber,
+              customerName: String(row.customerName || '').trim() ? customerName : callListEntry.customerName,
+              mobileNumber: String(row.mobileNumber || '').trim() ? mobileNumber : callListEntry.mobileNumber,
               registrationNumber: vehicle.registrationNumber,
             };
             const callListEntryChanged = JSON.stringify(importSnapshot(before)) !== JSON.stringify(importSnapshot(after));

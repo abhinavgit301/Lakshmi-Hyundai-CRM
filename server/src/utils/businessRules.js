@@ -1,19 +1,36 @@
-import { buildDuplicateKey, isValidVin, normalizeVin } from './roleAccess.js';
+import { buildDuplicateKey, normalizeVin } from './roleAccess.js';
+
+export function validateRepairOrderImportFields(row = {}) {
+  const roNumber = String(row.roNumber || '').trim();
+  const vin = String(row.vin || '').trim();
+  const registrationNumber = String(row.registrationNumber || '').trim();
+  if (!roNumber || roNumber === '-') {
+    return { code: 'MISSING_REPAIR_ORDER', field: 'Repair Order No' };
+  }
+  if (!vin || !normalizeVin(vin)) {
+    return { code: 'MISSING_VIN', field: 'VIN' };
+  }
+  if (!registrationNumber || registrationNumber === '-') {
+    return { code: 'MISSING_REGISTRATION', field: 'Registration No' };
+  }
+  return null;
+}
 
 export function evaluateRepairOrderRow(row = {}, existingKeys = []) {
-  const normalizedVin = normalizeVin(row.vin || '');
+  const rawVin = String(row.vin || '').trim();
+  const normalizedVin = normalizeVin(rawVin);
   const repairOrderNumber = String(row.roNumber || '').trim();
 
-  if (!normalizedVin || !isValidVin(normalizedVin)) {
+  if (!rawVin || !normalizedVin) {
     return {
       status: 'rejected',
-      reason: 'Missing or invalid VIN',
+      reason: 'Missing VIN',
       normalizedVin: '',
       repairOrderNumber,
     };
   }
 
-  if (!repairOrderNumber) {
+  if (!repairOrderNumber || repairOrderNumber === '-') {
     return {
       status: 'rejected',
       reason: 'Missing repair order number',

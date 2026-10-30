@@ -64,7 +64,7 @@ function normalizeHeader(header) {
 
 function parseHeaderCandidate(headerRow) {
   const headers = headerRow.map(normalizeHeader);
-  const required = ['roNumber', 'vin', 'customerName', 'mobileNumber'];
+  const required = ['roNumber', 'vin'];
   return required.every((field) => headers.includes(field)) ? headers : null;
 }
 
@@ -93,7 +93,7 @@ export function parseRepairOrderCsv(content) {
 
     const headerIndex = records.findIndex(({ record }) => parseHeaderCandidate(record));
     if (headerIndex === -1) {
-      return { error: 'CSV is missing required columns: roNumber, vin, customerName, mobileNumber.' };
+      return { error: 'CSV is missing required columns: roNumber, vin.' };
     }
 
     const headers = parseHeaderCandidate(records[headerIndex].record);

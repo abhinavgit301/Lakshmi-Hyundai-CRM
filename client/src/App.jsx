@@ -3834,7 +3834,7 @@ function App() {
             {canImport ? (
               <form className="panel import-form" onSubmit={submitImport}>
                 <div className="panel-header"><h3>Upload repair orders</h3><span>CSV file, up to 1.8 MB</span></div>
-                <p className="import-columns">Upload the service repair-order CSV. Required columns: Repair Order No, Vehicle VIN, Customer Name, and Mobile.</p>
+                <p className="import-columns">Each row must include Repair Order No, Vehicle VIN, and Registration No. Other fields are optional; missing values are shown as “-”.</p>
                 {currentRole !== 'CCM' && (
                   <label className="import-team-select">Import customer records under CCM
                     <select required disabled={importUploading} value={importCcmId} onChange={(event) => {

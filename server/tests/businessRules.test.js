@@ -9,7 +9,10 @@ import {
   normalizeVin,
 } from '../src/utils/roleAccess.js';
 
-import { evaluateRepairOrderRow as evaluateRow } from '../src/utils/businessRules.js';
+import {
+  evaluateRepairOrderRow as evaluateRow,
+  validateRepairOrderImportFields,
+} from '../src/utils/businessRules.js';
 import { validateCallLogPayload, validateFollowUpPayload } from '../src/utils/workflowRules.js';
 import { validateCustomerPayload } from '../src/utils/customerRules.js';
 import { validateAppointmentPayload, validateAppointmentUpdate } from '../src/utils/appointmentRules.js';
@@ -84,11 +87,60 @@ test('cross-manager VIN conflict is flagged', () => {
   assert.equal(result.reason, 'Cross-manager VIN conflict');
 });
 
-test('invalid VIN is rejected', () => {
-  const result = evaluateRow({ vin: 'BAD', roNumber: 'RO-1003' }, []);
+test('repair order import rejects a missing VIN but accepts a present short VIN', () => {
+  const missing = evaluateRow({ vin: '', roNumber: 'RO-1003' }, []);
+  const present = evaluateRow({ vin: 'BAD', roNumber: 'RO-1003' }, []);
 
-  assert.equal(result.status, 'rejected');
-  assert.equal(result.reason, 'Missing or invalid VIN');
+  assert.equal(missing.status, 'rejected');
+  assert.equal(missing.reason, 'Missing VIN');
+  assert.equal(present.status, 'processed');
+});
+
+test('repair order import requires only repair order, VIN, and registration number', () => {
+  assert.deepEqual(validateRepairOrderImportFields({
+    roNumber: 'RO-1',
+    vin: 'VIN-1',
+    registrationNumber: 'REG-1',
+  }), null);
+  assert.equal(validateRepairOrderImportFields({
+    roNumber: '',
+    vin: 'VIN-1',
+    registrationNumber: 'REG-1',
+  }).code, 'MISSING_REPAIR_ORDER');
+  assert.equal(validateRepairOrderImportFields({
+    roNumber: 'RO-1',
+    vin: '',
+    registrationNumber: 'REG-1',
+  }).code, 'MISSING_VIN');
+  assert.equal(validateRepairOrderImportFields({
+    roNumber: 'RO-1',
+    vin: 'VIN-1',
+    registrationNumber: '-',
+  }).code, 'MISSING_REGISTRATION');
+});
+
+test('repair order import accepts required fields when customer and other optional fields are absent', () => {
+  assert.equal(validateRepairOrderImportFields({
+    roNumber: 'RO-1',
+    vin: 'VIN-1',
+    registrationNumber: 'REG-1',
+    customerName: '',
+    mobileNumber: '',
+    visitDate: '',
+    mileage: '',
+  }), null);
+});
+
+test('repair order CSV parser recognizes rows without customer fields or a registration column', () => {
+  const result = parseRepairOrderCsv([
+    'Repair Order No,VIN,Model',
+    'RO-1,VIN-1,',
+  ].join('\n'));
+
+  assert.equal(result.error, undefined);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].row.registrationNumber, undefined);
+  assert.equal(result.rows[0].row.customerName, undefined);
 });
 
 test('cross-manager conflict helper works', () => {

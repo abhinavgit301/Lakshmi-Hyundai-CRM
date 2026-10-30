@@ -2924,7 +2924,6 @@ function App() {
                 <div className="import-counts">
                   {[['Rows', importResult.batch.totalRows], ['Created', importResult.batch.createdRows], ['Appended', importResult.batch.appendedRows], ['Skipped', importResult.batch.skippedRows], ['Rejected', importResult.batch.rejectedRows], ['Flagged', importResult.batch.flaggedRows]].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
                 </div>
-                {importResult.errors.length > 0 && <ImportErrors errors={importResult.errors} />}
               </section>
             )}
             {canImport ? (

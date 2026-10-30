@@ -7,6 +7,7 @@ import { buildDuplicateKey, normalizeVin } from '../utils/roleAccess.js';
 import { addMonths, classifyServiceDue, getLatestServiceDate, getYearlyDueDate, parseStoredDate } from '../utils/serviceDue.js';
 import {
   normalizeSaleDate,
+  countRemainingFreeServiceMilestones,
   DAILY_TARGETS,
   freeServiceCustomerIdsForMonth,
   buildQuotaRows,
@@ -966,20 +967,33 @@ export async function getCustomers(req, res) {
   const now = new Date();
 
   return res.json({
-    customers: rows.map((customer) => ({
-      id: customer.id,
-      name: customer.fullName,
-      customerName: customer.fullName,
-      mobile: customer.mobileNumber,
-      ccmId: customer.ccmId,
-      email: customer.email,
-      vehicleCount: customer.vehicles?.length || 0,
-      vehicles: (customer.vehicles || []).map((vehicle) => ({
-        ...vehicle,
-        vehicleAgeMonths: getAgeInMonths(vehicle.saleDate, now),
-      })),
-      visits: customer.visits || [],
-    })),
+    customers: rows.map((customer) => {
+      const visitsByVehicle = new Map();
+      for (const visit of customer.visits || []) {
+        if (!visit.vehicleId) continue;
+        const visits = visitsByVehicle.get(visit.vehicleId) || [];
+        visits.push(visit);
+        visitsByVehicle.set(visit.vehicleId, visits);
+      }
+      return {
+        id: customer.id,
+        name: customer.fullName,
+        customerName: customer.fullName,
+        mobile: customer.mobileNumber,
+        ccmId: customer.ccmId,
+        email: customer.email,
+        vehicleCount: customer.vehicles?.length || 0,
+        vehicles: (customer.vehicles || []).map((vehicle) => ({
+          ...vehicle,
+          vehicleAgeMonths: getAgeInMonths(vehicle.saleDate, now),
+          freeServicesRemaining: countRemainingFreeServiceMilestones({
+            saleDate: vehicle.saleDate,
+            workshopVisits: visitsByVehicle.get(vehicle.id) || [],
+          }, now),
+        })),
+        visits: customer.visits || [],
+      };
+    }),
   });
 }
 

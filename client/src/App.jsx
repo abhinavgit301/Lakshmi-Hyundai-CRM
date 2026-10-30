@@ -2360,6 +2360,45 @@ function App() {
               const vehicleVisits = serviceVisits.filter((visit) => visit.vehicleId === vehicle.id && visit.importedDetails);
               const details = getLatestImportedDetails(vehicleVisits);
               const allocations = vehicle.allocations || [];
+              const canonicalVehicleField = (key) => {
+                const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const aliases = {
+                  addressline: 'address',
+                  advisorname: 'serviceadvisor',
+                  customeraddress: 'address',
+                  customercity: 'city',
+                  customeremail: 'email',
+                  customername: 'name',
+                  customerpin: 'pin',
+                  emailaddress: 'email',
+                  emailid: 'email',
+                  mobilenumber: 'mobile',
+                  modelname: 'model',
+                  phone: 'mobile',
+                  pincode: 'pin',
+                  regno: 'registration',
+                  registrationnumber: 'registration',
+                  repairorderno: 'repairorderno',
+                  ronumber: 'repairorderno',
+                  saledealer: 'saledealer',
+                  sellingdealer: 'saledealer',
+                  serviceadvisorname: 'serviceadvisor',
+                  servicestatus: 'status',
+                  tech: 'technician',
+                  vehiclemake: 'make',
+                  vehiclemileage: 'mileage',
+                  vehiclemodel: 'model',
+                  vehicleregistrationnumber: 'registration',
+                  vehiclesaledate: 'saledate',
+                  vehiclesaledealer: 'saledealer',
+                  vehicleserviceadvisor: 'serviceadvisor',
+                  vehiclestatus: 'status',
+                  vehiclevariant: 'variant',
+                  vehiclevin: 'vin',
+                  vehicleyear: 'year',
+                };
+                return aliases[normalized] || normalized;
+              };
               const vehicleFields = [
                 ['Make', getImportedDetail(details, 'make') || vehicle.make],
                 ['Model', getImportedDetail(details, 'model') || vehicle.model],
@@ -2367,16 +2406,35 @@ function App() {
                 ['Registration', getImportedDetail(details, 'registrationNumber', 'regNo') || vehicle.registrationNumber],
                 ['VIN', getImportedDetail(details, 'vin') || vehicle.vin],
                 ['Vehicle age', formatVehicleAge(vehicle.vehicleAgeMonths)],
+                ['Free services remaining', vehicle.freeServicesRemaining == null ? '—' : `${vehicle.freeServicesRemaining} / 3`],
                 ['Status', vehicle.status],
                 ['Sale date', getImportedDetail(details, 'saleDate') || (vehicle.saleDate ? formatDate(vehicle.saleDate) : '')],
                 ['Mileage', getImportedDetail(details, 'mileage') || getImportedDetail(customerImportedDetails, 'mileage')],
                 ['Sale dealer', getImportedDetail(details, 'saleDealer', 'sellingDealer') || getImportedDetail(customerImportedDetails, 'saleDealer', 'sellingDealer')],
-                ['Service advisor', getImportedDetail(details, 'serviceAdvisor', 'advisorName') || getImportedDetail(customerImportedDetails, 'serviceAdvisor', 'advisorName')],
                 ['UC sale dealer', getImportedDetail(details, 'ucSaleDealer') || getImportedDetail(customerImportedDetails, 'ucSaleDealer')],
                 ['UC sale date', getImportedDetail(details, 'ucSaleDate') || getImportedDetail(customerImportedDetails, 'ucSaleDate')],
                 ['Assigned CRE', allocations.map((allocation) => allocation.cre?.name || allocation.cre?.username || allocation.creId).filter(Boolean).join(', ')],
                 ['CCM', allocations.map((allocation) => allocation.ccm?.name || allocation.ccmId).filter(Boolean).join(', ')],
               ].filter(([, value]) => value != null && value !== '');
+              const profileContactFields = ['Name', 'Mobile', 'Email', 'Address', 'City', 'PIN'];
+              const vehicleFieldKeys = new Set([
+                ...vehicleFields.map(([label]) => canonicalVehicleField(label)),
+                ...profileContactFields.map(canonicalVehicleField),
+                'email',
+                'city',
+                'pin',
+              ]);
+              const excludedImportedFieldKeys = new Set(['gpdate', 'technician', 'visitdate', 'rodate', 'closingdate', 'year', 'worktype']);
+              excludedImportedFieldKeys.add('name');
+              excludedImportedFieldKeys.add('status');
+              excludedImportedFieldKeys.add('repairorderno');
+              const importedVehicleFields = Object.entries(details)
+                .filter(([key]) => {
+                  const canonicalKey = canonicalVehicleField(key);
+                  return !excludedImportedFieldKeys.has(canonicalKey) && !vehicleFieldKeys.has(canonicalKey);
+                })
+                .map(([key, value]) => [getMasterDetailLabel(key), value]);
+              const allVehicleFields = [...vehicleFields, ...importedVehicleFields];
               return (
                 <article className="customer-profile-vehicle" key={vehicle.id}>
                   <header className="customer-profile-vehicle-header">
@@ -2387,7 +2445,7 @@ function App() {
                     {vehicle.status && <span className={`badge ${vehicle.status === 'ACTIVE' ? 'badge-success' : 'badge-neutral'}`}>{vehicle.status.replaceAll('_', ' ')}</span>}
                   </header>
                   <dl className="customer-profile-vehicle-details">
-                    {vehicleFields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{String(value)}</dd></div>)}
+                    {allVehicleFields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value == null || value === '' ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}
                   </dl>
                   {allocations.length > 0 && (
                     <div className="customer-profile-allocation-list">
@@ -2400,16 +2458,6 @@ function App() {
                         </div>
                       ))}
                     </div>
-                  )}
-                  {Object.keys(details).length > 0 && (
-                    <details className="customer-profile-import-details">
-                      <summary>Imported vehicle and service data <span>{Object.entries(details).length} fields</span></summary>
-                      <dl className="customer-profile-import-grid">
-                        {Object.entries(details).map(([key, value]) => (
-                          <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{value == null || value === '' ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>
-                        ))}
-                      </dl>
-                    </details>
                   )}
                 </article>
               );

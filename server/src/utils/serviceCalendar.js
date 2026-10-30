@@ -84,6 +84,15 @@ export function resolveSaleDate(record, now = new Date()) {
   return (record.workshopVisits || []).map((visit) => normalizeSaleDate(visit.importedDetails?.saleDate, now)).find(Boolean) || null;
 }
 
+export function countRemainingFreeServiceMilestones(record, now = new Date()) {
+  const saleDate = resolveSaleDate(record, now);
+  if (!saleDate) return null;
+  const completedCount = FREE_SERVICE_MILESTONES.filter(({ milestone }) => (
+    findCompletingVisit(freeServiceDueDate(saleDate, milestone), record.workshopVisits)
+  )).length;
+  return FREE_SERVICE_MILESTONES.length - completedCount;
+}
+
 // Customers (unique) with at least one free-service milestone whose calling window overlaps the month.
 // This is the free-service share of a CRE's assigned workload; it does not depend on milestone status.
 export function freeServiceCustomerIdsForMonth(records, year, month, now = new Date()) {

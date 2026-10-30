@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  countRemainingFreeServiceMilestones,
   findCompletingVisit,
   freeServiceCallStart,
   freeServiceCustomerIdsForMonth,
@@ -77,6 +78,24 @@ test('each milestone matches only its own free-service visit', () => {
   assert.equal(findCompletingVisit(freeServiceDueDate(sale, 1), visits).repairOrderNo, 'FIRST');
   assert.equal(findCompletingVisit(freeServiceDueDate(sale, 2), visits), null);
   assert.equal(findCompletingVisit(freeServiceDueDate(sale, 3), visits), null);
+});
+
+test('remaining free-service count uses sale-date milestones and only matching free repair orders', () => {
+  const saleDate = d(2024, 1, 15);
+  const visits = [
+    { visitDate: d(2024, 4, 10), importedDetails: { workType: 'FOC Service' } },
+    { visitDate: d(2025, 1, 20), importedDetails: { workType: 'Paid Service' } },
+  ];
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2026, 10, 30)), 2);
+
+  visits[1].importedDetails.workType = 'Free Service';
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2026, 10, 30)), 1);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, d(2026, 10, 30)), 3);
+});
+
+test('remaining free-service count is unknown without a valid sale date', () => {
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate: null, workshopVisits: [] }, d(2026, 10, 30)), null);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate: d(2027, 1, 1), workshopVisits: [] }, d(2026, 10, 30)), null);
 });
 
 test('missing, invalid and future sale dates are never substituted', () => {

@@ -18,6 +18,7 @@ import { findMissedWarrantyCases } from '../utils/serviceLists.js';
 import { lockCcmAllocationTeam } from '../utils/customerAllocation.js';
 import { allowedServiceSources, canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { classifyMasterRepairType } from '../utils/repairTypes.js';
+import { filterMasterCallListRecords, validateMasterCallListFilters } from '../utils/masterCallListFilters.js';
 
 function normalizeRole(role) {
   return String(role || '').toUpperCase();
@@ -534,6 +535,10 @@ export async function loadCallListRecords(where, now = new Date()) {
       type: classifyMasterRepairType(row.vehicle?.workshopVisits[0]?.importedDetails?.workType
         || row.vehicle?.monthlyDataEntries[0]?.serviceType
         || row.vehicle?.allocations[0]?.serviceType),
+      dueCategory: classifyServiceDue(
+        getLatestServiceDate(row.vehicle?.workshopVisits || [], now),
+        now,
+      ),
       dueDate: getYearlyDueDate(row.vehicle?.workshopVisits || [])
         || row.vehicle?.monthlyDataEntries[0]?.nextServiceDueDate
         || null,
@@ -555,8 +560,12 @@ export async function getCallList(req, res) {
   if (normalizeRole(req.user?.role) === 'FREE_SERVICE_CRE') {
     return res.status(403).json({ message: 'Free-Service CRE accounts cannot access the Master Call List.' });
   }
+  const validated = validateMasterCallListFilters(req.query);
+  if (validated.error) return res.status(400).json({ message: validated.error });
   const records = await loadCallListRecords(getVisibilityWhere(req.user));
-  return res.json({ records });
+  return res.json({
+    records: filterMasterCallListRecords(records, validated.filters, req.user?.role),
+  });
 }
 
 // The MasterCallList scope for one CRE's own due-list and performance figures: vehicles they

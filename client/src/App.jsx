@@ -1,4 +1,4 @@
-import { Fragment, lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { Fragment, lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useNavigationType } from 'react-router-dom';
 import { Activity, ArrowLeft, BarChart3, CalendarCheck, CalendarClock, CalendarDays, CalendarPlus2, ChevronDown, ClipboardList, Clock3, Download, FileUp, Gift, LayoutDashboard, ListFilter, LogOut, PhoneCall, Plus, Save, ShieldCheck, Trash2, Upload, UserCog, UserRoundPlus, UsersRound, X } from 'lucide-react';
 import api from './lib/api.js';
@@ -234,6 +234,16 @@ function buildUserTree(users) {
   return rows;
 }
 
+function masterListQuery(filters) {
+  const params = new URLSearchParams();
+  if (filters.search.trim()) params.set('search', filters.search.trim());
+  if (filters.creId) params.set('creId', filters.creId);
+  if (filters.dueCategory) params.set('dueCategory', filters.dueCategory);
+  if (filters.repairType) params.set('repairType', filters.repairType);
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
 function App() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -253,6 +263,10 @@ function App() {
   const [masterListMessage, setMasterListMessage] = useState('');
   const [masterListCres, setMasterListCres] = useState([]);
   const [masterListCcms, setMasterListCcms] = useState([]);
+  const [masterListSearch, setMasterListSearch] = useState('');
+  const [masterListCreFilter, setMasterListCreFilter] = useState('');
+  const [masterListDueFilter, setMasterListDueFilter] = useState('');
+  const [masterListRepairFilter, setMasterListRepairFilter] = useState('');
   const [masterListSavingId, setMasterListSavingId] = useState(null);
   const [masterEntryFormOpen, setMasterEntryFormOpen] = useState(false);
   const [masterEntrySaving, setMasterEntrySaving] = useState(false);
@@ -325,6 +339,8 @@ function App() {
   const [appointmentDeletingId, setAppointmentDeletingId] = useState(null);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [masterListTeam, setMasterListTeam] = useState('');
+  const masterListRequestRef = useRef(0);
+  const masterListAppliedFiltersRef = useRef('');
   const [wpYear, setWpYear] = useState(new Date().getFullYear());
   const [wpMonth, setWpMonth] = useState(new Date().getMonth() + 1);
   const [wpCcmId, setWpCcmId] = useState('');
@@ -601,25 +617,44 @@ function App() {
     loadReports(filter.year, filter.month, filter.ccmId, filter.creId);
   }
 
-  async function openMasterList() {
-    setActiveView('Master list');
+  const refreshMasterList = useCallback(async (filters) => {
+    const requestId = masterListRequestRef.current + 1;
+    masterListRequestRef.current = requestId;
+    masterListAppliedFiltersRef.current = JSON.stringify(filters);
     setMasterListLoading(true);
     setMasterListError('');
     try {
-      const requests = [api.get('/call-list')];
+      const response = await api.get(`/call-list${masterListQuery(filters)}`);
+      if (requestId === masterListRequestRef.current) setCalls(response.data.records || []);
+    } catch (error) {
+      if (requestId === masterListRequestRef.current) {
+        setMasterListError(error.response?.data?.message || 'Could not load the master call list.');
+      }
+    } finally {
+      if (requestId === masterListRequestRef.current) setMasterListLoading(false);
+    }
+  }, []);
+
+  async function openMasterList() {
+    setActiveView('Master list');
+    const filters = {
+      search: masterListSearch,
+      creId: masterListCreFilter,
+      dueCategory: masterListDueFilter,
+      repairType: masterListRepairFilter,
+    };
+    try {
+      const requests = [refreshMasterList(filters)];
       if (String(currentUser?.role || '').toUpperCase() === 'CCM') {
         requests.push(api.get('/teams'));
       } else if (['ADMIN', 'GM'].includes(String(currentUser?.role || '').toUpperCase())) {
         requests.push(api.get('/teams'));
       }
-      const [recordsResponse, teamsResponse] = await Promise.all(requests);
-      setCalls(recordsResponse.data.records || []);
+      const [, teamsResponse] = await Promise.all(requests);
       setMasterListCres(teamsResponse?.data?.cres || []);
       setMasterListCcms(teamsResponse?.data?.ccms || []);
     } catch (error) {
       setMasterListError(error.response?.data?.message || 'Could not load the master call list.');
-    } finally {
-      setMasterListLoading(false);
     }
   }
 
@@ -1860,6 +1895,20 @@ function App() {
   const visibleFollowUpViews = Object.fromEntries(Object.entries(followUpViews).filter(([view]) => (
     (view !== 'Follow-up Free Service' || canAccessFreeService) && (view !== 'Follow-up Warranty' || canAccessWarranty)
   )));
+  useEffect(() => {
+    if (activeView !== 'Master list' || !['CCM', 'CRE'].includes(currentRole)) return undefined;
+    const filters = {
+      search: masterListSearch,
+      creId: masterListCreFilter,
+      dueCategory: masterListDueFilter,
+      repairType: masterListRepairFilter,
+    };
+    if (JSON.stringify(filters) === masterListAppliedFiltersRef.current) return undefined;
+    const timeout = window.setTimeout(() => {
+      refreshMasterList(filters);
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [activeView, currentRole, masterListSearch, masterListCreFilter, masterListDueFilter, masterListRepairFilter, refreshMasterList]);
   const selectedMasterRecord = calls.find((record) => record.id === selectedMasterRecordId);
   const masterRecords = masterListTeam ? calls.filter((record) => record.ccmId === masterListTeam) : calls;
   const wpCres = masterListCres.filter((cre) => !wpCcmId || cre.ccmId === wpCcmId);
@@ -2132,7 +2181,7 @@ function App() {
     );
   }
 
-  function renderMasterCallTable(records, loading, { assignable = false, showDetails = false } = {}) {
+  function renderMasterCallTable(records, loading, { assignable = false, showDetails = false, emptyMessage } = {}) {
     const showCallColumn = currentRole === 'CRE' && activeView === 'Master list' && !assignable;
     return (
       <div className="master-list-table-wrap">
@@ -2188,7 +2237,7 @@ function App() {
                   ) : record.assigneeName || 'Unassigned'}</td>
                 </tr>
               ))}
-              {!loading && records.length === 0 && <tr><td colSpan="11" className="empty-state">No master call list records found.</td></tr>}
+              {!loading && records.length === 0 && <tr><td colSpan="11" className="empty-state">{emptyMessage || 'No master call list records found.'}</td></tr>}
             </tbody>
           </table>
         </div>
@@ -3145,7 +3194,7 @@ function App() {
                 </div>
               </form>
             )}
-            <section className="panel customer-list-panel">
+            <section className="panel customer-list-panel master-list-panel">
               <div className="panel-header">
                 <h3>Master call list</h3>
                 {['ADMIN', 'GM'].includes(currentRole) && (
@@ -3158,7 +3207,72 @@ function App() {
                 )}
                 <span>{masterListLoading ? 'Loading…' : `${masterRecords.length} records`}</span>
               </div>
-              {renderMasterCallTable(masterRecords, masterListLoading, { showDetails: true })}
+              {['CCM', 'CRE'].includes(currentRole) && (
+                <div className="master-list-filters" aria-label="Master Call List filters">
+                  <label className="master-list-search">
+                    Search customers
+                    <span className="master-list-search-control">
+                      <input
+                        type="search"
+                        value={masterListSearch}
+                        placeholder="Name, mobile, VIN, registration or RO"
+                        aria-label="Search by customer name, mobile, VIN, registration number, or repair order"
+                        onChange={(event) => setMasterListSearch(event.target.value)}
+                      />
+                      {masterListSearch && (
+                        <button type="button" className="master-list-clear-search" aria-label="Clear search" onClick={() => setMasterListSearch('')}>
+                          <X size={15} aria-hidden="true" />
+                        </button>
+                      )}
+                    </span>
+                  </label>
+                  {currentRole === 'CCM' && (
+                    <label>
+                      CRE
+                      <select value={masterListCreFilter} onChange={(event) => setMasterListCreFilter(event.target.value)}>
+                        <option value="">All CREs</option>
+                        <option value="unassigned">Unassigned customers</option>
+                        {masterListCres.map((cre) => <option key={cre.id} value={cre.id}>{cre.name || cre.username}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  <label>
+                    Due category
+                    <select value={masterListDueFilter} onChange={(event) => setMasterListDueFilter(event.target.value)}>
+                      <option value="">All customers</option>
+                      <option value="6m">6 Months Due</option>
+                      <option value="1y">1 Year Due</option>
+                      <option value="allDue">All Due Customers</option>
+                    </select>
+                  </label>
+                  <label>
+                    Repair type
+                    <select value={masterListRepairFilter} onChange={(event) => setMasterListRepairFilter(event.target.value)}>
+                      <option value="">All repair types</option>
+                      {MASTER_REPAIR_TYPE_ORDER.map((type) => (
+                        <option key={type} value={type}>
+                          {type === 'Free' ? 'Free Service' : type === 'Paid' ? 'Paid Service' : type}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="outline-btn master-list-clear-filters"
+                    disabled={!masterListSearch && !masterListCreFilter && !masterListDueFilter && !masterListRepairFilter}
+                    onClick={() => {
+                      setMasterListSearch('');
+                      setMasterListCreFilter('');
+                      setMasterListDueFilter('');
+                      setMasterListRepairFilter('');
+                    }}
+                  >Clear filters</button>
+                </div>
+              )}
+              {renderMasterCallTable(masterRecords, masterListLoading, {
+                showDetails: true,
+                emptyMessage: 'No matching customers found. Try adjusting or clearing the active filters.',
+              })}
             </section>
             {selectedMasterRecord && (
               <section className="panel master-record-details" aria-label={`Imported details for ${selectedMasterRecord.name || selectedMasterRecord.customerName}`}>

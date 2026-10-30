@@ -9,6 +9,10 @@ import { createCallLog, createFollowUp, getCrePerformanceSummary, listFollowUps 
 import { getFreeServiceList, getWarrantyList } from '../src/controllers/serviceListsController.js';
 import { getCallList, getCustomers, getVisibilityWhere } from '../src/controllers/recordsController.js';
 import { listAllocations } from '../src/controllers/allocationController.js';
+import {
+  filterMasterCallListRecords,
+  validateMasterCallListFilters,
+} from '../src/utils/masterCallListFilters.js';
 
 function mockRes() {
   return {
@@ -72,6 +76,80 @@ test('regular CRE Master Call List visibility includes only records assigned to 
   assert.deepEqual(getVisibilityWhere({ role: 'CRE', id: 'cre-1', ccmId: 'ccm-1' }), {
     ccmId: 'ccm-1',
     ownerUserId: 'cre-1',
+  });
+
+  test('CCM Master Call List filters combine CRE, due category, repair type, and partial search', () => {
+    const records = [
+      {
+        assigneeId: 'cre-1',
+        customerName: 'Alex Hyundai',
+        mobile: '9876543210',
+        vin: 'VIN123',
+        registrationNumber: 'KA01AA1234',
+        dueCategory: '1y',
+        type: 'Paid',
+        workshopVisits: [{ repairOrderNo: 'RO-1001' }],
+      },
+      {
+        assigneeId: null,
+        customerName: 'Alex Service',
+        dueCategory: '1y',
+        type: 'Paid',
+        workshopVisits: [],
+      },
+      {
+        assigneeId: 'cre-1',
+        customerName: 'Alex Service',
+        dueCategory: '6m',
+        type: 'Free',
+        workshopVisits: [],
+      },
+    ];
+    const { filters } = validateMasterCallListFilters({
+      creId: 'cre-1',
+      dueCategory: '1y',
+      repairType: 'Paid',
+      search: '  ro-10 ',
+    });
+
+    assert.deepEqual(filterMasterCallListRecords(records, filters, 'CCM'), [records[0]]);
+    assert.deepEqual(filterMasterCallListRecords(records, filters, 'CRE'), [records[0]]);
+
+    const { filters: unassignedFilters } = validateMasterCallListFilters({ creId: 'unassigned' });
+    assert.deepEqual(filterMasterCallListRecords(records, unassignedFilters, 'CCM'), [records[1]]);
+    const { filters: allDueFilters } = validateMasterCallListFilters({ dueCategory: 'allDue' });
+    assert.deepEqual(filterMasterCallListRecords(records, allDueFilters, 'CCM'), records);
+    const { filters: sixMonthFilters } = validateMasterCallListFilters({ dueCategory: '6m' });
+    assert.deepEqual(filterMasterCallListRecords(records, sixMonthFilters, 'CCM'), [records[2]]);
+
+    for (const search of ['alex hyu', '987654', 'vin123', 'ka01aa', 'ro-100']) {
+      const { filters: searchFilters } = validateMasterCallListFilters({ search: ` ${search} ` });
+      assert.deepEqual(filterMasterCallListRecords(records, searchFilters, 'CCM'), [records[0]]);
+    }
+  });
+
+  test('CRE list filters cannot broaden the authenticated CRE data scope', () => {
+    const assignedRecords = [
+      { assigneeId: 'cre-1', customerName: 'Assigned Customer', dueCategory: '6m', type: 'Free', workshopVisits: [] },
+    ];
+    const { filters } = validateMasterCallListFilters({
+      creId: 'cre-2',
+      dueCategory: 'allDue',
+      repairType: 'Free',
+      search: 'assigned',
+    });
+
+    assert.deepEqual(filterMasterCallListRecords(assignedRecords, filters, 'CRE'), assignedRecords);
+    assert.deepEqual(getVisibilityWhere({ role: 'CRE', id: 'cre-1', ccmId: 'ccm-1' }), {
+      ccmId: 'ccm-1',
+      ownerUserId: 'cre-1',
+    });
+  });
+
+  test('Master Call List filter validation rejects unsupported values and oversized searches', () => {
+    assert.equal(validateMasterCallListFilters({ dueCategory: 'recent' }).error, 'dueCategory must be 6m, 1y, or allDue.');
+    assert.equal(validateMasterCallListFilters({ repairType: 'Unknown' }).error, 'repairType is not supported.');
+    assert.equal(validateMasterCallListFilters({ search: 'x'.repeat(201) }).error, 'search must be 200 characters or fewer.');
   });
   assert.deepEqual(getVisibilityWhere({ role: 'CRE', id: 'cre-1' }), {
     ccmId: 'no-access',

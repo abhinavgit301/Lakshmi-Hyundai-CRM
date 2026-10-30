@@ -14,7 +14,7 @@ import { validateCallLogPayload, validateFollowUpPayload } from '../src/utils/wo
 import { validateCustomerPayload } from '../src/utils/customerRules.js';
 import { validateAppointmentPayload, validateAppointmentUpdate } from '../src/utils/appointmentRules.js';
 import { appointmentVisibilityWhere } from '../src/utils/appointmentAccess.js';
-import { parseRepairOrderCsv } from '../src/utils/repairOrderCsv.js';
+import { parseRepairOrderCsv, parseRepairOrderDate } from '../src/utils/repairOrderCsv.js';
 import { validateAllocationPayload, validateAllocationUpdate } from '../src/utils/allocationRules.js';
 import { canAccessCcmMonthlyData, classifyMonthlyRows, validateDatasetPeriod, validateMonthlyCustomerRow } from '../src/utils/monthlyCustomerDataRules.js';
 import { parseMonthlyCustomerDataFile } from '../src/utils/monthlyCustomerDataParser.js';
@@ -55,6 +55,26 @@ test('repair order import marks duplicate rows as skipped', () => {
 
   assert.equal(result.status, 'skipped');
   assert.equal(result.reason, 'Duplicate RO/VIN combination');
+});
+
+test('repair order import allows multiple repair orders for the same VIN', () => {
+  const keys = new Set();
+  const first = evaluateRow({
+    vin: '1hgbh41jxz',
+    roNumber: 'RO-1001',
+    ccmId: 'ccm-1',
+    ownerCcmId: 'ccm-1',
+  }, keys);
+  keys.add(buildDuplicateKey('1HGBH41JXZ', 'RO-1001'));
+  const second = evaluateRow({
+    vin: '1hgbh41jxz',
+    roNumber: 'RO-1002',
+    ccmId: 'ccm-1',
+    ownerCcmId: 'ccm-1',
+  }, keys);
+
+  assert.equal(first.status, 'processed');
+  assert.equal(second.status, 'processed');
 });
 
 test('cross-manager VIN conflict is flagged', () => {
@@ -215,6 +235,75 @@ test('repair order CSV parser supports the service report export headers', () =>
   assert.equal(result.rows[0].row.specialMessage, 'Message');
   assert.equal(Object.keys(result.rows[0].row).length, 27);
   assert.equal(result.rows[0].row.demands, 'Noise');
+});
+
+test('repair order CSV parser detects Hyundai grouped headings and maps the second header row', () => {
+  const csv = [
+    '\uFEFFS NO,Repair Order,,,,,,,,Vehicle,,,,,,,,Customer,,,,,,,,Special Ms,Visit Type,Demands',
+    'S No,R/O No,R/O Date,Closing Date,G.P Date,Work Type,Status,Service Advisor,VIN,,Reg No,Model,Mileage,Sale Dealer,Sale Date,UC Sale Dealer,UC Sale Date,Name,Address,E-mail,City,PIN,Mobile,Office,Tech.,Special Msg.,Visit Type,Demands',
+    '1,RO-1,01/02/2016,02/02/2016,20160201,Running Repair,Delivered,Advisor,1HGBH41JXZ,,KA01AB1234,Creta,3685,Dealer,20150507,,,Customer,"12 Main St, Suite ""A""",customer@example.com,City,530014,9876543210,Office,Tech,Message,Periodic,Noise',
+    '2,RO-2,02/02/2016,03/02/2016,20160202,Paid Service,Delivered,Advisor,1HGBH41JXZ,,KA01AB1234,Creta,3690,Dealer,20150507,,,Customer,"13 Main St, Suite ""B""",customer@example.com,City,530014,9876543210,Office,Tech,Message,Periodic,Noise',
+  ].join('\r\n');
+
+  const result = parseRepairOrderCsv(csv);
+  assert.equal(result.error, undefined);
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.rows[0].rowNumber, 3);
+  assert.equal(result.rows[0].row.roNumber, 'RO-1');
+  assert.equal(result.rows[0].row.visitDate, '01/02/2016');
+  assert.equal(result.rows[0].row.gpDate, '20160201');
+  assert.equal(result.rows[0].row.workType, 'Running Repair');
+  assert.equal(result.rows[0].row.serviceStatus, 'Delivered');
+  assert.equal(result.rows[0].row.vin, '1HGBH41JXZ');
+  assert.equal(result.rows[0].row.registrationNumber, 'KA01AB1234');
+  assert.equal(result.rows[0].row.customerName, 'Customer');
+  assert.equal(result.rows[0].row.address, '12 Main St, Suite "A"');
+  assert.equal(result.rows[0].row.email, 'customer@example.com');
+  assert.equal(result.rows[0].row.pin, '530014');
+  assert.equal(result.rows[0].row.mobileNumber, '9876543210');
+  assert.equal(result.rows[0].row.technician, 'Tech');
+  assert.equal(result.rows[1].row.roNumber, 'RO-2');
+  assert.equal(result.rows[1].row.vin, result.rows[0].row.vin);
+});
+
+test('repair order CSV parser tolerates empty values, capitalization, whitespace, and blank header cells', () => {
+  const result = parseRepairOrderCsv([
+    'Repair Order,,VEHICLE,CUSTOMER',
+    '  r / o no  , , Vehicle Vin ,  NAME  , Mobile',
+    'RO-EMPTY,,1HGBH41JXZ, Customer Name ,',
+  ].join('\n'));
+
+  assert.equal(result.error, undefined);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].row.roNumber, 'RO-EMPTY');
+  assert.equal(result.rows[0].row.vin, '1HGBH41JXZ');
+  assert.equal(result.rows[0].row.customerName, 'Customer Name');
+  assert.equal(result.rows[0].row.mobileNumber, '');
+});
+
+test('repair order CSV parser preserves the normalized one-header format', () => {
+  const result = parseRepairOrderCsv([
+    'Repair Order No,VIN,Customer Name,Phone,Model',
+    'RO-1,1HGBH41JXZ,"Nair, Arun",9876543210,Creta',
+  ].join('\n'));
+  assert.equal(result.error, undefined);
+  assert.equal(result.rows[0].row.roNumber, 'RO-1');
+  assert.equal(result.rows[0].row.customerName, 'Nair, Arun');
+  assert.equal(result.rows[0].row.mobileNumber, '9876543210');
+  assert.equal(result.rows[0].row.model, 'Creta');
+});
+
+test('repair-order dates accept DD/MM/YYYY and YYYYMMDD while rejecting invalid calendar dates', () => {
+  const dayFirst = parseRepairOrderDate('02/01/2016');
+  const compact = parseRepairOrderDate('20160102');
+  assert.equal(dayFirst.getFullYear(), 2016);
+  assert.equal(dayFirst.getMonth(), 0);
+  assert.equal(dayFirst.getDate(), 2);
+  assert.equal(compact.getFullYear(), 2016);
+  assert.equal(compact.getMonth(), 0);
+  assert.equal(compact.getDate(), 2);
+  assert.ok(Number.isNaN(parseRepairOrderDate('20160230')));
+  assert.equal(parseRepairOrderDate(''), null);
 });
 
 test('repair order CSV parser rejects missing columns and malformed CSV', () => {

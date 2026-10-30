@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { buildDuplicateKey, normalizeVin } from '../utils/roleAccess.js';
 import { evaluateRepairOrderRow } from '../utils/businessRules.js';
-import { parseRepairOrderCsv } from '../utils/repairOrderCsv.js';
+import { parseRepairOrderCsv, parseRepairOrderDate } from '../utils/repairOrderCsv.js';
 import { normalizeSaleDate } from '../utils/serviceCalendar.js';
 import { prisma } from '../config/prisma.js';
 import { allocateUnassignedMasterCallListEntries, lockCcmAllocationTeam } from '../utils/customerAllocation.js';
@@ -29,18 +29,7 @@ function parseOptionalNumber(value) {
 }
 
 function parseOptionalDate(value) {
-  if (value == null || String(value).trim() === '') return null;
-  const raw = String(value).trim();
-  const localDate = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-  const date = localDate
-    ? new Date(Number(localDate[3]), Number(localDate[2]) - 1, Number(localDate[1]))
-    : new Date(raw);
-  if (localDate && (
-    date.getFullYear() !== Number(localDate[3])
-    || date.getMonth() !== Number(localDate[2]) - 1
-    || date.getDate() !== Number(localDate[1])
-  )) return NaN;
-  return Number.isNaN(date.getTime()) ? NaN : date;
+  return parseRepairOrderDate(value);
 }
 
 function parseOptionalYear(value) {

@@ -879,7 +879,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
 .app-shell { grid-template-columns: 248px minmax(0, 1fr); min-height: 100vh; background: #f3f5f6; }
 .sidebar { position: sticky; top: 0; height: 100vh; min-height: 0; gap: 20px; padding: 25px 16px 16px; background: #1d2b30; color: #f5f7f7; }
 .brand-block { flex: 0 0 auto; gap: 11px; padding: 0 7px 12px; }
-.brand-mark { flex: 0 0 40px; width: 40px; height: 40px; border-radius: 10px; background: #dc5c43; color: #fff; font-family: 'Manrope', sans-serif; font-size: 0.88rem; box-shadow: none; }
+.brand-mark { flex: 0 0 40px; width: 40px; height: 40px; border-radius: 0; object-fit: contain; background: transparent; color: #fff; font-family: 'Manrope', sans-serif; font-size: 0.88rem; box-shadow: none; }
 .sidebar h1 { color: #f7f9f9; font-family: 'Manrope', sans-serif; font-size: 0.98rem; font-weight: 700; line-height: 1.25; }
 .eyebrow { margin-bottom: 5px; color: #94a9ac; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.09em; }
 /* The menu scrolls inside the sidebar so the signed-in card always stays pinned to the bottom. */

@@ -379,6 +379,10 @@ function App() {
   const [importRollbackError, setImportRollbackError] = useState('');
   const [importRollbackSaving, setImportRollbackSaving] = useState(false);
   const [importRecoverySaving, setImportRecoverySaving] = useState(false);
+  const [permanentDeletion, setPermanentDeletion] = useState(null);
+  const [permanentDeletionPreviewLoading, setPermanentDeletionPreviewLoading] = useState(false);
+  const [permanentDeletionSaving, setPermanentDeletionSaving] = useState(false);
+  const [permanentDeletionError, setPermanentDeletionError] = useState('');
   const [importCcmId, setImportCcmId] = useState('');
   const [customerFormOpen, setCustomerFormOpen] = useState(false);
   const [customerSaving, setCustomerSaving] = useState(false);
@@ -1663,6 +1667,56 @@ function App() {
       setImportError(message);
     } finally {
       setImportRecoverySaving(false);
+    }
+  }
+
+  async function openPermanentDeletionPreview(batch) {
+    if (!batch || permanentDeletionPreviewLoading || permanentDeletionSaving) return;
+    setPermanentDeletionPreviewLoading(true);
+    setPermanentDeletionError('');
+    try {
+      const response = await api.get(`/imports/${encodeURIComponent(batch.id)}/permanent-deletion/preview`);
+      setPermanentDeletion({ batch, preview: response.data });
+    } catch (error) {
+      setPermanentDeletionError(error.response?.data?.message || 'Could not prepare the permanent-deletion preview.');
+    } finally {
+      setPermanentDeletionPreviewLoading(false);
+    }
+  }
+
+  async function confirmPermanentDeletion() {
+    if (!permanentDeletion || permanentDeletionSaving) return;
+    setPermanentDeletionSaving(true);
+    setPermanentDeletionError('');
+    setImportMessage('');
+    let deletionCommitted = false;
+    try {
+      const response = await api.delete(
+        `/imports/${encodeURIComponent(permanentDeletion.batch.id)}/permanent-deletion`,
+        { data: { confirmationToken: permanentDeletion.preview.confirmationToken } },
+      );
+      deletionCommitted = response.data.status === 'permanently_deleted';
+      if (!deletionCommitted) throw new Error('The server did not confirm permanent deletion.');
+      setPermanentDeletion(null);
+      setImportMessage(`Import ${permanentDeletion.batch.fileName} and ${response.data.summary.totalRecordsDeleted} dependent records were permanently deleted.`);
+      const [historyResponse, callListResponse, customersResponse] = await Promise.all([
+        api.get('/imports/history'),
+        api.get('/call-list'),
+        api.get('/customers'),
+      ]);
+      setImports(historyResponse.data.imports || []);
+      setCalls(callListResponse.data.records || []);
+      setCustomers(customersResponse.data.customers || []);
+      await refreshDashboardSummary();
+    } catch (error) {
+      const message = error.response?.data?.message || 'Could not complete permanent deletion.';
+      if (deletionCommitted) {
+        setImportMessage(`Permanent deletion committed, but some interface data could not refresh: ${message}`);
+      } else {
+        setPermanentDeletionError(message);
+      }
+    } finally {
+      setPermanentDeletionSaving(false);
     }
   }
 
@@ -3169,7 +3223,12 @@ function App() {
                         <tr key={batch.id}>
                           <td>{batch.fileName}{batch.rowErrors?.length > 0 && <details className="row-error-details"><summary>{batch.rowErrors.length} row issues</summary><ImportErrors errors={batch.rowErrors.map((row) => ({ ...row, status: row.errorCode.toLowerCase().includes('conflict') ? 'flagged' : row.errorCode.toLowerCase().includes('duplicate') ? 'skipped' : 'rejected' }))} /></details>}</td>
                           <td>{new Date(batch.createdAt).toLocaleString()}</td>
-                          <td title={batch.recoveryBlockedReason || undefined}>{batch.status === 'rolled_back' ? 'Rolled back' : batch.status === 'completed' ? 'Completed' : batch.status}</td>
+                          <td title={batch.recoveryBlockedReason || undefined}>
+                            {batch.status === 'rolled_back' ? 'Rolled back' : batch.status === 'permanently_deleted' ? 'Permanently deleted' : batch.status === 'completed' ? 'Completed' : batch.status}
+                            {batch.permanentDeletion && <small className="import-invalidation-note" title={`Caused by import ${batch.permanentDeletion.causedByImportIds.join(', ')}`}>
+                              {batch.permanentDeletion.invalidatedChanges} changes invalidated{batch.permanentDeletion.invalidatedRows.length > 0 ? ` · rows ${batch.permanentDeletion.invalidatedRows.join(', ')}` : ''}
+                            </small>}
+                          </td>
                           <td>{batch.processedRows == null ? `Unknown / ${batch.totalRows} (unverified)` : `${batch.processedRows} / ${batch.totalRows}${batch.statsComplete ? '' : legacyStoredOutcomes ? ' (legacy status; row details unverified)' : ' (partial)'}`}</td>
                           <td title={batch.affectedCountsComplete ? 'Distinct affected records verified from durable change logs.' : batch.processingStartedAt ? 'Distinct records currently represented in durable change logs; completeness is not verified.' : 'No verified change-log count is available for this historical import.'}>
                             {batch.processingStartedAt ? `${changedRecords}${batch.affectedCountsComplete ? '' : ' logged (partial)'}` : 'Unavailable'}
@@ -3177,12 +3236,19 @@ function App() {
                           <td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.createdRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.appendedRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.skippedRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.rejectedRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.flaggedRows}${rowOutcomeSuffix}` : '—'}</td>
                           {currentRole === 'ADMIN' && <td>
                             {['completed', 'failed'].includes(batch.status) && batch.rollbackSupported ? (
-                              <button type="button" className="outline-btn import-rollback-trigger" disabled={importRollbackSaving} onClick={() => {
-                                setImportRollbackBatch(batch);
-                                setImportRollbackError('');
-                              }}>Roll back</button>
+                              <>
+                                <button type="button" className="outline-btn import-rollback-trigger" disabled={importRollbackSaving} onClick={() => {
+                                  setImportRollbackBatch(batch);
+                                  setImportRollbackError('');
+                                }}>Roll back</button>
+                                <button type="button" className="danger-btn import-rollback-trigger" disabled={permanentDeletionPreviewLoading || permanentDeletionSaving} onClick={() => openPermanentDeletionPreview(batch)}>
+                                  Permanently delete
+                                </button>
+                              </>
                             ) : batch.status === 'rolled_back' ? (
                               <span className="import-rollback-unavailable">Already rolled back</span>
+                            ) : batch.status === 'permanently_deleted' ? (
+                              <span className="import-rollback-unavailable">Already permanently deleted</span>
                             ) : ['processing', 'failed'].includes(batch.status) && !batch.rollbackSupported ? (
                               <button type="button" className="outline-btn import-rollback-trigger" disabled={importRecoverySaving} onClick={() => recoverImport(batch)}>
                                 {importRecoverySaving ? 'Checking…' : 'Recover'}
@@ -3201,6 +3267,7 @@ function App() {
                 </table>
               </div>
             </section>
+            {permanentDeletionPreviewLoading && <p className="form-alert" role="status">Preparing permanent-deletion preview…</p>}
             {importRollbackBatch && (
               <div className="modal-backdrop" onMouseDown={(event) => {
                 if (event.target === event.currentTarget && !importRollbackSaving) setImportRollbackBatch(null);
@@ -3225,6 +3292,55 @@ function App() {
                   <div className="form-actions">
                     <button type="button" className="outline-btn" disabled={importRollbackSaving} onClick={() => setImportRollbackBatch(null)}>Cancel</button>
                     <button type="button" className="danger-btn" disabled={importRollbackSaving} onClick={() => rollbackImport(importRollbackBatch)}>{importRollbackSaving ? 'Rolling back…' : 'Confirm rollback'}</button>
+                  </div>
+                </section>
+              </div>
+            )}
+            {permanentDeletionError && !permanentDeletion && <p className="form-alert error" role="alert">{permanentDeletionError}</p>}
+            {permanentDeletion && (
+              <div className="modal-backdrop" onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !permanentDeletionSaving) {
+                  setPermanentDeletion(null);
+                  setPermanentDeletionError('');
+                }
+              }}>
+                <section className="modal-card import-rollback-modal" role="dialog" aria-modal="true" aria-labelledby="permanent-deletion-title" aria-describedby="permanent-deletion-description">
+                  <h3 id="permanent-deletion-title">Permanently delete import and dependencies?</h3>
+                  <p id="permanent-deletion-description">This separate action permanently removes records created by this import and dependent records from later imports. Later repair orders, calls, appointments, and call-list records may also be deleted. Pre-existing records updated by this import will be restored where their recorded state can be verified.</p>
+                  {permanentDeletionPreviewLoading ? <p role="status">Preparing deletion preview…</p> : (
+                    <dl className="import-rollback-details">
+                      <div><dt>Original file</dt><dd>{permanentDeletion.preview.fileName}</dd></div>
+                      <div><dt>Import ID</dt><dd>{permanentDeletion.preview.importId}</dd></div>
+                      <div><dt>Imported</dt><dd>{new Date(permanentDeletion.preview.importedAt).toLocaleString()}</dd></div>
+                      <div><dt>Directly affected records</dt><dd>{permanentDeletion.preview.directlyAffectedRecords}</dd></div>
+                      <div><dt>Dependent records</dt><dd>{permanentDeletion.preview.dependentRecords}</dd></div>
+                      <div><dt>Later import batches affected</dt><dd>{permanentDeletion.preview.laterImportBatchesAffected}</dd></div>
+                      <div><dt>Total records to delete</dt><dd>{permanentDeletion.preview.totalRecordsDeleted}</dd></div>
+                      <div><dt>Existing records to restore</dt><dd>{permanentDeletion.preview.existingRecordsRestored}</dd></div>
+                      <div><dt>Customers / vehicles</dt><dd>{permanentDeletion.preview.counts.customers} / {permanentDeletion.preview.counts.vehicles}</dd></div>
+                      <div><dt>Repair orders / call-list records</dt><dd>{permanentDeletion.preview.counts.repairOrders} / {permanentDeletion.preview.counts.callListRecords}</dd></div>
+                      <div><dt>Calls / appointments / follow-ups</dt><dd>{permanentDeletion.preview.counts.calls} / {permanentDeletion.preview.counts.appointments} / {permanentDeletion.preview.counts.followUps}</dd></div>
+                      <div><dt>Allocations / ownership / milestones</dt><dd>{permanentDeletion.preview.counts.allocations} / {permanentDeletion.preview.counts.ownershipRecords} / {permanentDeletion.preview.counts.freeServiceMilestones}</dd></div>
+                      <div><dt>Appointment events / VIN reviews</dt><dd>{permanentDeletion.preview.counts.appointmentEvents} / {permanentDeletion.preview.counts.vinConflictReviews}</dd></div>
+                      <div><dt>Monthly data entries retained and detached</dt><dd>{permanentDeletion.preview.counts.monthlyEntriesDetached}</dd></div>
+                    </dl>
+                  )}
+                  {permanentDeletion.preview.affectedImportBatches.length > 0 && (
+                    <div className="permanent-deletion-batches">
+                      <strong>Later batches affected</strong>
+                      <ul>{permanentDeletion.preview.affectedImportBatches.map((affected) => <li key={affected.id}>{affected.fileName} — {affected.invalidatedChanges} changes, {affected.invalidatedRows.length} rows invalidated</li>)}</ul>
+                    </div>
+                  )}
+                  <p className="modal-warning">This action cannot be undone. Import history and audit records will be retained, but deleted records cannot be recovered.</p>
+                  {permanentDeletionError && <p className="form-alert error" role="alert">{permanentDeletionError}</p>}
+                  <div className="form-actions">
+                    <button type="button" className="outline-btn" disabled={permanentDeletionSaving} onClick={() => {
+                      setPermanentDeletion(null);
+                      setPermanentDeletionError('');
+                    }}>Cancel</button>
+                    <button type="button" className="danger-btn" disabled={permanentDeletionSaving || permanentDeletionPreviewLoading || permanentDeletion.preview.alreadyDeleted} onClick={confirmPermanentDeletion}>
+                      {permanentDeletionSaving ? 'Deleting permanently…' : 'Confirm permanent deletion'}
+                    </button>
                   </div>
                 </section>
               </div>

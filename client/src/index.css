@@ -593,9 +593,32 @@ th {
 }
 
 .import-rollback-trigger {
+  display: block;
   min-height: 32px;
+  margin-bottom: 6px;
   padding: 5px 10px;
   white-space: nowrap;
+}
+
+.import-invalidation-note {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.permanent-deletion-batches {
+  margin: 14px 0;
+  color: var(--slate-600);
+  font-size: 0.82rem;
+}
+
+.permanent-deletion-batches ul {
+  display: grid;
+  gap: 5px;
+  margin: 7px 0 0;
+  padding-left: 20px;
 }
 
 .import-rollback-unavailable {

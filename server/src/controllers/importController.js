@@ -9,6 +9,11 @@ import { allocateUnassignedMasterCallListEntries, lockCcmAllocationTeam } from '
 import { importSnapshot, recordImportChange } from '../utils/importChangeLog.js';
 import { ImportRollbackConflict, rollbackImportBatch } from '../services/importRollbackService.js';
 import { ImportRecoveryConflict, recoverAbandonedImport } from '../services/importRecoveryService.js';
+import {
+  PermanentImportDeletionConflict,
+  permanentlyDeleteImportBatch,
+  previewPermanentImportDeletion,
+} from '../services/permanentImportDeletionService.js';
 import { acquireImportProcessingLock, assertImportBatchProcessing } from '../utils/importProcessingLock.js';
 import {
   collectImportBatchStats,
@@ -20,6 +25,14 @@ import {
 
 function roleName(role) {
   return String(role || '').toUpperCase();
+}
+
+function isSerializationConflict(error) {
+  return error?.code === 'P2034'
+    || (error?.code === 'P2010' && (
+      error.meta?.code === '40001'
+      || error.meta?.driverAdapterError?.cause?.originalCode === '40001'
+    ));
 }
 
 function parseOptionalNumber(value) {
@@ -544,6 +557,7 @@ export async function getImportHistory(req, res) {
       processedRows: true,
       recoveryBlockedReason: true,
       rolledBackAt: true,
+      rollbackError: true,
       createdAt: true,
       rowErrors: { orderBy: { rowNumber: 'asc' }, take: 100 },
       _count: { select: { changes: true } },
@@ -552,23 +566,103 @@ export async function getImportHistory(req, res) {
     take: 100,
   });
   const statsByBatch = await collectImportBatchStatsForIds(prisma, imports.map(({ id }) => id));
+  const invalidatedChanges = imports.length
+    ? await prisma.importChangeLog.findMany({
+      where: { importBatchId: { in: imports.map(({ id }) => id) }, rollbackStatus: 'permanently_deleted' },
+      select: { importBatchId: true, rollbackError: true, rowProgress: { select: { rowNumber: true } } },
+    })
+    : [];
+  const invalidationByBatch = new Map();
+  for (const change of invalidatedChanges) {
+    const state = invalidationByBatch.get(change.importBatchId) || { changes: 0, rows: new Set(), causes: new Set() };
+    state.changes += 1;
+    if (change.rowProgress?.rowNumber != null) state.rows.add(change.rowProgress.rowNumber);
+    const cause = change.rollbackError?.match(/permanent deletion of import ([^.]+)/i)?.[1];
+    if (cause) state.causes.add(cause);
+    invalidationByBatch.set(change.importBatchId, state);
+  }
   return res.json({
     imports: imports.map((batch) => {
+      const invalidation = invalidationByBatch.get(batch.id);
+      const permanentDeletion = invalidation && batch.status !== 'permanently_deleted'
+        ? {
+          invalidatedChanges: invalidation.changes,
+          invalidatedRows: [...invalidation.rows].sort((a, b) => a - b),
+          causedByImportIds: [...invalidation.causes].sort(),
+        }
+        : null;
       if (!batch.processingStartedAt) {
         return {
           ...batch,
           ...legacyImportHistoryProgress(batch),
           rollbackSupported: false,
           affectedCountsComplete: false,
+          permanentDeletion,
         };
       }
       return {
         ...batch,
         ...statsByBatch.get(batch.id),
         rowOutcomesProvenance: 'durable-row-progress',
+        permanentDeletion,
       };
     }),
   });
+}
+
+export async function previewPermanentDeletion(req, res) {
+  const importBatchId = String(req.params.id || '').trim();
+  if (!importBatchId || importBatchId.length > 128) {
+    return res.status(400).json({ message: 'A valid import ID is required.' });
+  }
+  try {
+    return res.json(await previewPermanentImportDeletion(importBatchId));
+  } catch (error) {
+    if (error instanceof PermanentImportDeletionConflict) {
+      return res.status(error.message === 'Import not found.' ? 404 : 409).json({ message: error.message });
+    }
+    throw error;
+  }
+}
+
+export async function permanentlyDeleteImport(req, res) {
+  const importBatchId = String(req.params.id || '').trim();
+  if (!importBatchId || importBatchId.length > 128) {
+    return res.status(400).json({ message: 'A valid import ID is required.' });
+  }
+  try {
+    const result = await permanentlyDeleteImportBatch(
+      importBatchId,
+      req.user.id,
+      String(req.body?.confirmationToken || ''),
+    );
+    return res.json(result);
+  } catch (error) {
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        entityType: 'ImportBatch',
+        entityId: importBatchId,
+        action: error instanceof PermanentImportDeletionConflict
+          ? 'REPAIR_ORDER_IMPORT_PERMANENT_DELETION_BLOCKED'
+          : 'REPAIR_ORDER_IMPORT_PERMANENT_DELETION_FAILED',
+        details: JSON.stringify({
+          reason: error instanceof PermanentImportDeletionConflict
+            ? error.message
+            : isSerializationConflict(error)
+              ? 'Serialization conflict.'
+              : 'Unexpected permanent-deletion failure.',
+        }),
+      },
+    });
+    if (error instanceof PermanentImportDeletionConflict) {
+      return res.status(error.message === 'Import not found.' ? 404 : 409).json({ message: error.message });
+    }
+    if (isSerializationConflict(error)) {
+      return res.status(409).json({ message: 'The import changed during permanent deletion. Refresh the preview and try again.' });
+    }
+    throw error;
+  }
 }
 
 export async function recoverImport(req, res) {

@@ -97,6 +97,7 @@ async function ensureNoReferences(transaction, change) {
 }
 
 async function reverseChange(transaction, change) {
+  if (change.rollbackStatus === 'permanently_deleted') return;
   const { delegate, record } = await findEntity(transaction, change.entityType, change.entityId);
   if (!snapshotMatches(record, change.after, change.operation === 'CREATE')) {
     throw new ImportRollbackConflict(`The ${entityLabels[change.entityType]} has changed since this import. Its later changes were preserved; resolve the conflict before retrying rollback.`);
@@ -158,7 +159,12 @@ export async function rollbackImportBatch(importBatchId, adminId, database = pri
       data: { status: 'rollback_in_progress', rollbackError: null },
     });
     const now = new Date();
-    for (const change of batch.changes) await reverseChange(transaction, change);
+    let reversedChanges = 0;
+    for (const change of batch.changes) {
+      if (change.rollbackStatus === 'permanently_deleted') continue;
+      await reverseChange(transaction, change);
+      reversedChanges += 1;
+    }
     if (batch.changes.length) {
       await transaction.importChangeLog.updateMany({
         where: { importBatchId: batch.id, rollbackStatus: 'pending' },
@@ -179,6 +185,6 @@ export async function rollbackImportBatch(importBatchId, adminId, database = pri
         details: JSON.stringify({ changeCount: batch.changes.length }),
       },
     });
-    return { batch: updatedBatch, reversedChanges: batch.changes.length };
+    return { batch: updatedBatch, reversedChanges };
   }, { isolationLevel: 'Serializable' });
 }

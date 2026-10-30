@@ -201,6 +201,20 @@ test('rollback removes a tracked import-created repair order and audits the oper
   assert.equal(state.auditLogs[0].action, 'REPAIR_ORDER_IMPORT_ROLLED_BACK');
 });
 
+test('rollback skips records invalidated by permanent deletion and does not recreate them', async () => {
+  const { change } = visitChange();
+  change.rollbackStatus = 'permanently_deleted';
+  const { database, state } = createDatabase({
+    batch: makeBatch({ changes: [change] }),
+  });
+
+  const result = await rollbackImportBatch('batch-1', 'admin-1', database);
+
+  assert.equal(result.batch.status, 'rolled_back');
+  assert.equal(result.reversedChanges, 0);
+  assert.equal(state.records.WorkshopVisit?.[change.entityId], undefined);
+});
+
 test('a completed mutation row with no linked logs is not rollback-eligible', async () => {
   const { database, state } = createDatabase({
     batch: makeBatch({ outcome: 'created' }),

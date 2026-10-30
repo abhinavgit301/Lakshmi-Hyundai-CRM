@@ -16,7 +16,7 @@ if (testFiles.length === 0) {
   throw new Error('No PostgreSQL integration test files were found.');
 }
 
-const child = spawn(process.execPath, ['--test', ...testFiles], {
+const child = spawn(process.execPath, ['--test', '--test-concurrency=1', ...testFiles], {
   cwd: serverDirectory,
   env: {
     ...process.env,

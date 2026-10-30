@@ -312,6 +312,7 @@ model ImportBatch {
   id                      String    @id @default(cuid())
   fileName                String
   importedByUserId        String?
+  ccmId                   String?
   idempotencyKey          String?   @unique
   contentHash             String?
   processingStartedAt     DateTime?
@@ -342,6 +343,7 @@ model ImportBatch {
   changes     ImportChangeLog[]
   rowProgress ImportRowProgress[]
 
+  @@index([ccmId, createdAt])
   @@map("import_batches")
 }
 

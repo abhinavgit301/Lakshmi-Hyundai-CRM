@@ -27,6 +27,15 @@ function roleName(role) {
   return String(role || '').toUpperCase();
 }
 
+export function importBatchAttribution(user, requestedCcmId) {
+  return {
+    importedByUserId: user.id,
+    ccmId: roleName(user.role) === 'CCM'
+      ? String(user.ccmId || '').trim() || null
+      : String(requestedCcmId || '').trim() || null,
+  };
+}
+
 function isSerializationConflict(error) {
   return error?.code === 'P2034'
     || (error?.code === 'P2010' && (
@@ -115,6 +124,7 @@ async function getTargetCcm(rowCcmId, user, defaultCcmId) {
 export async function importRepairOrders(req, res) {
   const fileName = path.basename(String(req.body?.fileName || 'repair-orders.csv')).slice(0, 255);
   const content = req.body?.content ?? req.body?.csvContent;
+  const { importedByUserId, ccmId: batchCcmId } = importBatchAttribution(req.user, req.body?.ccmId);
   if (typeof content !== 'string' || content.length > 1_800_000) {
     return res.status(400).json({ message: 'CSV content is required and must be smaller than 1.8 MB.' });
   }
@@ -130,7 +140,7 @@ export async function importRepairOrders(req, res) {
   const contentHash = createHash('sha256').update(JSON.stringify({
     fileName,
     content,
-    ccmId: String(req.user.ccmId || req.body?.ccmId || '').trim() || null,
+    ccmId: batchCcmId,
   })).digest('hex');
   if (idempotencyKey) {
     const existingBatch = await prisma.importBatch.findUnique({
@@ -162,7 +172,8 @@ export async function importRepairOrders(req, res) {
         data: {
           id: batchId,
           fileName,
-          importedByUserId: req.user.id,
+          importedByUserId,
+          ccmId: batchCcmId,
           idempotencyKey,
           contentHash,
           totalRows: parsed.rows.length,
@@ -530,14 +541,22 @@ export async function importRepairOrders(req, res) {
 }
 
 export async function getImportHistory(req, res) {
-  const where = roleName(req.user.role) === 'CCM'
-    ? { importedByUserId: req.user.id }
-    : {};
+  const role = roleName(req.user.role);
+  const requestedCcmId = role === 'ADMIN' ? String(req.query?.ccmId || '').trim() : '';
+  if (requestedCcmId.length > 255) {
+    return res.status(400).json({ message: 'ccmId must be 255 characters or fewer.' });
+  }
+  const where = {
+    ...(role === 'CCM' ? { importedByUserId: req.user.id } : {}),
+    ...(requestedCcmId ? { ccmId: requestedCcmId } : {}),
+  };
   const imports = await prisma.importBatch.findMany({
     where,
     select: {
       id: true,
       fileName: true,
+      importedByUserId: true,
+      ccmId: true,
       totalRows: true,
       createdRows: true,
       appendedRows: true,
@@ -565,6 +584,14 @@ export async function getImportHistory(req, res) {
     orderBy: { createdAt: 'desc' },
     take: 100,
   });
+  const importerIds = [...new Set(imports.map(({ importedByUserId }) => importedByUserId).filter(Boolean))];
+  const importers = importerIds.length
+    ? await prisma.user.findMany({
+      where: { id: { in: importerIds } },
+      select: { id: true, name: true, role: true },
+    })
+    : [];
+  const importerById = new Map(importers.map((importer) => [importer.id, importer]));
   const statsByBatch = await collectImportBatchStatsForIds(prisma, imports.map(({ id }) => id));
   const invalidatedChanges = imports.length
     ? await prisma.importChangeLog.findMany({
@@ -591,9 +618,13 @@ export async function getImportHistory(req, res) {
           causedByImportIds: [...invalidation.causes].sort(),
         }
         : null;
+      const importedBy = batch.importedByUserId
+        ? importerById.get(batch.importedByUserId) || { id: batch.importedByUserId, name: null, role: null }
+        : null;
       if (!batch.processingStartedAt) {
         return {
           ...batch,
+          importedBy,
           ...legacyImportHistoryProgress(batch),
           rollbackSupported: false,
           affectedCountsComplete: false,
@@ -602,6 +633,7 @@ export async function getImportHistory(req, res) {
       }
       return {
         ...batch,
+        importedBy,
         ...statsByBatch.get(batch.id),
         rowOutcomesProvenance: 'durable-row-progress',
         permanentDeletion,

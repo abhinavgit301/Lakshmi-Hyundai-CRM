@@ -1412,6 +1412,41 @@ tbody tr:hover td { background: #fafbfb; }
   line-height: 1.5;
 }
 
+.master-call-modal-card {
+  width: min(760px, 100%);
+  max-width: 760px;
+  max-height: min(90vh, 900px);
+  overflow-y: auto;
+}
+
+.master-call-modal-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.master-call-modal-heading h2 {
+  margin: 0;
+  color: var(--navy-900);
+  font-size: 1.2rem;
+}
+
+.master-call-modal-card .customer-action-panel {
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+}
+
+.master-call-modal-card .customer-action-panel > .panel-header {
+  display: none;
+}
+
+.master-call-modal-card .customer-form {
+  padding: 0;
+}
+
 .modal-warning {
   margin-top: 10px !important;
   color: #b3402b !important;
@@ -1677,6 +1712,12 @@ tbody tr:hover td { background: #fafbfb; }
 .next-action { border: 1px solid var(--slate-200); border-radius: 8px; padding: 10px 14px; display: flex; gap: 18px; flex-wrap: wrap; }
 .radio-option { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; }
 .radio-option input { width: auto; }
+
+@media (max-width: 640px) {
+  .master-call-modal-backdrop { padding: 10px; }
+  .master-call-modal-card { padding: 18px; }
+  .master-call-modal-card .form-grid { grid-template-columns: minmax(0, 1fr); }
+}
 
 .inline-filter { display: inline-flex; flex-direction: row; align-items: center; gap: 8px; font-size: 13px; color: var(--slate-600); }
 .inline-filter select { min-width: 180px; }

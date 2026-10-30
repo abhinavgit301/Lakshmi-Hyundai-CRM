@@ -38,6 +38,17 @@ const viewByRoute = Object.fromEntries(Object.entries(routeByView).map(([view, p
 
 function resolveRoute(pathname) {
   const path = pathname.replace(/\/+$/, '') || '/';
+  const customerProfileMatch = path.match(/^\/customers\/([^/]+)$/);
+  if (customerProfileMatch) {
+    const customerId = (() => {
+      try {
+        return decodeURIComponent(customerProfileMatch[1]);
+      } catch {
+        return '';
+      }
+    })();
+    return { view: 'CustomerProfile', customerId, ccmId: '' };
+  }
   const monthlyDataMatch = path.match(/^\/monthly-data(?:\/([^/]+))?$/);
   if (monthlyDataMatch) {
     let ccmId = monthlyDataMatch[1] || '';
@@ -59,6 +70,7 @@ function pathForView(view, ccmId = '') {
 function canAccessRoute(view, role, user, ccmId = '') {
   const teamRoles = ['CCM', 'CRE'];
   const commonRoutes = ['Dashboard'];
+  if (view === 'CustomerProfile') return Boolean(user) && ['ADMIN', 'GM', 'CCM', 'CRE'].includes(role);
   if (commonRoutes.includes(view)) return true;
   if (view === 'Master list') return teamRoles.includes(role);
   if (view === 'Customers') return teamRoles.includes(role);
@@ -248,7 +260,8 @@ function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
-  const activeView = resolveRoute(location.pathname).view;
+  const activeRoute = resolveRoute(location.pathname);
+  const activeView = activeRoute.view;
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -272,6 +285,8 @@ function App() {
   const [masterEntrySaving, setMasterEntrySaving] = useState(false);
   const [customerProfile, setCustomerProfile] = useState(null);
   const [customerProfileVehicleId, setCustomerProfileVehicleId] = useState('');
+  const [customerProfileLoading, setCustomerProfileLoading] = useState(false);
+  const [customerProfileError, setCustomerProfileError] = useState('');
   const [masterEntryForm, setMasterEntryForm] = useState({
     serialNo: '',
     roNumber: '',
@@ -424,6 +439,7 @@ function App() {
   const userFormCloseButtonRef = useRef(null);
   const userFormCloseTimerRef = useRef(null);
   const previousUserFormFocusRef = useRef(null);
+  const customerCallModalRef = useRef(null);
   const userSavingRef = useRef(false);
   const importRequestKeyRef = useRef(null);
   const lastLoadedRouteKeyRef = useRef('');
@@ -1029,11 +1045,18 @@ function App() {
     }
   }
 
+  function scrollCustomerActionPanelIntoView() {
+    window.requestAnimationFrame(() => {
+      document.querySelector('.customer-action-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }
+
   function startCall(customer, vehicleId, { callSource = 'SERVICE', milestoneId = '' } = {}) {
     setCallError('');
     setCallMessage('');
     setCallForm({ customerId: customer.id, vehicleId: vehicleId || customer.vehicles?.[0]?.id || '', outcome: 'CONTACTED', notes: '', nextAction: 'none', scheduledAt: '', callSource, milestoneId });
     setCustomerPanel({ customerId: customer.id, mode: 'call' });
+    if (activeView !== 'Master list') scrollCustomerActionPanelIntoView();
   }
 
   async function startCallFromMasterRecord(record) {
@@ -1115,45 +1138,57 @@ function App() {
     setTimeout(() => document.querySelector('.customer-action-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
   }
 
-  async function openCustomerProfile(customer) {
-    const hasCustomerId = Boolean(customer.customerId || (!Object.hasOwn(customer, 'customerId') && customer.id));
-    const customerId = customer.customerId || (!Object.hasOwn(customer, 'customerId') ? customer.id : null);
-    const profileId = customerId || customer.id || 'customer-profile-unlinked';
-    const fallback = {
-      ...customer,
-      id: profileId,
-      customerId,
-      fullName: customer.fullName || customer.name || customer.customerName || 'Customer',
-      mobileNumber: customer.mobileNumber || customer.mobile || '',
-      visits: customer.visits || customer.workshopVisits || [],
-    };
-    setCustomerProfile(fallback);
-    setCustomerProfileVehicleId(customer.vehicleId || '');
-    setCustomerPanel({ customerId: profileId, mode: 'profile' });
-    setCallError('');
+  async function loadCustomerProfile(customerId) {
+    if (!customerId) {
+      setCustomerProfileError('This customer does not have a profile linked to the CRM.');
+      setCustomerProfileLoading(false);
+      return;
+    }
+    setCustomerProfileLoading(true);
+    setCustomerProfileError('');
+    setCustomerProfile(null);
+    setCustomerPanel({ customerId, mode: 'profile' });
+    setCallLogs([]);
     setCallLogsLoading(true);
-    const customerRequest = hasCustomerId && !customers.some((entry) => entry.id === customerId)
-      ? api.get('/customers')
-      : Promise.resolve(null);
-    const callLogRequest = api.get(`/call-logs${customerId ? `?customerId=${encodeURIComponent(customerId)}` : ''}`);
-    const [customerResult, callLogResult] = await Promise.allSettled([customerRequest, callLogRequest]);
-    if (customerResult.status === 'fulfilled' && customerResult.value) {
+    const [customerResult, callLogResult] = await Promise.allSettled([
+      api.get('/customers'),
+      api.get(`/call-logs?customerId=${encodeURIComponent(customerId)}`),
+    ]);
+    if (customerResult.status === 'fulfilled') {
       const availableCustomers = customerResult.value.data.customers || [];
       setCustomers(availableCustomers);
       const matchedCustomer = availableCustomers.find((entry) => entry.id === customerId);
-      setCustomerProfile(matchedCustomer ? { ...matchedCustomer, customerId } : fallback);
-    } else if (customerResult.status === 'rejected') {
-      setCallError(customerResult.reason.response?.data?.message || 'Could not load imported customer and repair details.');
+      if (matchedCustomer) {
+        setCustomerProfile({ ...matchedCustomer, customerId });
+      } else {
+        setCustomerProfileError('This customer is not available to your account.');
+      }
     } else {
-      const matchedCustomer = customers.find((entry) => entry.id === customerId);
-      setCustomerProfile(matchedCustomer ? { ...matchedCustomer, customerId } : fallback);
+      setCustomerProfileError(customerResult.reason.response?.data?.message || 'Could not load this customer profile.');
     }
     if (callLogResult.status === 'fulfilled') {
       setCallLogs(callLogResult.value.data.callLogs || []);
     } else {
-      setCallError(callLogResult.reason.response?.data?.message || 'Could not load call history.');
+      setCustomerProfileError((current) => current || callLogResult.reason.response?.data?.message || 'Could not load call history.');
     }
+    setCustomerProfileLoading(false);
     setCallLogsLoading(false);
+  }
+
+  async function openCustomerProfile(customer) {
+    const hasCustomerId = Boolean(customer.customerId || (!Object.hasOwn(customer, 'customerId') && customer.id));
+    const customerId = customer.customerId || (!Object.hasOwn(customer, 'customerId') ? customer.id : null);
+    if (!hasCustomerId || !customerId) {
+      const message = 'This master-list record is not linked to a customer profile.';
+      if (activeView === 'Master list') setMasterListError(message);
+      else setCallError(message);
+      return;
+    }
+    setMasterListError('');
+    setCustomerProfileError('');
+    setCustomerProfileVehicleId(customer.vehicleId || '');
+    navigate(`/customers/${encodeURIComponent(customerId)}`);
+    await loadCustomerProfile(customerId);
   }
 
   function callFromFollowUp(followUp, vehicleId) {
@@ -2017,11 +2052,21 @@ function App() {
 
   function renderCustomerActionPanel() {
     if (!panelCustomer) return null;
-    return (
+    const isMasterCallModal = activeView === 'Master list' && customerPanel.mode === 'call';
+    const panelContents = (
       <section className="panel customer-action-panel">
         <div className="panel-header">
           <h3>{panelCustomer.name || panelCustomer.fullName}</h3>
-          <button type="button" className="outline-btn compact-btn" onClick={() => setCustomerPanel({ customerId: null, mode: 'options' })}>Close</button>
+          {!isMasterCallModal && <button
+            type="button"
+            className="outline-btn compact-btn"
+            data-call-modal-close
+            onClick={() => {
+              if (callSaving) return;
+              if (activeView === 'CustomerProfile') navigate(-1);
+              else setCustomerPanel({ customerId: null, mode: 'options' });
+            }}
+          >{activeView === 'CustomerProfile' ? 'Back' : 'Close'}</button>}
         </div>
         {customerPanel.mode === 'options' && (
           <div className="customer-options">
@@ -2031,6 +2076,8 @@ function App() {
         )}
         {customerPanel.mode === 'call' && (
           <form className="customer-form" onSubmit={submitCall}>
+            {callError && <p className="form-alert error" role="alert">{callError}</p>}
+            {callMessage && <p className="form-alert success" role="status">{callMessage}</p>}
             <p className="call-number">
               {panelCustomer.mobile || panelCustomer.mobileNumber
                 ? <a className="primary-btn" href={`tel:${panelCustomer.mobile || panelCustomer.mobileNumber}`}><PhoneCall size={16} aria-hidden="true" /> {panelCustomer.mobile || panelCustomer.mobileNumber}</a>
@@ -2065,7 +2112,14 @@ function App() {
               )}
             </div>
             <div className="form-actions">
-              <button type="button" className="outline-btn" onClick={() => setCustomerPanel({ customerId: panelCustomer.id, mode: 'options' })}>Back</button>
+              <button
+                type="button"
+                className="outline-btn"
+                disabled={callSaving}
+                onClick={() => setCustomerPanel(isMasterCallModal
+                  ? { customerId: null, mode: 'options' }
+                  : { customerId: panelCustomer.id, mode: 'options' })}
+              >{isMasterCallModal ? 'Cancel' : 'Back'}</button>
               <button type="submit" className="primary-btn" disabled={callSaving}>{callSaving ? 'Saving…' : 'Save call'}</button>
             </div>
           </form>
@@ -2127,6 +2181,33 @@ function App() {
           </div>
         )}
       </section>
+    );
+    if (!isMasterCallModal) return panelContents;
+    return (
+      <div
+        className="modal-backdrop master-call-modal-backdrop"
+        role="presentation"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !callSaving) setCustomerPanel({ customerId: null, mode: 'options' });
+        }}
+      >
+        <div
+          ref={customerCallModalRef}
+          className="modal-card master-call-modal-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="master-call-modal-title"
+          tabIndex={-1}
+        >
+          <div className="master-call-modal-heading">
+            <h2 id="master-call-modal-title">Log customer call</h2>
+            <button type="button" className="icon-btn" aria-label="Close call dialog" disabled={callSaving} onClick={() => setCustomerPanel({ customerId: null, mode: 'options' })}>
+              <X size={18} aria-hidden="true" />
+            </button>
+          </div>
+          {panelContents}
+        </div>
+      </div>
     );
   }
   // Sidebar entries that expand into sub-pages; the parent only toggles, the children navigate.
@@ -2466,6 +2547,10 @@ function App() {
           openCcmProfile(ccm || { ccmId, name: `CCM ${ccmId}` });
         }
       },
+      CustomerProfile: (_ccmId, customerId) => {
+        setCustomerProfileVehicleId('');
+        loadCustomerProfile(customerId);
+      },
     };
   });
 
@@ -2477,7 +2562,9 @@ function App() {
     }
 
     const route = resolveRoute(location.pathname);
-    const canonicalPath = pathForView(route.view, route.ccmId);
+    const canonicalPath = route.view === 'CustomerProfile' && route.customerId
+      ? `/customers/${encodeURIComponent(route.customerId)}`
+      : pathForView(route.view, route.ccmId);
     if (location.pathname === '/' || location.pathname === '/login' || canonicalPath !== location.pathname) {
       navigate(route.view === 'CcmProfile' && !route.ccmId ? '/dashboard' : canonicalPath, { replace: true });
       return;
@@ -2491,7 +2578,7 @@ function App() {
       && (route.view !== 'Dashboard' || location.key !== 'default')
       && lastLoadedRouteKeyRef.current !== routeKey) {
       lastLoadedRouteKeyRef.current = routeKey;
-      routeActionsRef.current[route.view]?.(route.ccmId);
+      routeActionsRef.current[route.view]?.(route.ccmId, route.customerId);
     }
   }, [
     authChecked,
@@ -2502,6 +2589,18 @@ function App() {
     navigate,
     navigationType,
   ]);
+
+  useEffect(() => {
+    if (activeView !== 'Master list' || customerPanel.mode !== 'call') return undefined;
+    customerCallModalRef.current?.focus();
+    function handleCallModalKeyDown(event) {
+      if (event.key === 'Escape' && !callSaving) {
+        setCustomerPanel({ customerId: null, mode: 'options' });
+      }
+    }
+    document.addEventListener('keydown', handleCallModalKeyDown);
+    return () => document.removeEventListener('keydown', handleCallModalKeyDown);
+  }, [activeView, callSaving, customerPanel.mode]);
 
   if (!authChecked) {
     return <main className="auth-loading" aria-live="polite">Checking session…</main>;
@@ -2610,13 +2709,15 @@ function App() {
       <main className="main-panel">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{activeView === 'Free-Service Import' ? 'Free Service' : activeView.startsWith('Free-Service Customer') ? 'Free-Service customers' : activeView.startsWith('Free-Service Follow-up') ? 'Free-Service follow-up' : activeView in dueViews ? 'Service follow-up' : activeView in followUpViews ? 'Next actions' : activeView === 'Performance Board' ? 'Team activity' : activeView === 'User Management' ? 'Administration' : activeView === 'CcmProfile' ? 'CCM profile' : activeView === 'Master list' ? 'Customer follow-up' : activeView === 'Customers' ? 'Customer records' : activeView === 'Follow-ups' ? 'Next actions' : activeView === 'Appointments' ? 'Workshop schedule' : activeView === 'Allocations' ? 'CRE workload' : activeView === 'Imports' ? 'Repair orders' : activeView === 'Performance' ? 'Your activity' : activeView === 'Reports' ? 'CRM activity' : activeView === 'Workshop Performance' ? 'Service analytics' : 'Overview'}</p>
-            <h2>{activeView === 'Free-Service Import' ? 'Import' : activeView.startsWith('Free-Service Customer') ? activeView.replace('Free-Service Customer · ', '') : activeView.startsWith('Free-Service Follow-up') ? `Follow-up · ${activeView.replace('Free-Service Follow-up · ', '')}` : activeView in dueViews ? dueViews[activeView].label : activeView in followUpViews ? `Follow-ups · ${followUpViews[activeView].label}` : activeView === 'Performance Board' ? 'Performance Board' : activeView === 'User Management' ? 'User Management' : activeView === 'CcmProfile' ? selectedCcm?.name || 'Monthly Customer Data' : activeView === 'Master list' ? 'Master call list' : activeView === 'Customers' ? 'Customers and vehicles' : activeView === 'Follow-ups' ? 'Follow-up queue' : activeView === 'Appointments' ? 'Appointments' : activeView === 'Allocations' ? 'Vehicle allocations' : activeView === 'Imports' ? 'Repair-order imports' : activeView === 'Performance' ? 'Performance' : activeView === 'Reports' ? 'Reports' : activeView === 'Workshop Performance' ? 'Workshop Performance' : 'Service operations dashboard'}</h2>
+            <p className="eyebrow">{activeView === 'Free-Service Import' ? 'Free Service' : activeView.startsWith('Free-Service Customer') ? 'Free-Service customers' : activeView.startsWith('Free-Service Follow-up') ? 'Free-Service follow-up' : activeView in dueViews ? 'Service follow-up' : activeView in followUpViews ? 'Next actions' : activeView === 'Performance Board' ? 'Team activity' : activeView === 'User Management' ? 'Administration' : activeView === 'CcmProfile' ? 'CCM profile' : activeView === 'CustomerProfile' ? 'Customer record' : activeView === 'Master list' ? 'Customer follow-up' : activeView === 'Customers' ? 'Customer records' : activeView === 'Follow-ups' ? 'Next actions' : activeView === 'Appointments' ? 'Workshop schedule' : activeView === 'Allocations' ? 'CRE workload' : activeView === 'Imports' ? 'Repair orders' : activeView === 'Performance' ? 'Your activity' : activeView === 'Reports' ? 'CRM activity' : activeView === 'Workshop Performance' ? 'Service analytics' : 'Overview'}</p>
+            <h2>{activeView === 'Free-Service Import' ? 'Import' : activeView.startsWith('Free-Service Customer') ? activeView.replace('Free-Service Customer · ', '') : activeView.startsWith('Free-Service Follow-up') ? `Follow-up · ${activeView.replace('Free-Service Follow-up · ', '')}` : activeView in dueViews ? dueViews[activeView].label : activeView in followUpViews ? `Follow-ups · ${followUpViews[activeView].label}` : activeView === 'Performance Board' ? 'Performance Board' : activeView === 'User Management' ? 'User Management' : activeView === 'CcmProfile' ? selectedCcm?.name || 'Monthly Customer Data' : activeView === 'CustomerProfile' ? customerProfile?.name || customerProfile?.fullName || 'Customer profile' : activeView === 'Master list' ? 'Master call list' : activeView === 'Customers' ? 'Customers and vehicles' : activeView === 'Follow-ups' ? 'Follow-up queue' : activeView === 'Appointments' ? 'Appointments' : activeView === 'Allocations' ? 'Vehicle allocations' : activeView === 'Imports' ? 'Repair-order imports' : activeView === 'Performance' ? 'Performance' : activeView === 'Reports' ? 'Reports' : activeView === 'Workshop Performance' ? 'Workshop Performance' : 'Service operations dashboard'}</h2>
           </div>
           {activeView === 'User Management' ? (
             <button type="button" className="primary-btn" onClick={() => startUserEdit()}><Plus size={16} aria-hidden="true" />New Account</button>
           ) : activeView === 'CcmProfile' ? (
             <button type="button" className="outline-btn" onClick={() => setActiveView(currentRole === 'ADMIN' ? 'User Management' : 'Dashboard')}><ArrowLeft size={16} aria-hidden="true" />{currentRole === 'ADMIN' ? 'Users' : 'Dashboard'}</button>
+          ) : activeView === 'CustomerProfile' ? (
+            <button type="button" className="outline-btn" onClick={() => navigate(-1)}><ArrowLeft size={16} aria-hidden="true" />Back</button>
           ) : activeView in followUpViews ? (
             <span className="live-indicator">{followUpsLoading ? 'Loading…' : `${followUps.length} pending`}</span>
           ) : activeView === 'Allocations' ? (
@@ -2806,6 +2907,15 @@ function App() {
                 {!managedUsersLoading && managedUsers.length === 0 && <tr><td colSpan="8" className="empty-state">No managed accounts found.</td></tr>}
               </tbody></table></div>
             </section>
+          </section>
+        ) : activeView === 'CustomerProfile' ? (
+          <section className="customer-workspace">
+            {customerProfileLoading && <p className="performance-note" role="status">Loading customer profile…</p>}
+            {customerProfileError && <p className="form-alert error" role="alert">{customerProfileError}</p>}
+            {!customerProfileLoading && !customerProfileError && !customerProfile && (
+              <p className="empty-state">Customer profile is not available.</p>
+            )}
+            {renderCustomerActionPanel()}
           </section>
         ) : activeView === 'CcmProfile' ? (
           <section className="customer-workspace">
@@ -3546,8 +3656,8 @@ function App() {
                 emptyMessage: 'No matching customers found. Try adjusting or clearing the active filters.',
               })}
             </section>
-            {callError && <p className="form-alert error" role="alert">{callError}</p>}
-            {callMessage && <p className="form-alert success" role="status">{callMessage}</p>}
+            {callError && customerPanel.mode !== 'call' && <p className="form-alert error" role="alert">{callError}</p>}
+            {callMessage && customerPanel.mode !== 'call' && <p className="form-alert success" role="status">{callMessage}</p>}
             {renderCustomerActionPanel()}
           </section>
         ) : activeView === 'Customers' || activeView in followUpViews || activeView in dueViews ? (

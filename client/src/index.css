@@ -1166,6 +1166,10 @@ tbody tr:hover td { background: #fafbfb; }
 .customer-profile-phone { display: inline-flex; align-items: center; gap: 7px; color: var(--navy-700); text-decoration: none; font-weight: 600; }
 .customer-profile-phone:hover { text-decoration: underline; }
 .customer-profile-email { color: var(--slate-600); font-size: 0.84rem; overflow-wrap: anywhere; }
+.customer-profile-customer-details { display: grid; width: 100%; gap: 7px; margin: 2px 0 0; }
+.customer-profile-customer-details > div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 8px; }
+.customer-profile-customer-details dt { color: var(--text-muted); font-size: 0.72rem; font-weight: 600; }
+.customer-profile-customer-details dd { margin: 0; color: var(--navy-900); font-size: 0.78rem; overflow-wrap: anywhere; }
 .customer-profile-call-btn { margin-top: 6px; }
 .customer-profile-vehicles { display: grid; align-content: start; gap: 10px; min-width: 0; }
 .customer-profile-vehicles > h4 { margin: 0; color: var(--navy-900); font-family: 'Manrope', sans-serif; font-size: 0.95rem; }

@@ -172,6 +172,22 @@ function formatDate(value) {
   return value ? new Date(value).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 }
 
+function sortRepairOrderVisits(visits = []) {
+  return [...visits].sort((left, right) => {
+    const leftDate = new Date(left.visitDate || left.importedDetails?.visitDate || left.importedDetails?.roDate || '').getTime();
+    const rightDate = new Date(right.visitDate || right.importedDetails?.visitDate || right.importedDetails?.roDate || '').getTime();
+    const leftHasDate = Number.isFinite(leftDate);
+    const rightHasDate = Number.isFinite(rightDate);
+    if (leftHasDate !== rightHasDate) return leftHasDate ? -1 : 1;
+    if (leftHasDate && leftDate !== rightDate) return rightDate - leftDate;
+    const leftRepairOrder = String(left.repairOrderNo || left.importedDetails?.roNumber || '').trim();
+    const rightRepairOrder = String(right.repairOrderNo || right.importedDetails?.roNumber || '').trim();
+    if (leftRepairOrder < rightRepairOrder) return -1;
+    if (leftRepairOrder > rightRepairOrder) return 1;
+    return String(left.vehicleId || '').localeCompare(String(right.vehicleId || ''));
+  });
+}
+
 function formatOutcome(outcome) {
   return outcome ? outcome.replaceAll('_', ' ').toLowerCase() : '';
 }
@@ -219,6 +235,23 @@ function formatVehicleAge(totalMonths) {
   const years = Math.floor(totalMonths / 12);
   const months = totalMonths % 12;
   return `${years} yr ${months} mo`;
+}
+
+function getLatestImportedDetails(visits) {
+  return [...visits].reverse().reduce((details, visit) => {
+    Object.entries(visit.importedDetails || {}).forEach(([key, value]) => {
+      if (value != null && String(value).trim() !== '') details[key] = value;
+    });
+    return details;
+  }, {});
+}
+
+function getImportedDetail(details, ...keys) {
+  const wantedKeys = new Set(keys.map((key) => key.toLowerCase().replace(/[^a-z0-9]/g, '')));
+  const match = Object.entries(details).find(([key, value]) =>
+    wantedKeys.has(key.toLowerCase().replace(/[^a-z0-9]/g, '')) && value != null && String(value).trim() !== '',
+  );
+  return match?.[1];
 }
 
 function ImportErrors({ errors }) {
@@ -2132,7 +2165,7 @@ function App() {
                   {['CONTACTED', 'NOT_INTERESTED', 'WRONG_NUMBER', 'NO_RESPONSE', 'OTHER'].map((outcome) => <option key={outcome} value={outcome}>{formatOutcome(outcome).replace(/\b\w/g, (letter) => letter.toUpperCase())}</option>)}
                 </select>
               </label>
-              <label className="full-width-field">Call notes <span className="call-modal-optional">Required</span><textarea required rows="3" maxLength="2000" value={callForm.notes} onChange={(event) => setCallForm({ ...callForm, notes: event.target.value })} placeholder="Summarize the conversation and any important customer feedback." /></label>
+              <label className="full-width-field"><span>Feedback <span className="call-modal-optional">(Required)</span></span><textarea required rows="3" maxLength="2000" value={callForm.notes} onChange={(event) => setCallForm({ ...callForm, notes: event.target.value })} placeholder="Summarize the conversation and any important customer feedback." /></label>
               <fieldset className="full-width-field next-action call-modal-next-action">
                 <legend>What happens next?</legend>
                 {[['none', 'No further action'], ['followup', 'Arrange follow-up'], ['appointment', 'Arrange appointment']].map(([value, label]) => (
@@ -2172,7 +2205,7 @@ function App() {
               {!panelCustomer.vehicles?.length && <tr><td colSpan="3" className="empty-state">No vehicle details available.</td></tr>}
             </tbody></table></div>
             <h4>Repair history</h4>
-            {(panelCustomer.visits || []).map((visit) => (
+            {sortRepairOrderVisits(panelCustomer.visits || []).map((visit) => (
               <div key={visit.repairOrderNo || visit.visitDate}>
                 <h4>Repair order {visit.repairOrderNo || '—'}{visit.visitDate ? ` · ${new Date(visit.visitDate).toLocaleDateString()}` : ''}</h4>
                 <dl className="master-detail-grid">
@@ -2254,7 +2287,9 @@ function App() {
     const profileMobile = customerProfile.mobile || customerProfile.mobileNumber || '';
     const vehicles = customerProfile.vehicles || [];
     const profileCalls = callLogs.filter((call) => call.customer?.id === customerProfile.id || call.customerId === customerProfile.id);
-    const serviceVisits = customerProfile.visits || customerProfile.workshopVisits || [];
+    const serviceVisits = sortRepairOrderVisits(customerProfile.visits || customerProfile.workshopVisits || []);
+    const customerImportedDetails = getLatestImportedDetails(serviceVisits);
+    const profileEmail = getImportedDetail(customerImportedDetails, 'email', 'e-mail') || customerProfile.email;
 
     return (
       <>
@@ -2269,7 +2304,16 @@ function App() {
               {profileMobile
                 ? <a className="customer-profile-phone" href={`tel:${profileMobile}`}><PhoneCall size={15} aria-hidden="true" />{profileMobile}</a>
                 : <span className="performance-note">No phone number on file</span>}
-              {customerProfile.email && <span className="customer-profile-email">{customerProfile.email}</span>}
+              {profileEmail && <span className="customer-profile-email">{profileEmail}</span>}
+              <dl className="customer-profile-customer-details">
+                {[
+                  ['Address', getImportedDetail(customerImportedDetails, 'address')],
+                  ['City', getImportedDetail(customerImportedDetails, 'city')],
+                  ['PIN', getImportedDetail(customerImportedDetails, 'pin', 'pinCode')],
+                ].filter(([, value]) => value != null && value !== '').map(([label, value]) => (
+                  <div key={label}><dt>{label}</dt><dd>{String(value)}</dd></div>
+                ))}
+              </dl>
               {currentRole === 'CRE' && (
                 <button
                   type="button"
@@ -2287,24 +2331,23 @@ function App() {
             <h4>Vehicle details</h4>
             {vehicles.map((vehicle) => {
               const vehicleVisits = serviceVisits.filter((visit) => visit.vehicleId === vehicle.id && visit.importedDetails);
-              const details = vehicleVisits.slice().reverse().reduce((combined, visit) => ({
-                ...combined,
-                ...visit.importedDetails,
-              }), {});
+              const details = getLatestImportedDetails(vehicleVisits);
               const allocations = vehicle.allocations || [];
               const vehicleFields = [
-                ['Make', vehicle.make],
-                ['Model', vehicle.model || details.model],
-                ['Variant', vehicle.variant || details.variant],
-                ['Registration', vehicle.registrationNumber || details.registrationNumber],
-                ['VIN', vehicle.vin || details.vin],
-                ['Year', vehicle.year],
+                ['Make', getImportedDetail(details, 'make') || vehicle.make],
+                ['Model', getImportedDetail(details, 'model') || vehicle.model],
+                ['Variant', getImportedDetail(details, 'variant') || vehicle.variant],
+                ['Registration', getImportedDetail(details, 'registrationNumber', 'regNo') || vehicle.registrationNumber],
+                ['VIN', getImportedDetail(details, 'vin') || vehicle.vin],
+                ['Year', getImportedDetail(details, 'year', 'vehicleYear') || vehicle.year],
+                ['Vehicle age', formatVehicleAge(vehicle.vehicleAgeMonths)],
                 ['Status', vehicle.status],
-                ['Sale date', vehicle.saleDate ? formatDate(vehicle.saleDate) : details.saleDate],
-                ['Mileage', details.mileage],
-                ['Selling dealer', details.saleDealer || details.sellingDealer],
-                ['UC sale dealer', details.ucSaleDealer],
-                ['UC sale date', details.ucSaleDate],
+                ['Sale date', getImportedDetail(details, 'saleDate') || (vehicle.saleDate ? formatDate(vehicle.saleDate) : '')],
+                ['Mileage', getImportedDetail(details, 'mileage') || getImportedDetail(customerImportedDetails, 'mileage')],
+                ['Sale dealer', getImportedDetail(details, 'saleDealer', 'sellingDealer') || getImportedDetail(customerImportedDetails, 'saleDealer', 'sellingDealer')],
+                ['Service advisor', getImportedDetail(details, 'serviceAdvisor', 'advisorName') || getImportedDetail(customerImportedDetails, 'serviceAdvisor', 'advisorName')],
+                ['UC sale dealer', getImportedDetail(details, 'ucSaleDealer') || getImportedDetail(customerImportedDetails, 'ucSaleDealer')],
+                ['UC sale date', getImportedDetail(details, 'ucSaleDate') || getImportedDetail(customerImportedDetails, 'ucSaleDate')],
                 ['Assigned CRE', allocations.map((allocation) => allocation.cre?.name || allocation.cre?.username || allocation.creId).filter(Boolean).join(', ')],
                 ['CCM', allocations.map((allocation) => allocation.ccm?.name || allocation.ccmId).filter(Boolean).join(', ')],
               ].filter(([, value]) => value != null && value !== '');
@@ -2366,7 +2409,14 @@ function App() {
                   {serviceVisits.map((visit, index) => {
                     const details = visit.importedDetails || {};
                     const visitId = `${visit.repairOrderNo || 'repair'}-${visit.visitDate || index}`;
-                    const detailEntries = Object.entries(details).filter(([, value]) => value != null && value !== '');
+                    const detailEntries = [
+                      ['Repair Order', visit.repairOrderNo || getImportedDetail(details, 'roNumber', 'repairOrderNo')],
+                      ['G.P. Date', visit.gpDate || getImportedDetail(details, 'gpDate')],
+                      ['R/O Date', visit.visitDate || getImportedDetail(details, 'visitDate', 'roDate')],
+                      ['Closing Date', visit.closingDate || getImportedDetail(details, 'closingDate')],
+                      ['Tech.', getImportedDetail(details, 'technician', 'tech')],
+                      ['Status', getImportedDetail(details, 'serviceStatus', 'status')],
+                    ];
                     return (
                       <Fragment key={visitId}>
                         <tr>
@@ -2377,18 +2427,16 @@ function App() {
                           <td>{details.mileage || '—'}</td>
                           <td>{visit.totalAmount ?? '—'}</td>
                           <td>
-                            {detailEntries.length > 0 && (
-                              <button
-                                type="button"
-                                className="text-link customer-profile-details-toggle"
-                                aria-expanded={expandedServiceVisit === visitId}
-                                aria-controls={`service-details-${index}`}
-                                onClick={() => setExpandedServiceVisit((current) => current === visitId ? null : visitId)}
-                              >{expandedServiceVisit === visitId ? 'Hide details' : `View details (${detailEntries.length})`}</button>
-                            )}
+                            <button
+                              type="button"
+                              className="text-link customer-profile-details-toggle"
+                              aria-expanded={expandedServiceVisit === visitId}
+                              aria-controls={`service-details-${index}`}
+                              onClick={() => setExpandedServiceVisit((current) => current === visitId ? null : visitId)}
+                            >{expandedServiceVisit === visitId ? 'Hide details' : 'View details'}</button>
                           </td>
                         </tr>
-                        {expandedServiceVisit === visitId && detailEntries.length > 0 && (
+                        {expandedServiceVisit === visitId && (
                           <tr className="customer-profile-expanded-row">
                             <td colSpan="7">
                               <section className="customer-profile-expanded-details" id={`service-details-${index}`} aria-label={`Imported details for repair order ${visit.repairOrderNo || ''}`}>
@@ -2397,11 +2445,10 @@ function App() {
                                     <p className="eyebrow">Repair order details</p>
                                     <h4>{visit.repairOrderNo || 'Service visit'}</h4>
                                   </div>
-                                  <span>{detailEntries.length} imported fields</span>
                                 </div>
                                 <dl className="customer-profile-import-grid">
                                   {detailEntries.map(([key, value]) => (
-                                    <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>
+                                    <div key={key}><dt>{key}</dt><dd>{value == null || value === '' ? '—' : String(value)}</dd></div>
                                   ))}
                                 </dl>
                               </section>
@@ -2419,13 +2466,13 @@ function App() {
             <div role="tabpanel" className="table-scroll">
               {callLogsLoading && <p className="performance-note" role="status">Loading call history…</p>}
               <table>
-                <thead><tr><th>Date and time</th><th>Outcome</th><th>CRE</th><th>Feedback</th></tr></thead>
+                <thead><tr><th>Date and time</th><th>Outcome</th><th>Next action</th><th>Feedback</th></tr></thead>
                 <tbody>
                   {profileCalls.map((call) => (
                     <tr key={call.id}>
                       <td>{new Date(call.createdAt).toLocaleString()}</td>
                       <td>{call.outcome.replaceAll('_', ' ')}</td>
-                      <td>{call.assignee?.name || call.creator?.name || '—'}</td>
+                      <td>{call.followUpAt || call.outcome === 'FOLLOW_UP_LATER' ? 'Follow-up' : call.outcome === 'APPOINTMENT_SET' ? 'Appointment' : '—'}</td>
                       <td>{call.notes || '—'}</td>
                     </tr>
                   ))}

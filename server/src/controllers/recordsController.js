@@ -456,7 +456,10 @@ export async function loadCallListRecords(where, now = new Date()) {
       vehicle: {
         include: {
           workshopVisits: {
-            orderBy: { createdAt: 'desc' },
+            orderBy: [
+              { visitDate: { sort: 'desc', nulls: 'last' } },
+              { repairOrderNo: 'asc' },
+            ],
             select: {
               repairOrderNo: true,
               visitDate: true,
@@ -943,7 +946,10 @@ export async function getCustomers(req, res) {
         },
       },
       visits: {
-        orderBy: { visitDate: 'desc' },
+        orderBy: [
+          { visitDate: { sort: 'desc', nulls: 'last' } },
+          { repairOrderNo: 'asc' },
+        ],
         select: {
           vehicleId: true,
           repairOrderNo: true,
@@ -957,6 +963,7 @@ export async function getCustomers(req, res) {
     },
     orderBy: { createdAt: 'desc' },
   });
+  const now = new Date();
 
   return res.json({
     customers: rows.map((customer) => ({
@@ -967,7 +974,10 @@ export async function getCustomers(req, res) {
       ccmId: customer.ccmId,
       email: customer.email,
       vehicleCount: customer.vehicles?.length || 0,
-      vehicles: customer.vehicles || [],
+      vehicles: (customer.vehicles || []).map((vehicle) => ({
+        ...vehicle,
+        vehicleAgeMonths: getAgeInMonths(vehicle.saleDate, now),
+      })),
       visits: customer.visits || [],
     })),
   });

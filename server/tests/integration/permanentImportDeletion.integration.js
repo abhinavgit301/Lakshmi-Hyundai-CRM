@@ -457,6 +457,46 @@ test('PostgreSQL permanent deletion cascades dependencies, restores shared state
   assert.deepEqual(await prisma.workshopVisit.findMany({ where: { id: { in: fixtureIds.visits } } }), []);
 });
 
+test('PostgreSQL permanent deletion tolerates already-missing imported customer and vehicle records', async () => {
+  const { admin, targetBatch, previousCustomer, created } = await seedCascadeFixture();
+  await prisma.$transaction(async (transaction) => {
+    await transaction.appointmentEvent.deleteMany({ where: { id: { in: fixtureIds.appointmentEvents } } });
+    await transaction.callLog.deleteMany({ where: { id: { in: fixtureIds.calls } } });
+    await transaction.followUp.deleteMany({ where: { id: { in: fixtureIds.followUps } } });
+    await transaction.appointment.deleteMany({ where: { id: { in: fixtureIds.appointments } } });
+    await transaction.vehicleOwnershipHistory.deleteMany({ where: { id: { in: fixtureIds.ownership } } });
+    await transaction.allocation.deleteMany({ where: { id: { in: fixtureIds.allocations } } });
+    await transaction.workshopVisit.deleteMany({ where: { id: { in: fixtureIds.visits } } });
+    await transaction.masterCallList.deleteMany({ where: { id: { in: fixtureIds.callLists } } });
+    await transaction.monthlyCustomerDataEntry.deleteMany({ where: { id: { in: fixtureIds.monthlyEntries } } });
+    await transaction.freeServiceMilestone.deleteMany({ where: { id: { in: fixtureIds.milestones } } });
+    await transaction.vINConflictReview.deleteMany({ where: { id: { in: fixtureIds.vinReviews } } });
+    await transaction.vehicle.delete({ where: { id: created.vehicle.id } });
+    await transaction.customer.delete({ where: { id: created.customer.id } });
+  });
+
+  const preview = await previewPermanentImportDeletion(targetBatch.id);
+  assert.deepEqual(
+    preview.recordsAlreadyAbsent.map(({ entityType }) => entityType),
+    ['Customer', 'MasterCallList', 'Vehicle', 'WorkshopVisit'],
+  );
+  assert.equal(preview.directlyAffectedRecords, 0);
+  const result = await permanentlyDeleteImportBatch(targetBatch.id, admin.id, preview.confirmationToken);
+
+  const [retainedCustomer, retainedBatch, audits, changes] = await Promise.all([
+    prisma.customer.findUnique({ where: { id: previousCustomer.id } }),
+    prisma.importBatch.findUnique({ where: { id: targetBatch.id } }),
+    prisma.auditLog.findMany({ where: { entityType: 'ImportBatch', entityId: targetBatch.id } }),
+    prisma.importChangeLog.findMany({ where: { importBatchId: targetBatch.id } }),
+  ]);
+  assert.equal(result.status, 'permanently_deleted');
+  assert.equal(retainedBatch.status, 'permanently_deleted');
+  assert.equal(retainedCustomer.fullName, 'Pre-existing customer');
+  assert.equal(audits.length, 1);
+  assert.ok(changes.every(({ rollbackStatus }) => rollbackStatus === 'permanently_deleted'));
+  assert.equal(await prisma.importBatch.count({ where: { id: targetBatch.id } }), 1);
+});
+
 test('PostgreSQL rolls back every deletion and restoration when a dependent delete fails', async () => {
   const { admin, targetBatch, previousCustomer, created } = await seedCascadeFixture();
   const preview = await previewPermanentImportDeletion(targetBatch.id);

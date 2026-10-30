@@ -66,6 +66,8 @@ function buildToken(plan) {
       id, entityType, entityId, operation, before, after, sequence,
     })),
     deleteIds: Object.fromEntries(entityNames.map((type) => [type, getIds(plan.deleteIds, type)])),
+    deletionIds: Object.fromEntries(entityNames.map((type) => [type, getIds(plan.deletionIds, type)])),
+    recordsAlreadyAbsent: plan.recordsAlreadyAbsent,
     relatedIds: plan.relatedIds,
     monthlyEntryDetaches: plan.monthlyEntryDetaches,
     restoreUpdates: plan.restoreUpdates,
@@ -100,6 +102,8 @@ async function loadDeletionPlan(transaction, importBatchId) {
       batch,
       alreadyDeleted: true,
       deleteIds: emptyIds(),
+      deletionIds: emptyIds(),
+      recordsAlreadyAbsent: [],
       relatedIds: { calls: [], followUps: [], appointments: [], appointmentEvents: [], ownership: [], milestones: [], monthlyEntries: [] },
       monthlyEntryDetaches: [],
       restoreUpdates: [],
@@ -118,11 +122,15 @@ async function loadDeletionPlan(transaction, importBatchId) {
   }
 
   const deleteIds = emptyIds();
+  const directlyCreatedIds = emptyIds();
   for (const change of batch.changes) {
     if (!entityDelegates[change.entityType]) {
       throw new PermanentImportDeletionConflict(`The import contains an unsupported ${change.entityType} change. Its deletion scope cannot be determined safely.`);
     }
-    if (change.operation === 'CREATE') addIds(deleteIds, change.entityType, [change.entityId]);
+    if (change.operation === 'CREATE') {
+      addIds(deleteIds, change.entityType, [change.entityId]);
+      addIds(directlyCreatedIds, change.entityType, [change.entityId]);
+    }
   }
 
   const createdCustomerIds = getIds(deleteIds, 'Customer');
@@ -186,9 +194,6 @@ async function loadDeletionPlan(transaction, importBatchId) {
       select: { id: true, vin: true, customerId: true, ccmId: true, updatedAt: true },
     })
     : [];
-  if (customerRows.length !== customerIds.length || vehicleRows.length !== vehicleIds.length) {
-    throw new PermanentImportDeletionConflict('A record created by this import no longer exists. The deletion scope cannot be verified safely.');
-  }
   const vins = [...new Set([...targetCreatedVins, ...vehicleRows.map(({ vin }) => vin).filter(Boolean)])];
   const visitWhere = {
     OR: [
@@ -323,20 +328,29 @@ async function loadDeletionPlan(transaction, importBatchId) {
     }
   }
 
-  const callListIds = getIds(deleteIds, 'MasterCallList');
-  const directlyCreatedIds = emptyIds();
-  for (const change of batch.changes) {
-    if (change.operation === 'CREATE') addIds(directlyCreatedIds, change.entityType, [change.entityId]);
-  }
-  const dependentIds = emptyIds();
+  const existingRowsByType = {
+    Customer: customerRows,
+    Vehicle: vehicleRows,
+    WorkshopVisit: visits,
+    MasterCallList: masterCallListRows,
+    Allocation: allocations,
+    VINConflictReview: conflictReviews,
+  };
+  const recordsAlreadyAbsent = [];
+  const deletionIds = Object.fromEntries(entityNames.map((type) => [type, new Set(deleteIds[type])]));
   for (const type of entityNames) {
-    const direct = directlyCreatedIds[type];
-    for (const id of deleteIds[type]) if (!direct.has(id)) dependentIds[type].add(id);
+    const existingIds = new Set((existingRowsByType[type] || []).map(({ id }) => id));
+    for (const id of directlyCreatedIds[type]) {
+      if (existingIds.has(id)) continue;
+      deletionIds[type].delete(id);
+      recordsAlreadyAbsent.push({ entityType: type, entityId: id, operation: 'CREATE' });
+    }
   }
+  recordsAlreadyAbsent.sort((left, right) => `${left.entityType}:${left.entityId}`.localeCompare(`${right.entityType}:${right.entityId}`));
 
   const allDeletedEntityIds = new Map();
   for (const type of entityNames) {
-    const ids = getIds(deleteIds, type);
+    const ids = [...new Set([...getIds(deleteIds, type), ...getIds(directlyCreatedIds, type)])].sort();
     if (ids.length) allDeletedEntityIds.set(type, ids);
   }
   const logOr = [...allDeletedEntityIds].map(([entityType, entityId]) => ({ entityType, entityId: { in: entityId } }));
@@ -369,7 +383,8 @@ async function loadDeletionPlan(transaction, importBatchId) {
     throw new PermanentImportDeletionConflict('A later import affecting these records is still processing or being rolled back. Wait for it to finish and preview again.');
   }
 
-  const restoreUpdates = await buildRestoreUpdates(transaction, batch, deleteIds);
+  const restoreUpdates = await buildRestoreUpdates(transaction, batch, deleteIds, recordsAlreadyAbsent);
+  recordsAlreadyAbsent.sort((left, right) => `${left.entityType}:${left.entityId}:${left.operation}`.localeCompare(`${right.entityType}:${right.entityId}:${right.operation}`));
   const deletedCustomerIds = new Set(customerIds);
   const deletedVehicleIds = new Set(vehicleIds);
   const monthlyEntryDetaches = monthlyEntries.map(({ id, customerId, vehicleId }) => ({
@@ -404,21 +419,21 @@ async function loadDeletionPlan(transaction, importBatchId) {
   ].filter(Boolean))].sort();
 
   const counts = {
-    customers: customerIds.length,
-    vehicles: vehicleIds.length,
-    repairOrders: getIds(deleteIds, 'WorkshopVisit').length,
-    callListRecords: callListIds.length,
-    allocations: getIds(deleteIds, 'Allocation').length,
+    customers: getIds(deletionIds, 'Customer').length,
+    vehicles: getIds(deletionIds, 'Vehicle').length,
+    repairOrders: getIds(deletionIds, 'WorkshopVisit').length,
+    callListRecords: getIds(deletionIds, 'MasterCallList').length,
+    allocations: getIds(deletionIds, 'Allocation').length,
     calls: calls.length,
     appointments: appointments.length,
     followUps: followUps.length,
     ownershipRecords: ownership.length,
     freeServiceMilestones: milestones.length,
     appointmentEvents: appointmentEvents.length,
-    vinConflictReviews: getIds(deleteIds, 'VINConflictReview').length,
+    vinConflictReviews: getIds(deletionIds, 'VINConflictReview').length,
     monthlyEntriesDetached: monthlyEntries.length,
   };
-  const directCount = entityNames.reduce((sum, type) => sum + directlyCreatedIds[type].size, 0);
+  const directCount = entityNames.reduce((sum, type) => sum + [...directlyCreatedIds[type]].filter((id) => deletionIds[type].has(id)).length, 0);
   const totalDeleted = Object.entries(counts).reduce((sum, [key, value]) => sum + (key === 'monthlyEntriesDetached' ? 0 : value), 0);
   const summary = {
     directlyAffectedRecords: directCount,
@@ -432,6 +447,8 @@ async function loadDeletionPlan(transaction, importBatchId) {
     batch,
     alreadyDeleted: false,
     deleteIds,
+    deletionIds,
+    recordsAlreadyAbsent,
     monthlyEntryDetaches,
     restoreUpdates,
     fingerprints,
@@ -443,7 +460,7 @@ async function loadDeletionPlan(transaction, importBatchId) {
   };
 }
 
-async function buildRestoreUpdates(transaction, batch, deleteIds) {
+async function buildRestoreUpdates(transaction, batch, deleteIds, recordsAlreadyAbsent) {
   const grouped = new Map();
   for (const change of batch.changes) {
     if (change.operation !== 'UPDATE') continue;
@@ -468,7 +485,10 @@ async function buildRestoreUpdates(transaction, batch, deleteIds) {
     group.changes.sort((left, right) => left.sequence - right.sequence);
     const delegate = transaction[entityDelegates[group.entityType]];
     const record = await delegate.findUnique({ where: { id: group.entityId } });
-    if (!record) throw new PermanentImportDeletionConflict(`The updated ${group.entityType} no longer exists; its previous values cannot be restored safely.`);
+    if (!record) {
+      recordsAlreadyAbsent.push({ entityType: group.entityType, entityId: group.entityId, operation: 'UPDATE' });
+      continue;
+    }
 
     const originalBefore = {};
     const targetAfter = {};
@@ -541,6 +561,7 @@ export async function previewPermanentImportDeletion(importBatchId, database = p
         id, fileName, invalidatedChanges, invalidatedRows,
       })),
       restoredRecords: plan.restoreUpdates.map(({ entityType, entityId }) => ({ entityType, entityId })),
+      recordsAlreadyAbsent: plan.recordsAlreadyAbsent || [],
       ...plan.summary,
     };
   }, { isolationLevel: 'RepeatableRead' });
@@ -591,14 +612,14 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
     await deleteCount('callLog', plan.relatedIds.calls);
     await deleteCount('followUp', plan.relatedIds.followUps);
     await deleteCount('vehicleOwnershipHistory', plan.relatedIds.ownership);
-    await deleteCount('allocation', getIds(plan.deleteIds, 'Allocation'));
-    await deleteCount('workshopVisit', getIds(plan.deleteIds, 'WorkshopVisit'));
-    await deleteCount('masterCallList', getIds(plan.deleteIds, 'MasterCallList'));
-    await deleteCount('vINConflictReview', getIds(plan.deleteIds, 'VINConflictReview'));
+    await deleteCount('allocation', getIds(plan.deletionIds, 'Allocation'));
+    await deleteCount('workshopVisit', getIds(plan.deletionIds, 'WorkshopVisit'));
+    await deleteCount('masterCallList', getIds(plan.deletionIds, 'MasterCallList'));
+    await deleteCount('vINConflictReview', getIds(plan.deletionIds, 'VINConflictReview'));
     await deleteCount('freeServiceMilestone', plan.relatedIds.milestones);
     await deleteCount('appointment', plan.relatedIds.appointments);
-    await deleteCount('vehicle', getIds(plan.deleteIds, 'Vehicle'));
-    await deleteCount('customer', getIds(plan.deleteIds, 'Customer'));
+    await deleteCount('vehicle', getIds(plan.deletionIds, 'Vehicle'));
+    await deleteCount('customer', getIds(plan.deletionIds, 'Customer'));
 
     const changedLogsById = new Map([...plan.changeLogs, ...plan.batch.changes].map((change) => [change.id, change]));
     const changedLogs = [...changedLogsById.values()];
@@ -659,6 +680,7 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
           laterImportBatchesAffected: plan.affectedBatches.length,
           restoredRecords: plan.restoreUpdates.map(({ entityType, entityId }) => ({ entityType, entityId })),
           monthlyEntriesDetached: plan.monthlyEntryDetaches.length,
+          recordsAlreadyAbsent: plan.recordsAlreadyAbsent,
         }),
       },
     });

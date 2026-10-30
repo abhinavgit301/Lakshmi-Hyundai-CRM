@@ -4016,6 +4016,16 @@ function App() {
                       <ul>{permanentDeletion.preview.affectedImportBatches.map((affected) => <li key={affected.id}>{affected.fileName} — {affected.invalidatedChanges} changes, {affected.invalidatedRows.length} rows invalidated</li>)}</ul>
                     </div>
                   )}
+                  {permanentDeletion.preview.recordsAlreadyAbsent?.length > 0 && (
+                    <div className="permanent-deletion-batches">
+                      <strong>Already absent (will be skipped)</strong>
+                      <ul>{permanentDeletion.preview.recordsAlreadyAbsent.map((record) => (
+                        <li key={`${record.entityType}:${record.entityId}:${record.operation}`}>
+                          {record.entityType} · {record.entityId} ({record.operation})
+                        </li>
+                      ))}</ul>
+                    </div>
+                  )}
                   <p className="modal-warning">This action cannot be undone. Import history and audit records will be retained, but deleted records cannot be recovered.</p>
                   {permanentDeletionError && <p className="form-alert error" role="alert">{permanentDeletionError}</p>}
                   <div className="form-actions">

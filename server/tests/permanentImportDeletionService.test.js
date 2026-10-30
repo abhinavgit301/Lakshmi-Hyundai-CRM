@@ -98,7 +98,7 @@ function matchesWhere(row, where = {}) {
   });
 }
 
-function createCascadeDatabase({ failAtDelete = '' } = {}) {
+function createCascadeDatabase({ failAtDelete = '', missingRecordIds = [], includeUnrelated = false } = {}) {
   const timestamp = new Date('2026-01-01T00:00:00.000Z');
   const targetBatchId = 'import-february';
   const laterBatchId = 'import-march-april';
@@ -127,6 +127,22 @@ function createCascadeDatabase({ failAtDelete = '' } = {}) {
     updatedAt: new Date('2026-01-02T00:00:00.000Z'),
   };
   const laterVisits = [visit('visit-march', 'RO-MARCH'), visit('visit-april', 'RO-APRIL')];
+  const unrelatedCustomer = {
+    id: 'customer-unrelated', customerCode: 'CUS-UNRELATED', fullName: 'Unrelated Customer',
+    mobileNumber: '9222222222', alternatePhone: null, email: null, ccmId: 'ccm-2',
+    createdAt: timestamp, updatedAt: timestamp,
+  };
+  const unrelatedVehicle = {
+    id: 'vehicle-unrelated', vin: 'VIN-UNRELATED', registrationNumber: 'REG-UNRELATED', make: 'Hyundai',
+    model: 'Venue', variant: null, year: null, saleDate: null, status: 'ACTIVE',
+    customerId: unrelatedCustomer.id, ccmId: 'ccm-2', createdAt: timestamp, updatedAt: timestamp,
+  };
+  const unrelatedVisit = {
+    ...visit('visit-unrelated', 'RO-UNRELATED'),
+    customerId: unrelatedCustomer.id,
+    vehicleId: unrelatedVehicle.id,
+    ccmId: 'ccm-2',
+  };
   const targetBatch = {
     id: targetBatchId, fileName: 'February.csv', status: 'completed', createdAt: timestamp,
     totalRows: 1, rollbackSupported: true, allocationEvidenceState: 'not_started',
@@ -200,9 +216,9 @@ function createCascadeDatabase({ failAtDelete = '' } = {}) {
     auditLogs: [],
     deletionOrder: [],
     tables: {
-      customer: [customer, sharedCustomer],
-      vehicle: [vehicle],
-      workshopVisit: [visit('visit-february', 'RO-FEBRUARY'), ...laterVisits],
+      customer: [customer, sharedCustomer, ...(includeUnrelated ? [unrelatedCustomer] : [])].filter(({ id }) => !missingRecordIds.includes(id)),
+      vehicle: [vehicle, ...(includeUnrelated ? [unrelatedVehicle] : [])].filter(({ id }) => !missingRecordIds.includes(id)),
+      workshopVisit: [visit('visit-february', 'RO-FEBRUARY'), ...laterVisits, ...(includeUnrelated ? [unrelatedVisit] : [])].filter(({ id }) => !missingRecordIds.includes(id)),
       masterCallList: [{ id: 'call-list', vin: vehicle.vin, ccmId: 'ccm-1', updatedAt: timestamp }],
       allocation: [{ id: 'allocation', vehicleId: vehicle.id, ccmId: 'ccm-1', updatedAt: timestamp }],
       callLog: [{ id: 'call-log', customerId: customer.id, vehicleId: vehicle.id, createdAt: timestamp }],
@@ -329,6 +345,39 @@ test('permanent deletion cascades dependent records, preserves shared customers,
   assert.equal(laterRollback.batch.status, 'rolled_back');
   assert.equal(laterRollback.reversedChanges, 0);
   assert.equal(state.tables.workshopVisit.length, 0);
+});
+
+test('permanent deletion tolerates missing imported anchors and preserves unrelated records', async () => {
+  const { database, state, targetBatch, laterBatch } = createCascadeDatabase({
+    missingRecordIds: ['customer-imported', 'vehicle-imported'],
+    includeUnrelated: true,
+  });
+  const preview = await previewPermanentImportDeletion(targetBatch.id, database);
+
+  assert.deepEqual(preview.recordsAlreadyAbsent, [
+    { entityType: 'Customer', entityId: 'customer-imported', operation: 'CREATE' },
+    { entityType: 'Vehicle', entityId: 'vehicle-imported', operation: 'CREATE' },
+  ]);
+  assert.equal(preview.directlyAffectedRecords, 1);
+  assert.ok(preview.totalRecordsDeleted > 0);
+
+  const result = await permanentlyDeleteImportBatch(targetBatch.id, 'admin-1', preview.confirmationToken, database);
+
+  assert.equal(result.status, 'permanently_deleted');
+  assert.equal(state.tables.customer.some(({ id }) => id === 'customer-existing'), true);
+  assert.equal(state.tables.customer.some(({ id }) => id === 'customer-unrelated'), true);
+  assert.equal(state.tables.vehicle.some(({ id }) => id === 'vehicle-unrelated'), true);
+  assert.deepEqual(state.tables.workshopVisit.map(({ id }) => id), ['visit-unrelated']);
+  assert.equal(state.batches.find(({ id }) => id === targetBatch.id).status, 'permanently_deleted');
+  assert.ok(state.changeLogs.filter(({ importBatchId }) => importBatchId === targetBatch.id)
+    .every(({ rollbackStatus }) => rollbackStatus === 'permanently_deleted'));
+  assert.ok(state.changeLogs.filter(({ importBatchId }) => importBatchId === laterBatch.id)
+    .every(({ rollbackStatus }) => rollbackStatus === 'permanently_deleted'));
+  assert.equal(state.auditLogs.filter(({ action }) => action === 'REPAIR_ORDER_IMPORT_PERMANENTLY_DELETED').length, 1);
+
+  const retry = await permanentlyDeleteImportBatch(targetBatch.id, 'admin-1', preview.confirmationToken, database);
+  assert.equal(retry.alreadyDeleted, true);
+  assert.equal(state.auditLogs.filter(({ action }) => action === 'REPAIR_ORDER_IMPORT_PERMANENTLY_DELETED').length, 1);
 });
 
 test('a failed permanent deletion rolls back all earlier dependent deletes', async () => {

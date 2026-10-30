@@ -935,12 +935,17 @@ export async function getCustomers(req, res) {
     include: {
       vehicles: {
         include: {
-          allocations: true,
+          allocations: {
+            include: {
+              cre: { select: { id: true, name: true, username: true } },
+            },
+          },
         },
       },
       visits: {
         orderBy: { visitDate: 'desc' },
         select: {
+          vehicleId: true,
           repairOrderNo: true,
           visitDate: true,
           closingDate: true,

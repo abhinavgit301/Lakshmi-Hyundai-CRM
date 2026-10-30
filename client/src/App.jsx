@@ -35,9 +35,37 @@ const routeByView = {
   'Free-Service Follow-up · 2 Years': '/free-service/follow-ups/2-years',
 };
 const viewByRoute = Object.fromEntries(Object.entries(routeByView).map(([view, path]) => [path, view]));
+const customerListRouteAliases = {
+  '/customer/1-year': 'Due 1-Year',
+  '/customer/1-year-due': 'Due 1-Year',
+  '/customer/one-year-due': 'Due 1-Year',
+  '/customer/due-1-year': 'Due 1-Year',
+  '/customer/6-month': 'Due 6-Month',
+  '/customer/6-month-due': 'Due 6-Month',
+  '/customer/6-months-due': 'Due 6-Month',
+  '/customer/6month-due': 'Due 6-Month',
+  '/customer/due-6-month': 'Due 6-Month',
+  '/customer/free-service': 'Free Service',
+  '/customer/warranty': 'Warranty',
+  '/customers/1-year': 'Due 1-Year',
+  '/customers/1-year-due': 'Due 1-Year',
+  '/customers/one-year-due': 'Due 1-Year',
+  '/customers/due-1-year': 'Due 1-Year',
+  '/customers/6-month': 'Due 6-Month',
+  '/customers/6-month-due': 'Due 6-Month',
+  '/customers/6-months-due': 'Due 6-Month',
+  '/customers/6month-due': 'Due 6-Month',
+  '/customers/due-6-month': 'Due 6-Month',
+  '/customers/free-service': 'Free Service',
+  '/customers/warranty': 'Warranty',
+};
 
 function resolveRoute(pathname) {
   const path = pathname.replace(/\/+$/, '') || '/';
+  const customerListView = customerListRouteAliases[path];
+  if (customerListView) return { view: customerListView, ccmId: '' };
+  const knownView = viewByRoute[path];
+  if (knownView) return { view: knownView, ccmId: '' };
   const customerProfileMatch = path.match(/^\/customers\/([^/]+)$/);
   if (customerProfileMatch) {
     const customerId = (() => {
@@ -288,6 +316,7 @@ function App() {
   const [customerProfileLoading, setCustomerProfileLoading] = useState(false);
   const [customerProfileError, setCustomerProfileError] = useState('');
   const [customerProfileTab, setCustomerProfileTab] = useState('service');
+  const [expandedServiceVisit, setExpandedServiceVisit] = useState(null);
   const [masterEntryForm, setMasterEntryForm] = useState({
     serialNo: '',
     roNumber: '',
@@ -1142,6 +1171,7 @@ function App() {
     setCustomerProfileError('');
     setCustomerProfile(null);
     setCustomerProfileTab('service');
+    setExpandedServiceVisit(null);
     setCustomerPanel({ customerId, mode: 'profile' });
     setCallLogs([]);
     setCallLogsLoading(true);
@@ -2091,7 +2121,7 @@ function App() {
               <p className="performance-note call-modal-context">{callForm.callSource === 'WARRANTY' ? 'Warranty call: it is tracked separately and does not count toward your daily call targets.' : 'Free-service call: the follow-up you arrange will appear under Follow-ups · Free Service.'}</p>
             )}
             <div className="form-grid">
-              <label>Vehicle <span className="call-modal-optional">Optional</span>
+              <label><span>Vehicle <span className="call-modal-optional">(Optional)</span></span>
                 <select value={callForm.vehicleId} onChange={(event) => setCallForm({ ...callForm, vehicleId: event.target.value })}>
                   <option value="">No specific vehicle</option>
                   {(panelCustomer.vehicles || []).map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{[vehicle.model, vehicle.registrationNumber, vehicle.vin].filter(Boolean).join(' / ')}</option>)}
@@ -2256,23 +2286,62 @@ function App() {
           <div className="customer-profile-vehicles">
             <h4>Vehicle details</h4>
             {vehicles.map((vehicle) => {
-              const details = customerProfile.visits?.find((visit) => visit.vehicleId === vehicle.id && visit.importedDetails)?.importedDetails || {};
+              const vehicleVisits = serviceVisits.filter((visit) => visit.vehicleId === vehicle.id && visit.importedDetails);
+              const details = vehicleVisits.slice().reverse().reduce((combined, visit) => ({
+                ...combined,
+                ...visit.importedDetails,
+              }), {});
+              const allocations = vehicle.allocations || [];
               const vehicleFields = [
+                ['Make', vehicle.make],
                 ['Model', vehicle.model || details.model],
+                ['Variant', vehicle.variant || details.variant],
                 ['Registration', vehicle.registrationNumber || details.registrationNumber],
                 ['VIN', vehicle.vin || details.vin],
                 ['Year', vehicle.year],
+                ['Status', vehicle.status],
+                ['Sale date', vehicle.saleDate ? formatDate(vehicle.saleDate) : details.saleDate],
                 ['Mileage', details.mileage],
                 ['Selling dealer', details.saleDealer || details.sellingDealer],
-                ['Sale date', vehicle.saleDate ? formatDate(vehicle.saleDate) : details.saleDate],
-                ['Assigned CRE', vehicle.allocations?.map((allocation) => allocation.cre?.name || allocation.cre?.username || allocation.creId).filter(Boolean).join(', ')],
+                ['UC sale dealer', details.ucSaleDealer],
+                ['UC sale date', details.ucSaleDate],
+                ['Assigned CRE', allocations.map((allocation) => allocation.cre?.name || allocation.cre?.username || allocation.creId).filter(Boolean).join(', ')],
+                ['CCM', allocations.map((allocation) => allocation.ccm?.name || allocation.ccmId).filter(Boolean).join(', ')],
               ].filter(([, value]) => value != null && value !== '');
               return (
                 <article className="customer-profile-vehicle" key={vehicle.id}>
-                  {vehicle.registrationNumber && <strong className="customer-profile-registration">{vehicle.registrationNumber}</strong>}
+                  <header className="customer-profile-vehicle-header">
+                    <div>
+                      <p className="eyebrow">{[vehicle.make, vehicle.model, vehicle.variant].filter(Boolean).join(' ') || 'Registered vehicle'}</p>
+                      <strong className="customer-profile-registration">{vehicle.registrationNumber || 'Registration not recorded'}</strong>
+                    </div>
+                    {vehicle.status && <span className={`badge ${vehicle.status === 'ACTIVE' ? 'badge-success' : 'badge-neutral'}`}>{vehicle.status.replaceAll('_', ' ')}</span>}
+                  </header>
                   <dl className="customer-profile-vehicle-details">
                     {vehicleFields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{String(value)}</dd></div>)}
                   </dl>
+                  {allocations.length > 0 && (
+                    <div className="customer-profile-allocation-list">
+                      <h5>Assignments</h5>
+                      {allocations.map((allocation) => (
+                        <div className="customer-profile-allocation" key={allocation.id}>
+                          <strong>{allocation.cre?.name || allocation.cre?.username || 'Unassigned'}</strong>
+                          <span>{[allocation.serviceType, allocation.category, allocation.status].filter(Boolean).join(' · ')}</span>
+                          {allocation.notes && <small>{allocation.notes}</small>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {Object.keys(details).length > 0 && (
+                    <details className="customer-profile-import-details">
+                      <summary>Imported vehicle and service data <span>{Object.keys(details).length} fields</span></summary>
+                      <dl className="customer-profile-import-grid">
+                        {Object.entries(details).filter(([, value]) => value != null && value !== '').map(([key, value]) => (
+                          <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>
+                        ))}
+                      </dl>
+                    </details>
+                  )}
                 </article>
               );
             })}
@@ -2296,27 +2365,50 @@ function App() {
                 <tbody>
                   {serviceVisits.map((visit, index) => {
                     const details = visit.importedDetails || {};
+                    const visitId = `${visit.repairOrderNo || 'repair'}-${visit.visitDate || index}`;
+                    const detailEntries = Object.entries(details).filter(([, value]) => value != null && value !== '');
                     return (
-                      <tr key={`${visit.repairOrderNo || 'repair'}-${visit.visitDate || index}`}>
-                        <td>{visit.visitDate ? formatDate(visit.visitDate) : '—'}</td>
-                        <td>{visit.repairOrderNo || '—'}</td>
-                        <td>{details.workType || details.serviceType || '—'}</td>
-                        <td>{details.serviceAdvisor || details.advisorName || '—'}</td>
-                        <td>{details.mileage || '—'}</td>
-                        <td>{visit.totalAmount ?? '—'}</td>
-                        <td>
-                          {Object.keys(details).length > 0 && (
-                            <details className="customer-profile-visit-details">
-                              <summary>View</summary>
-                              <dl className="master-detail-grid">
-                                {Object.entries(details).map(([key, value]) => (
-                                  <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{value == null || value === '' ? '—' : String(value)}</dd></div>
-                                ))}
-                              </dl>
-                            </details>
-                          )}
-                        </td>
-                      </tr>
+                      <Fragment key={visitId}>
+                        <tr>
+                          <td>{visit.visitDate ? formatDate(visit.visitDate) : '—'}</td>
+                          <td>{visit.repairOrderNo || '—'}</td>
+                          <td>{details.workType || details.serviceType || '—'}</td>
+                          <td>{details.serviceAdvisor || details.advisorName || '—'}</td>
+                          <td>{details.mileage || '—'}</td>
+                          <td>{visit.totalAmount ?? '—'}</td>
+                          <td>
+                            {detailEntries.length > 0 && (
+                              <button
+                                type="button"
+                                className="text-link customer-profile-details-toggle"
+                                aria-expanded={expandedServiceVisit === visitId}
+                                aria-controls={`service-details-${index}`}
+                                onClick={() => setExpandedServiceVisit((current) => current === visitId ? null : visitId)}
+                              >{expandedServiceVisit === visitId ? 'Hide details' : `View details (${detailEntries.length})`}</button>
+                            )}
+                          </td>
+                        </tr>
+                        {expandedServiceVisit === visitId && detailEntries.length > 0 && (
+                          <tr className="customer-profile-expanded-row">
+                            <td colSpan="7">
+                              <section className="customer-profile-expanded-details" id={`service-details-${index}`} aria-label={`Imported details for repair order ${visit.repairOrderNo || ''}`}>
+                                <div className="customer-profile-expanded-heading">
+                                  <div>
+                                    <p className="eyebrow">Repair order details</p>
+                                    <h4>{visit.repairOrderNo || 'Service visit'}</h4>
+                                  </div>
+                                  <span>{detailEntries.length} imported fields</span>
+                                </div>
+                                <dl className="customer-profile-import-grid">
+                                  {detailEntries.map(([key, value]) => (
+                                    <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>
+                                  ))}
+                                </dl>
+                              </section>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     );
                   })}
                   {!serviceVisits.length && <tr><td colSpan="7" className="empty-state">No service history available.</td></tr>}
@@ -2700,9 +2792,12 @@ function App() {
     }
 
     const route = resolveRoute(location.pathname);
-    const canonicalPath = route.view === 'CustomerProfile' && route.customerId
-      ? `/customers/${encodeURIComponent(route.customerId)}`
-      : pathForView(route.view, route.ccmId);
+    const normalizedPath = location.pathname.replace(/\/+$/, '') || '/';
+    const canonicalPath = customerListRouteAliases[normalizedPath]
+      ? location.pathname
+      : route.view === 'CustomerProfile' && route.customerId
+        ? `/customers/${encodeURIComponent(route.customerId)}`
+        : pathForView(route.view, route.ccmId);
     if (location.pathname === '/' || location.pathname === '/login' || canonicalPath !== location.pathname) {
       navigate(route.view === 'CcmProfile' && !route.ccmId ? '/dashboard' : canonicalPath, { replace: true });
       return;
@@ -2781,16 +2876,21 @@ function App() {
           {visibleNavItems.map((item) => {
             const NavIcon = navIcons[item];
             const accordion = navAccordions[item];
-            const accordionOpen = Boolean(accordion) && accordion.open;
+            const accordionHasActiveRoute = Boolean(accordion) && accordion.items.some((child) =>
+              child.view === activeView || child.children?.some((nested) => nested.view === activeView),
+            );
+            const customerProfileActive = item === 'Customers' && activeView === 'CustomerProfile';
+            const accordionOpen = Boolean(accordion) && (accordion.open || accordionHasActiveRoute || customerProfileActive);
+            const navItemActive = item === activeView || accordionHasActiveRoute || customerProfileActive;
             return (
               <Fragment key={item}>
               <button
                 type="button"
                 title={item}
-                aria-current={item === activeView && !accordion ? 'page' : undefined}
+                aria-current={item === activeView && !accordion || customerProfileActive ? 'page' : undefined}
                 aria-expanded={accordion ? accordionOpen : undefined}
                 onClick={() => accordion ? accordion.toggle() : item === 'Dashboard' ? openDashboard() : item === 'Import' ? setActiveView('Free-Service Import') : item === 'Master list' ? openMasterList() : item === 'Customers' ? openCustomers() : item === 'Appointments' ? openAppointments() : item === 'Allocations' ? openAllocations() : item === 'Imports' ? openImports() : item === 'User Management' ? openUserManagement() : item === 'Monthly Data' ? openOwnMonthlyData() : item === 'Performance' ? openPerformance() : item === 'Reports' ? openReports() : setActiveView(item)}
-                className={item === activeView && !accordion ? 'nav-item active' : 'nav-item'}
+                className={navItemActive ? 'nav-item active' : 'nav-item'}
               >
                 <NavIcon size={18} strokeWidth={1.8} aria-hidden="true" />
                 <span>{item}</span>
@@ -2798,21 +2898,24 @@ function App() {
               </button>
               {accordionOpen && accordion.items.map((child) => {
                 const SubIcon = child.icon;
+                const childHasActiveRoute = child.children?.some((nested) => nested.view === activeView) || false;
+                const childIsActive = child.view === activeView || childHasActiveRoute;
+                const childExpanded = Boolean(child.children) && (child.expanded || childHasActiveRoute);
                 return (
                   <Fragment key={child.view}>
                     <button
                       type="button"
                       title={child.label}
-                      aria-current={child.view === activeView ? 'page' : undefined}
-                      aria-expanded={child.children ? child.expanded : undefined}
+                      aria-current={child.view === activeView && !child.children ? 'page' : undefined}
+                      aria-expanded={child.children ? childExpanded : undefined}
                       onClick={child.open}
-                      className={child.view === activeView ? 'nav-item nav-subitem active' : 'nav-item nav-subitem'}
+                      className={childIsActive ? 'nav-item nav-subitem active' : 'nav-item nav-subitem'}
                     >
                       <SubIcon size={16} strokeWidth={1.8} aria-hidden="true" />
                       <span>{child.label}</span>
-                      {child.children && <ChevronDown className={child.expanded ? 'nav-chevron open' : 'nav-chevron'} size={15} aria-hidden="true" />}
+                      {child.children && <ChevronDown className={childExpanded ? 'nav-chevron open' : 'nav-chevron'} size={15} aria-hidden="true" />}
                     </button>
-                    {child.expanded && child.children?.map((nested) => (
+                    {childExpanded && child.children?.map((nested) => (
                       <button
                         key={nested.view}
                         type="button"
@@ -2855,7 +2958,10 @@ function App() {
           ) : activeView === 'CcmProfile' ? (
             <button type="button" className="outline-btn" onClick={() => setActiveView(currentRole === 'ADMIN' ? 'User Management' : 'Dashboard')}><ArrowLeft size={16} aria-hidden="true" />{currentRole === 'ADMIN' ? 'Users' : 'Dashboard'}</button>
           ) : activeView === 'CustomerProfile' ? (
-            <button type="button" className="outline-btn" onClick={() => navigate(-1)}><ArrowLeft size={16} aria-hidden="true" />Back</button>
+            <button type="button" className="outline-btn customer-profile-back-btn" onClick={() => navigate(-1)}>
+              <ArrowLeft size={16} aria-hidden="true" />
+              <span>Back</span>
+            </button>
           ) : activeView in followUpViews ? (
             <span className="live-indicator">{followUpsLoading ? 'Loading…' : `${followUps.length} pending`}</span>
           ) : activeView === 'Allocations' ? (

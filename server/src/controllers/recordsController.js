@@ -69,9 +69,9 @@ export function operationalReadScope(user) {
     return {
       customer,
       vehicle: { ccmId },
-      call: { customer: { is: customer }, AND: [linkedVehicle] },
+      call: { ccmId, customer: { is: customer }, AND: [linkedVehicle] },
       appointment: appointmentVisibilityWhere(user),
-      followUp: { customer: { is: customer }, AND: [linkedVehicle] },
+      followUp: { ccmId, customer: { is: customer }, AND: [linkedVehicle] },
       importBatch: { ccmId },
       vinConflict: { targetCcmId: ccmId },
       allocation: { ccmId },
@@ -90,6 +90,7 @@ export function operationalReadScope(user) {
       customer,
       vehicle: { ccmId, ...creVehicleWhere(user) },
       call: {
+        ccmId,
         createdById: user?.id || 'no-access',
         callSource: { in: allowedServiceSources(user) },
         customer: { is: customer },
@@ -97,6 +98,7 @@ export function operationalReadScope(user) {
       },
       appointment: appointmentVisibilityWhere(user),
       followUp: {
+        ccmId,
         source: { in: allowedServiceSources(user) },
         customer: { is: customer },
         AND: [linkedVehicle],
@@ -832,7 +834,14 @@ export async function createManualCallListEntry(req, res) {
   const customerName = String(row.customerName || '').trim();
   const mobileNumber = String(row.mobileNumber || '').trim();
   const role = normalizeRole(req.user?.role);
-  const ccmId = role === 'CCM' ? req.user.ccmId : String(row.ccmId || '').trim();
+  const requestedCcmId = String(row.ccmId || '').trim();
+  if (!['ADMIN', 'GM', 'CCM'].includes(role)) {
+    return res.status(403).json({ message: 'You are not permitted to create workshop records.' });
+  }
+  if (role === 'CCM' && requestedCcmId && requestedCcmId !== req.user.ccmId) {
+    return res.status(403).json({ message: 'CCM users may only create records for their authenticated CCM.' });
+  }
+  const ccmId = role === 'CCM' ? String(req.user.ccmId || '').trim() : requestedCcmId;
   const laborCost = row.totalLaborCost == null || String(row.totalLaborCost).trim() === ''
     ? null
     : Number(row.totalLaborCost);
@@ -880,7 +889,7 @@ export async function createManualCallListEntry(req, res) {
   }
 
   if (!ccmId) {
-    return res.status(400).json({ message: 'An active CCM assignment is required.' });
+    return res.status(400).json({ message: 'Select an active CCM assignment.' });
   }
   const activeCcm = await prisma.user.findFirst({
     where: { role: 'CCM', ccmId, status: 'active' },
@@ -891,33 +900,61 @@ export async function createManualCallListEntry(req, res) {
   const [vehicleOwner, matchingVisits] = await Promise.all([
     prisma.vehicle.findUnique({
       where: { vin },
-      select: { ccmId: true, customer: { select: { ccmId: true } } },
+      select: { ccmId: true, registrationNumber: true, customer: { select: { ccmId: true } } },
     }),
     prisma.workshopVisit.findMany({
-      where: { repairOrderNo: roNumber },
+      where: { repairOrderNo: { equals: roNumber, mode: 'insensitive' } },
       include: { vehicle: { select: { vin: true } } },
     }),
   ]);
+  const registrationNumber = String(row.registrationNumber || '').trim().toUpperCase();
+  const registrationOwner = registrationNumber
+    ? await prisma.vehicle.findFirst({
+      where: {
+        registrationNumber: { equals: registrationNumber, mode: 'insensitive' },
+        vin: { not: vin },
+      },
+      select: { id: true },
+    })
+    : null;
+  if (registrationOwner) {
+    return res.status(409).json({ message: 'This registration number is already assigned to another vehicle.' });
+  }
+  if (vehicleOwner && registrationNumber && vehicleOwner.registrationNumber
+    && vehicleOwner.registrationNumber.trim().toUpperCase() !== registrationNumber) {
+    return res.status(409).json({ message: 'Registration number does not match the existing VIN record.' });
+  }
   const repairOrder = matchingVisits[0];
-  const existingKeys = matchingVisits.map((visit) => buildDuplicateKey(visit.vehicle.vin, visit.repairOrderNo));
+  const existingKeys = new Map(matchingVisits.map((visit) => [
+    String(visit.repairOrderNo).trim().toUpperCase(),
+    normalizeVin(visit.vehicle.vin),
+  ]));
+  const ownerCcmIds = [vehicleOwner?.ccmId, vehicleOwner?.customer?.ccmId].filter(Boolean);
+  const ownerCcmId = ownerCcmIds.find((ownerId) => ownerId !== ccmId) || ownerCcmIds[0] || null;
+  if (vehicleOwner && ownerCcmIds.length !== 2) {
+    return res.status(409).json({ message: 'The existing VIN has no resolvable CCM owner and cannot be transferred.' });
+  }
   const result = evaluateRepairOrderRow({
     ...row,
     vin,
     roNumber,
     ccmId,
-    ownerCcmId: vehicleOwner?.ccmId || vehicleOwner?.customer?.ccmId || null,
+    ownerCcmId,
   }, existingKeys);
   if (result.status === 'skipped') {
-    return res.status(409).json({ message: 'This repair order and VIN are already in the system.' });
+    return res.status(409).json({ message: 'This repair order number is already in the system.' });
   }
   if (result.status === 'rejected') {
     return res.status(400).json({ message: result.reason });
+  }
+  if (vehicleOwner && ownerCcmIds.length !== 2) {
+    return res.status(409).json({ message: 'The existing VIN has no resolvable CCM owner and cannot be transferred.' });
   }
   if (result.status === 'flagged') {
     await prisma.vINConflictReview.create({
       data: {
         vin,
-        sourceCcmId: vehicleOwner.ccmId || vehicleOwner.customer?.ccmId,
+        sourceCcmId: ownerCcmId,
         targetCcmId: ccmId,
         reason: result.reason,
       },
@@ -927,6 +964,9 @@ export async function createManualCallListEntry(req, res) {
   if (repairOrder && repairOrder.vehicle.vin !== vin) {
     return res.status(409).json({ message: 'This repair order number is already in use for another VIN.' });
   }
+  if (vehicleOwner && (vehicleOwner.ccmId !== ccmId || vehicleOwner.customer?.ccmId !== ccmId)) {
+    return res.status(409).json({ message: 'This VIN belongs to another CCM team and requires conflict review.' });
+  }
 
   try {
     const record = await prisma.$transaction(async (transaction) => {
@@ -934,21 +974,15 @@ export async function createManualCallListEntry(req, res) {
       let customer = vehicle?.customer;
 
       if (!customer) {
-        customer = await transaction.customer.findFirst({
-          where: { mobileNumber, ccmId },
-          orderBy: { createdAt: 'asc' },
+        customer = await transaction.customer.create({
+          data: {
+            customerCode: `CUS-${randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase()}`,
+            fullName: customerName,
+            mobileNumber,
+            email: String(row.email || '').trim().toLowerCase() || null,
+            ccmId,
+          },
         });
-        if (!customer) {
-          customer = await transaction.customer.create({
-            data: {
-              customerCode: `CUS-${randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase()}`,
-              fullName: customerName,
-              mobileNumber,
-              email: String(row.email || '').trim().toLowerCase() || null,
-              ccmId,
-            },
-          });
-        }
       }
 
       if (!vehicle) {
@@ -965,7 +999,16 @@ export async function createManualCallListEntry(req, res) {
             ccmId,
           },
         });
-      } else if (!vehicle.saleDate && normalizeSaleDate(saleDate)) {
+      } else if (vehicle.ccmId !== ccmId || customer?.ccmId !== ccmId) {
+        throw Object.assign(new Error('Existing VIN ownership does not match the selected CCM.'), { code: 'IDENTITY_CONFLICT' });
+      } else if (!vehicle.registrationNumber && registrationNumber) {
+        vehicle = await transaction.vehicle.update({
+          where: { id: vehicle.id },
+          data: { registrationNumber },
+          include: { customer: true },
+        });
+      }
+      if (!vehicle.saleDate && normalizeSaleDate(saleDate)) {
         vehicle = await transaction.vehicle.update({ where: { id: vehicle.id }, data: { saleDate: normalizeSaleDate(saleDate) }, include: { customer: true } });
       }
 
@@ -981,7 +1024,7 @@ export async function createManualCallListEntry(req, res) {
           visitDate,
           closingDate,
           gpDate,
-          importedDetails: row,
+          importedDetails: { ...row, ccmId },
         },
       });
 
@@ -1028,7 +1071,7 @@ export async function createManualCallListEntry(req, res) {
         status: callListEntry.status,
         assigneeId: callListEntry.ownerUserId,
         assigneeName: null,
-        importedDetails: row,
+        importedDetails: { ...row, ccmId },
         workshopVisits: [{
           repairOrderNo: roNumber,
           visitDate,
@@ -1037,14 +1080,14 @@ export async function createManualCallListEntry(req, res) {
           totalLaborCost: laborCost,
           totalPartsCost: partsCost,
           totalAmount: laborCost == null && partsCost == null ? null : (laborCost || 0) + (partsCost || 0),
-          importedDetails: row,
+          importedDetails: { ...row, ccmId },
         }],
       };
     });
     return res.status(201).json({ record });
   } catch (error) {
-    if (error?.code === 'P2002') {
-      return res.status(409).json({ message: 'This VIN, registration number, or repair order already exists.' });
+    if (error?.code === 'P2002' || error?.code === 'IDENTITY_CONFLICT') {
+      return res.status(409).json({ message: error.message || 'This VIN, registration number, or repair order already exists.' });
     }
     throw error;
   }

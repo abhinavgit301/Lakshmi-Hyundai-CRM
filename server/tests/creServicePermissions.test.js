@@ -6,8 +6,9 @@ import {
   resolveCreServicePermissions,
 } from '../src/utils/creServicePermissions.js';
 import { callLogVisibility, createCallLog, createFollowUp, getCrePerformanceSummary, listFollowUps } from '../src/controllers/callWorkflowController.js';
+import { isVehicleAssignedToCre, workshopVisitVisibilityWhere } from '../src/utils/creAccess.js';
 import { getFreeServiceList, getWarrantyList } from '../src/controllers/serviceListsController.js';
-import { getCallList, getCustomers, getVisibilityWhere } from '../src/controllers/recordsController.js';
+import { getCallList, getCustomers, getVisibilityWhere, operationalReadScope } from '../src/controllers/recordsController.js';
 import { listAllocations } from '../src/controllers/allocationController.js';
 import {
   filterMasterCallListRecords,
@@ -63,6 +64,13 @@ test('Free-Service CRE cannot access normal customer-list service sources', () =
   assert.equal(canAccessServiceSource(user, 'WARRANTY'), false);
 });
 
+test('unknown roles cannot access service sources', () => {
+  const user = { role: 'AUDITOR' };
+  assert.deepEqual(allowedServiceSources(user), []);
+  assert.equal(canAccessServiceSource(user, 'SERVICE'), false);
+  assert.equal(canAccessServiceSource(user, 'FREE_SERVICE'), false);
+});
+
 test('Free-Service CRE is blocked from Master Call List, customer, allocation, and regular CRE performance APIs', async () => {
   const user = { role: 'FREE_SERVICE_CRE', id: 'free-cre-1', ccmId: 'ccm-1' };
   for (const handler of [getCallList, getCustomers, listAllocations, getCrePerformanceSummary]) {
@@ -80,6 +88,7 @@ test('regular CRE Master Call List visibility includes only records assigned to 
 
   test('customer-specific call history retains authenticated CRE and CCM visibility scopes', () => {
     const creWhere = callLogVisibility({ role: 'CRE', id: 'cre-1', ccmId: 'ccm-1' }, 'customer-1');
+    assert.equal(creWhere.ccmId, 'ccm-1');
     assert.equal(creWhere.customerId, 'customer-1');
     assert.equal(creWhere.assignedToId, 'cre-1');
     assert.deepEqual(creWhere.customer.is, {
@@ -87,7 +96,7 @@ test('regular CRE Master Call List visibility includes only records assigned to 
       vehicles: {
         some: {
           OR: [
-            { allocations: { some: { creId: 'cre-1' } } },
+            { allocations: { some: { creId: 'cre-1', ccmId: 'ccm-1', status: 'assigned' } } },
             { masterCallListEntries: { some: { ownerUserId: 'cre-1', ccmId: 'ccm-1' } } },
           ],
         },
@@ -95,8 +104,79 @@ test('regular CRE Master Call List visibility includes only records assigned to 
     });
 
     const ccmWhere = callLogVisibility({ role: 'CCM', ccmId: 'ccm-1' }, 'customer-1');
+    assert.equal(ccmWhere.ccmId, 'ccm-1');
     assert.equal(ccmWhere.customerId, 'customer-1');
-    assert.deepEqual(ccmWhere.customer.is, { OR: [{ ccmId: 'ccm-1' }, { ccmId: null }] });
+    assert.deepEqual(ccmWhere.customer.is, { ccmId: 'ccm-1' });
+  });
+
+  test('CCM and CRE visit filters fail closed and enforce team plus current CRE assignment', () => {
+    assert.deepEqual(workshopVisitVisibilityWhere({ role: 'CCM' }), { ccmId: 'no-access' });
+    assert.deepEqual(workshopVisitVisibilityWhere({ role: 'UNKNOWN', ccmId: 'ccm-1' }), { id: 'no-access' });
+    assert.deepEqual(workshopVisitVisibilityWhere({ role: 'ADMIN' }), {});
+
+    const where = workshopVisitVisibilityWhere({ role: 'CRE', id: 'cre-1', ccmId: 'ccm-1' });
+    assert.equal(where.ccmId, 'ccm-1');
+    assert.deepEqual(where.vehicle, {
+      is: {
+        OR: [
+          { allocations: { some: { creId: 'cre-1', ccmId: 'ccm-1', status: 'assigned' } } },
+          { masterCallListEntries: { some: { ownerUserId: 'cre-1', ccmId: 'ccm-1' } } },
+        ],
+      },
+    });
+  });
+
+  test('only active allocations or current Master Call List ownership grant CRE vehicle access', () => {
+    const user = { role: 'CRE', id: 'cre-1', ccmId: 'ccm-1' };
+    assert.equal(isVehicleAssignedToCre({
+      allocations: [{ creId: 'cre-1', ccmId: 'ccm-1', status: 'assigned' }],
+      masterCallListEntries: [],
+    }, user), true);
+    assert.equal(isVehicleAssignedToCre({
+      allocations: [{ creId: 'cre-1', ccmId: 'ccm-1', status: 'completed' }],
+      masterCallListEntries: [],
+    }, user), false);
+    assert.equal(isVehicleAssignedToCre({
+      allocations: [{ creId: 'cre-1', ccmId: 'ccm-2', status: 'assigned' }],
+      masterCallListEntries: [],
+    }, user), false);
+    assert.equal(isVehicleAssignedToCre({
+      allocations: [],
+      masterCallListEntries: [{ ownerUserId: 'cre-1', ccmId: 'ccm-1' }],
+    }, user), true);
+  });
+
+  test('unknown roles cannot read call history', () => {
+    assert.deepEqual(callLogVisibility({ role: 'AUDITOR', id: 'user-1', ccmId: 'ccm-1' }), { id: 'no-access' });
+  });
+
+  test('dashboard query scopes preserve admin and GM cross-CCM access and isolate CCM/CRE metrics', () => {
+    for (const role of ['ADMIN', 'GM']) {
+      const scope = operationalReadScope({ role });
+      assert.deepEqual(scope.customer, {});
+      assert.deepEqual(scope.vehicle, {});
+      assert.deepEqual(scope.call, {});
+      assert.deepEqual(scope.followUp, {});
+    }
+
+    const ccmScope = operationalReadScope({ role: 'CCM', ccmId: 'ccm-1' });
+    assert.deepEqual(ccmScope.customer, { ccmId: 'ccm-1' });
+    assert.deepEqual(ccmScope.vehicle, { ccmId: 'ccm-1' });
+    assert.equal(ccmScope.call.customer.is.ccmId, 'ccm-1');
+    assert.deepEqual(operationalReadScope({ role: 'CCM' }).customer, { ccmId: 'no-access' });
+
+    const creScope = operationalReadScope({
+      role: 'CRE',
+      id: 'cre-1',
+      ccmId: 'ccm-1',
+      freeServiceEnabled: false,
+      warrantyEnabled: false,
+    });
+    assert.equal(creScope.vehicle.ccmId, 'ccm-1');
+    assert.equal(creScope.call.createdById, 'cre-1');
+    assert.deepEqual(creScope.call.callSource, { in: ['SERVICE'] });
+    assert.deepEqual(creScope.followUp.source, { in: ['SERVICE'] });
+    assert.equal(creScope.allocation.ccmId, 'ccm-1');
   });
 
   test('CCM Master Call List filters combine CRE, due category, repair type, and partial search', () => {

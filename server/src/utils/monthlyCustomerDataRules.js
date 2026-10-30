@@ -72,9 +72,7 @@ export function validateMonthlyCustomerRow(row = {}) {
 
 export function monthlyEntryDuplicateKey(row) {
   const vin = normalizeVin(row.vin || '');
-  if (vin) return `vin:${vin}`;
-  const mobile = String(row.mobileNumber || '').replace(/\D/g, '');
-  return `mobile:${mobile}`;
+  return vin ? `vin:${vin}` : null;
 }
 
 export function classifyMonthlyRows(rows, existingKeys = new Set()) {
@@ -94,13 +92,13 @@ export function classifyMonthlyRows(rows, existingKeys = new Set()) {
     }
 
     const key = monthlyEntryDuplicateKey(validation.value);
-    if (keys.has(key) || seenInFile.has(key)) {
+    if (key && (keys.has(key) || seenInFile.has(key))) {
       skippedCount += 1;
       classified.push({ rowNumber: item.rowNumber, row: validation.value, status: 'skipped', error: 'Customer or vehicle is already present in this month.' });
       continue;
     }
 
-    seenInFile.add(key);
+    if (key) seenInFile.add(key);
     addedCount += 1;
     classified.push({ rowNumber: item.rowNumber, row: validation.value, status: 'ready' });
   }

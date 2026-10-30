@@ -10,6 +10,19 @@ import {
 } from './serviceCalendar.js';
 import { getWorkshopTimezone } from './workshopTime.js';
 
+export function filterMilestoneCompletionByVisits(milestones, records) {
+  const visitsByVehicle = new Map(records.map((record) => [
+    record.vehicleId,
+    new Set((record.workshopVisits || []).map((visit) => visit.repairOrderNo)),
+  ]));
+  return milestones.map((milestone) => (
+    milestone.status !== 'completed'
+      || visitsByVehicle.get(milestone.vehicleId)?.has(milestone.completedByRepairOrderNo)
+      ? milestone
+      : { ...milestone, status: 'pending', completedAt: null, completedByRepairOrderNo: null }
+  ));
+}
+
 // Creates any missing milestone rows for vehicles with a valid sale date, keeps pending due dates
 // aligned with the sale date, and marks a milestone completed only when a free-service repair order
 // reliably establishes it. A completed milestone is never reopened, so re-imports cannot reset it.

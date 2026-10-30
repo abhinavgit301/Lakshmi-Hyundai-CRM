@@ -54,6 +54,11 @@ export async function createAppointment(req, res) {
     if (!vehicle || vehicle.status !== 'ACTIVE') {
       return res.status(400).json({ message: 'Select an active vehicle belonging to this customer.' });
     }
+    if (vehicle.ccmId !== customer.ccmId
+      || (['CCM', 'CRE'].includes(role)
+        && (!req.user.ccmId || vehicle.ccmId !== req.user.ccmId || customer.ccmId !== req.user.ccmId))) {
+      return res.status(404).json({ message: 'Customer not found.' });
+    }
     if (normalizeAppointmentRole(req.user.role) === 'CRE' && !isVehicleAssignedToCre(vehicle, req.user)) {
       return res.status(404).json({ message: 'Customer not found.' });
     }

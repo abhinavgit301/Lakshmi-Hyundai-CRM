@@ -17,10 +17,16 @@ test('Admin and GM can see and manage all appointments', () => {
 
 test('CCM access is limited to their own team', () => {
   const where = appointmentVisibilityWhere({ role: 'CCM', ccmId: 'ccm-team-1' });
-  assert.deepEqual(where, { ccmId: 'ccm-team-1' });
+  assert.deepEqual(where, {
+    ccmId: 'ccm-team-1',
+    AND: [
+      { OR: [{ customerId: null }, { customer: { is: { ccmId: 'ccm-team-1' } } }] },
+      { OR: [{ vehicleId: null }, { vehicle: { is: { ccmId: 'ccm-team-1' } } }] },
+    ],
+  });
 });
 
-test('CRE access includes appointments they are assigned to OR they created within their team', () => {
+test('CRE appointment visibility also requires a currently assigned team customer and vehicle', () => {
   const user = { id: 'cre-user-1', role: 'CRE', ccmId: 'ccm-team-1' };
   const where = appointmentVisibilityWhere(user);
   assert.equal(where.ccmId, 'ccm-team-1');
@@ -28,6 +34,21 @@ test('CRE access includes appointments they are assigned to OR they created with
     { assigneeId: 'cre-user-1' },
     { createdById: 'cre-user-1' },
   ]);
+  assert.deepEqual(where.AND[0], {
+    customer: {
+      is: {
+        ccmId: 'ccm-team-1',
+        vehicles: {
+          some: {
+            OR: [
+              { allocations: { some: { creId: 'cre-user-1', ccmId: 'ccm-team-1', status: 'assigned' } } },
+              { masterCallListEntries: { some: { ownerUserId: 'cre-user-1', ccmId: 'ccm-team-1' } } },
+            ],
+          },
+        },
+      },
+    },
+  });
 });
 
 test('CRE with missing team or ID is safely locked to no-access', () => {
@@ -48,5 +69,13 @@ test('Free-Service CRE can only access its own customerless appointments', () =>
     ccmId: 'ccm-team-1',
     createdById: 'free-service-cre-1',
     customerId: null,
+    OR: [
+      { vehicleId: null },
+      { vehicle: { is: { ccmId: 'ccm-team-1' } } },
+    ],
   });
+});
+
+test('unknown appointment roles fail closed', () => {
+  assert.deepEqual(appointmentVisibilityWhere({ role: 'AUDITOR', id: 'user-1' }), { id: 'no-access' });
 });

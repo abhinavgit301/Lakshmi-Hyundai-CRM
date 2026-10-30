@@ -4264,7 +4264,7 @@ function App() {
                   <label>Full name<input required maxLength="200" value={customerForm.fullName} onChange={(event) => updateCustomerField('fullName', event.target.value)} /></label>
                   <label>Mobile number<input inputMode="tel" value={customerForm.mobileNumber} onChange={(event) => updateCustomerField('mobileNumber', event.target.value)} /></label>
                   <label>Email<input type="email" value={customerForm.email} onChange={(event) => updateCustomerField('email', event.target.value)} /></label>
-                  {['ADMIN', 'GM'].includes(String(currentUser?.role || '').toUpperCase()) && <label>CCM ID<input placeholder="Optional team assignment" value={customerForm.ccmId} onChange={(event) => updateCustomerField('ccmId', event.target.value)} /></label>}
+                  {['ADMIN', 'GM'].includes(String(currentUser?.role || '').toUpperCase()) && <label>CCM ID<input required placeholder="Required team assignment" value={customerForm.ccmId} onChange={(event) => updateCustomerField('ccmId', event.target.value)} /></label>}
                 </div>
 
                 <div className="vehicle-form-list">

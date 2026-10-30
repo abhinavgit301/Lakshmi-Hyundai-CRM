@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getImportHistory, importBatchAttribution } from '../src/controllers/importController.js';
+import {
+  assignImportTargetCcm,
+  getImportHistory,
+  importBatchAttribution,
+  resolveImportTargetCcm,
+} from '../src/controllers/importController.js';
 import { prisma } from '../src/config/prisma.js';
 
 function mockRes() {
@@ -62,6 +67,41 @@ test('import batches keep the importer separate from the selected CCM owner', ()
   ), {
     importedByUserId: 'ccm-user-a',
     ccmId: 'ccm-a',
+  });
+
+  test('CCM import ownership is resolved from the authenticated user and rejects other targets', async () => {
+    const database = { user: { findFirst: async () => ({ ccmId: 'ccm-a' }) } };
+    assert.deepEqual(await resolveImportTargetCcm(
+      { id: 'ccm-user-a', role: 'CCM', ccmId: 'ccm-a' },
+      ['ccm-a'],
+      database,
+    ), { ccmId: 'ccm-a' });
+    assert.match((await resolveImportTargetCcm(
+      { id: 'ccm-user-a', role: 'CCM', ccmId: 'ccm-a' },
+      ['ccm-b'],
+      database,
+    )).error, /authenticated CCM/i);
+    assert.match((await resolveImportTargetCcm(
+      { id: 'ccm-user-a', role: 'CCM', ccmId: null },
+      [],
+      database,
+    )).error, /active CCM assignment/i);
+  });
+
+  test('Admin and GM imports require an active selected CCM target', async () => {
+    const database = { user: { findFirst: async ({ where }) => (where.ccmId === 'ccm-b' ? { ccmId: 'ccm-b' } : null) } };
+    for (const role of ['ADMIN', 'GM']) {
+      assert.deepEqual(await resolveImportTargetCcm({ id: 'manager', role }, ['ccm-b'], database), { ccmId: 'ccm-b' });
+      assert.match((await resolveImportTargetCcm({ id: 'manager', role }, [], database)).error, /select a target CCM/i);
+      assert.match((await resolveImportTargetCcm({ id: 'manager', role }, ['missing'], database)).error, /invalid/i);
+    }
+  });
+
+  test('CSV-level CCM ownership is replaced by the validated selected target', () => {
+    assert.deepEqual(assignImportTargetCcm({ vin: 'VIN-1', ccmId: 'ccm-b' }, 'ccm-a'), {
+      vin: 'VIN-1',
+      ccmId: 'ccm-a',
+    });
   });
   assert.deepEqual(importBatchAttribution(
     { id: 'admin-a', role: 'ADMIN', ccmId: null },

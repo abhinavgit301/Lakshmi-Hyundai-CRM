@@ -8,9 +8,10 @@ import {
   warrantyCallingWindow,
   warrantyExpiryDate,
 } from '../utils/serviceCalendar.js';
-import { syncFreeServiceMilestones } from '../utils/serviceLists.js';
+import { filterMilestoneCompletionByVisits, syncFreeServiceMilestones } from '../utils/serviceLists.js';
 import { getWorkshopTimezone, workshopToday, zonedDateKey } from '../utils/workshopTime.js';
 import { canAccessServiceSource } from '../utils/creServicePermissions.js';
+import { creCustomerWhere, creVehicleWhere } from '../utils/creAccess.js';
 import { creDueWhere, loadCallListRecords } from './recordsController.js';
 
 function scopeFor(user) {
@@ -57,27 +58,58 @@ function latestBy(items, key) {
   return result;
 }
 
+function workflowVisibilityWhere(user) {
+  const role = String(user?.role || '').toUpperCase();
+  if (role === 'ADMIN' || role === 'GM') return {};
+  const ccmId = user?.ccmId || 'no-access';
+  if (role === 'CCM') {
+    return {
+      ccmId,
+      customer: { is: { ccmId } },
+      AND: [{ OR: [{ vehicleId: null }, { vehicle: { is: { ccmId } } }] }],
+    };
+  }
+  if (role === 'CRE') {
+    return {
+      ccmId,
+      customer: { is: creCustomerWhere(user) },
+      AND: [{
+        OR: [
+          { vehicleId: null },
+          { vehicle: { is: { ccmId, ...creVehicleWhere(user) } } },
+        ],
+      }],
+    };
+  }
+  return { id: 'no-access' };
+}
+
 export async function getFreeServiceList(req, res) {
   if (!canAccessServiceSource(req.user, 'FREE_SERVICE')) {
     return res.status(403).json({ message: 'You do not have permission to access Free Service.' });
   }
   const now = new Date();
   const today = workshopToday(now);
-  const records = await loadCallListRecords(scopeFor(req.user), now);
+  const records = await loadCallListRecords(scopeFor(req.user), now, req.user);
   const { dated, dataIssues } = splitBySaleDate(records, now);
+  const workflowWhere = workflowVisibilityWhere(req.user);
 
-  const milestones = await syncFreeServiceMilestones(dated.map(({ record, saleDate }) => ({
+  const syncedMilestones = await syncFreeServiceMilestones(dated.map(({ record, saleDate }) => ({
     id: record.vehicleId,
     saleDate,
     workshopVisits: record.workshopVisits,
   })));
+  const milestones = filterMilestoneCompletionByVisits(
+    syncedMilestones,
+    dated.map(({ record }) => record),
+  );
   const callable = milestones.filter((milestone) => milestone.status === 'pending' && isFreeServiceCallable(milestone.dueDate, today));
   const ids = callable.map((milestone) => milestone.id);
 
   const [calls, followUps] = ids.length
     ? await Promise.all([
-      prisma.callLog.findMany({ where: { milestoneId: { in: ids } }, orderBy: { createdAt: 'desc' }, select: { milestoneId: true, outcome: true, createdAt: true } }),
-      prisma.followUp.findMany({ where: { milestoneId: { in: ids }, status: 'pending' }, orderBy: { followUpAt: 'asc' }, select: { id: true, milestoneId: true, followUpAt: true } }),
+      prisma.callLog.findMany({ where: { ...workflowWhere, milestoneId: { in: ids } }, orderBy: { createdAt: 'desc' }, select: { milestoneId: true, outcome: true, createdAt: true } }),
+      prisma.followUp.findMany({ where: { ...workflowWhere, milestoneId: { in: ids }, status: 'pending' }, orderBy: { followUpAt: 'asc' }, select: { id: true, milestoneId: true, followUpAt: true } }),
     ])
     : [[], []];
   const lastCall = latestBy(calls, 'milestoneId');
@@ -112,8 +144,9 @@ export async function getWarrantyList(req, res) {
   const now = new Date();
   const today = workshopToday(now);
   const timeZone = getWorkshopTimezone();
-  const records = await loadCallListRecords(scopeFor(req.user), now);
+  const records = await loadCallListRecords(scopeFor(req.user), now, req.user);
   const { dated, dataIssues } = splitBySaleDate(records, now);
+  const workflowWhere = workflowVisibilityWhere(req.user);
 
   const callable = dated
     .map((entry) => ({ ...entry, expiryDate: warrantyExpiryDate(entry.saleDate) }))
@@ -122,8 +155,8 @@ export async function getWarrantyList(req, res) {
 
   const [calls, followUps] = vehicleIds.length
     ? await Promise.all([
-      prisma.callLog.findMany({ where: { vehicleId: { in: vehicleIds }, callSource: 'WARRANTY' }, orderBy: { createdAt: 'desc' }, select: { vehicleId: true, outcome: true, createdAt: true, callSource: true } }),
-      prisma.followUp.findMany({ where: { vehicleId: { in: vehicleIds }, source: 'WARRANTY', status: 'pending' }, orderBy: { followUpAt: 'asc' }, select: { id: true, vehicleId: true, followUpAt: true } }),
+      prisma.callLog.findMany({ where: { ...workflowWhere, vehicleId: { in: vehicleIds }, callSource: 'WARRANTY' }, orderBy: { createdAt: 'desc' }, select: { vehicleId: true, outcome: true, createdAt: true, callSource: true } }),
+      prisma.followUp.findMany({ where: { ...workflowWhere, vehicleId: { in: vehicleIds }, source: 'WARRANTY', status: 'pending' }, orderBy: { followUpAt: 'asc' }, select: { id: true, vehicleId: true, followUpAt: true } }),
     ])
     : [[], []];
   const callsByVehicle = new Map();

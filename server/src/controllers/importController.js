@@ -36,6 +36,34 @@ export function importBatchAttribution(user, requestedCcmId) {
   };
 }
 
+export async function resolveImportTargetCcm(user, requestedCcmIds, database = prisma) {
+  const role = roleName(user?.role);
+  if (!['ADMIN', 'GM', 'CCM'].includes(role)) {
+    return { error: 'You are not permitted to import repair orders.' };
+  }
+
+  const requested = [...new Set(requestedCcmIds.map((value) => String(value || '').trim()).filter(Boolean))];
+  if (requested.length > 1) return { error: 'Only one target CCM may be selected.' };
+
+  let ccmId;
+  if (role === 'CCM') {
+    ccmId = String(user?.ccmId || '').trim();
+    if (!ccmId) return { error: 'An active CCM assignment is required.' };
+    if (requested.length && requested[0] !== ccmId) {
+      return { error: 'CCM users may only import into their authenticated CCM.' };
+    }
+  } else {
+    ccmId = requested[0];
+    if (!ccmId) return { error: 'Select a target CCM for this import.' };
+  }
+
+  const ccm = await database.user.findFirst({
+    where: { role: 'CCM', ccmId, status: 'active' },
+    select: { ccmId: true },
+  });
+  return ccm ? { ccmId: ccm.ccmId } : { error: 'The selected CCM assignment is invalid.' };
+}
+
 function isSerializationConflict(error) {
   return error?.code === 'P2034'
     || (error?.code === 'P2010' && (
@@ -72,13 +100,17 @@ function importDetailValues(row) {
     'serviceAdvisor', 'vin', 'registrationNumber', 'model', 'mileage', 'saleDealer', 'saleDate',
     'ucSaleDealer', 'ucSaleDate', 'customerName', 'address', 'email', 'city', 'pin', 'mobileNumber',
     'office', 'technician', 'specialMessage', 'visitType', 'demands', 'make', 'variant', 'year',
-    'ccmId', 'totalLaborCost', 'totalPartsCost',
+    'totalLaborCost', 'totalPartsCost',
   ];
   return Object.fromEntries([...new Set([...fields, ...Object.keys(row)])].map((key) => {
     const value = row[key];
     const text = value == null ? '' : String(value).trim();
     return [key, text || '-'];
   }));
+}
+
+export function assignImportTargetCcm(row, targetCcmId) {
+  return { ...row, ccmId: targetCcmId };
 }
 
 function toRowError(row, rowNumber, code, message) {
@@ -124,22 +156,14 @@ async function completeImportRow(transaction, batchId, rowNumber, rowProgressId,
   });
 }
 
-async function getTargetCcm(rowCcmId, user, defaultCcmId) {
-  const targetCcmId = roleName(user.role) === 'CCM'
-    ? user.ccmId
-    : String(rowCcmId || defaultCcmId || '').trim();
-  if (!targetCcmId) return null;
-  const ccm = await prisma.user.findFirst({
-    where: { role: 'CCM', ccmId: targetCcmId, status: 'active' },
-    select: { ccmId: true },
-  });
-  return ccm?.ccmId || null;
-}
-
 export async function importRepairOrders(req, res) {
   const fileName = path.basename(String(req.body?.fileName || 'repair-orders.csv')).slice(0, 255);
   const content = req.body?.content ?? req.body?.csvContent;
-  const { importedByUserId, ccmId: batchCcmId } = importBatchAttribution(req.user, req.body?.ccmId);
+  const requestedCcmIds = [req.body?.ccmId, req.query?.ccmId, req.params?.ccmId];
+  const target = await resolveImportTargetCcm(req.user, requestedCcmIds);
+  if (target.error) return res.status(403).json({ message: target.error });
+  const importedByUserId = req.user.id;
+  const batchCcmId = target.ccmId;
   if (typeof content !== 'string' || content.length > 1_800_000) {
     return res.status(400).json({ message: 'CSV content is required and must be smaller than 1.8 MB.' });
   }
@@ -224,7 +248,7 @@ export async function importRepairOrders(req, res) {
     return res.status(409).json({ message: 'An import with this request key is already processing or did not complete. Refresh Import History before retrying.' });
   }
   const errors = [];
-  const existingKeys = new Set();
+  const existingKeys = new Map();
   const importedCcmIds = new Set();
   let changeSequence = 0;
   const logChange = (transaction, rowProgressId, change, evidenceScope = 'row') => recordImportChange(transaction, {
@@ -272,7 +296,9 @@ export async function importRepairOrders(req, res) {
       where: { repairOrderNo: { in: repairOrderNumbers } },
       include: { vehicle: { select: { vin: true } } },
     });
-    for (const visit of existingVisits) existingKeys.add(buildDuplicateKey(visit.vehicle.vin, visit.repairOrderNo));
+    for (const visit of existingVisits) {
+      existingKeys.set(String(visit.repairOrderNo).trim().toUpperCase(), normalizeVin(visit.vehicle.vin));
+    }
 
     for (const { row, rowNumber } of parsed.rows) {
       const rowProgressId = rowProgressIds.get(rowNumber);
@@ -281,7 +307,8 @@ export async function importRepairOrders(req, res) {
       const registrationNumber = String(row.registrationNumber || '').trim().toUpperCase();
       const customerName = String(row.customerName || '').trim() || '-';
       const mobileNumber = String(row.mobileNumber || '').trim() || '-';
-      const ccmId = await getTargetCcm(row.ccmId, req.user, req.body?.ccmId);
+      const ccmId = batchCcmId;
+      const ownedRow = assignImportTargetCcm(row, ccmId);
       const parsedLaborCost = parseOptionalNumber(row.totalLaborCost);
       const parsedPartsCost = parseOptionalNumber(row.totalPartsCost);
       const parsedVisitDate = parseOptionalDate(row.visitDate);
@@ -326,13 +353,41 @@ export async function importRepairOrders(req, res) {
         where: { vin },
         select: { ccmId: true, customer: { select: { ccmId: true } } },
       });
+      const ownerCcmIds = [vehicleOwner?.ccmId, vehicleOwner?.customer?.ccmId].filter(Boolean);
+      const ownerCcmId = ownerCcmIds.find((ownerId) => ownerId !== ccmId) || ownerCcmIds[0] || null;
+      const otherRegistrationOwner = registrationNumber
+        ? await prisma.vehicle.findFirst({
+          where: {
+            registrationNumber: { equals: registrationNumber, mode: 'insensitive' },
+            ...(vehicleOwner ? { vin: { not: vin } } : {}),
+          },
+          select: { ccmId: true, customer: { select: { ccmId: true } } },
+        })
+        : null;
       const result = evaluateRepairOrderRow({
-        ...row,
+        ...ownedRow,
         vin,
         roNumber,
         ccmId,
-        ownerCcmId: vehicleOwner?.ccmId || vehicleOwner?.customer?.ccmId || null,
+        ownerCcmId,
       }, existingKeys);
+      if (result.status === 'processed' && otherRegistrationOwner) {
+        result.status = 'rejected';
+        result.reason = 'Registration number is already assigned to another vehicle.';
+      }
+      if (result.status === 'processed' && vehicleOwner && ownerCcmIds.length !== 2) {
+        result.status = 'rejected';
+        result.reason = 'The existing VIN has no resolvable CCM owner and cannot be transferred.';
+      }
+      if (result.status === 'processed' && vehicleOwner
+        && (vehicleOwner.ccmId !== ccmId || vehicleOwner.customer?.ccmId !== ccmId)) {
+        result.status = 'flagged';
+        result.reason = 'Cross-manager VIN conflict';
+      }
+      if (result.status === 'flagged' && !ownerCcmIds.length) {
+        result.status = 'rejected';
+        result.reason = 'The existing VIN has no resolvable CCM owner and cannot be transferred.';
+      }
 
       if (result.status !== 'processed') {
         const code = result.status === 'flagged' ? 'VIN_CONFLICT' : result.status === 'skipped' ? 'DUPLICATE_RO' : 'INVALID_ROW';
@@ -347,7 +402,7 @@ export async function importRepairOrders(req, res) {
             }, () => transaction.vINConflictReview.create({
               data: {
                 vin,
-                sourceCcmId: vehicleOwner.ccmId || vehicleOwner.customer?.ccmId,
+                sourceCcmId: ownerCcmId,
                 targetCcmId: ccmId,
                 reason: result.reason,
               },
@@ -357,9 +412,6 @@ export async function importRepairOrders(req, res) {
           await recordRowError(transaction, batch.id, rowError);
           await completeImportRow(transaction, batch.id, rowNumber, rowProgressId, outcome);
         });
-        if (result.status === 'flagged') {
-          existingKeys.add(buildDuplicateKey(vin, roNumber));
-        }
         continue;
       }
 
@@ -371,25 +423,23 @@ export async function importRepairOrders(req, res) {
           const wasExistingVehicle = Boolean(vehicle);
           let customer = vehicle?.customer;
 
+          if (vehicle && (vehicle.ccmId !== ccmId || customer?.ccmId !== ccmId)) {
+            throw Object.assign(new Error('Existing VIN ownership does not match the selected CCM.'), { code: 'IDENTITY_CONFLICT' });
+          }
+
           if (!customer) {
-            customer = mobileNumber === '-' ? null : await transaction.customer.findFirst({
-              where: { mobileNumber, ccmId },
-              orderBy: { createdAt: 'asc' },
-            });
-            if (!customer) {
-              customer = await createTrackedRecord(transaction, rowProgressId, {
-                entityType: 'Customer',
+            customer = await createTrackedRecord(transaction, rowProgressId, {
+              entityType: 'Customer',
+              ccmId,
+            }, () => transaction.customer.create({
+              data: {
+                customerCode: `CUS-${randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase()}`,
+                fullName: customerName,
+                mobileNumber,
+                email: String(row.email || '').trim().toLowerCase() || null,
                 ccmId,
-              }, () => transaction.customer.create({
-                data: {
-                  customerCode: `CUS-${randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase()}`,
-                  fullName: customerName,
-                  mobileNumber,
-                  email: String(row.email || '').trim().toLowerCase() || null,
-                  ccmId,
-                },
-              }));
-            }
+              },
+            }));
           }
 
           if (!vehicle) {
@@ -435,9 +485,27 @@ export async function importRepairOrders(req, res) {
               visitDate,
               closingDate,
               gpDate,
-              importedDetails: importDetailValues(row),
+              importedDetails: importDetailValues(ownedRow),
             },
           }));
+
+          if (vehicle.registrationNumber && registrationNumber
+            && vehicle.registrationNumber.trim().toUpperCase() !== registrationNumber) {
+            throw Object.assign(new Error('Registration number does not match the existing VIN record.'), { code: 'IDENTITY_CONFLICT' });
+          }
+          if (!vehicle.registrationNumber && registrationNumber) {
+            vehicle = await updateTrackedRecord(transaction, rowProgressId, {
+              entityType: 'Vehicle',
+              entityId: vehicle.id,
+              ccmId,
+              before: { registrationNumber: vehicle.registrationNumber, updatedAt: vehicle.updatedAt },
+              after: { registrationNumber },
+            }, () => transaction.vehicle.update({
+              where: { id: vehicle.id },
+              data: { registrationNumber },
+              include: { customer: true },
+            }));
+          }
 
           const callListEntry = await transaction.masterCallList.findFirst({ where: { vin, ccmId } });
           if (callListEntry) {
@@ -482,10 +550,15 @@ export async function importRepairOrders(req, res) {
           return wasExistingVehicle ? 'appended' : 'created';
         });
         importedCcmIds.add(ccmId);
-        existingKeys.add(buildDuplicateKey(vin, roNumber));
+        existingKeys.set(roNumber.toUpperCase(), vin);
       } catch (error) {
-        if (error?.code !== 'P2002') throw error;
-        const rowError = toRowError(row, rowNumber, 'UNIQUE_CONFLICT', 'Repair order, VIN, or registration number already exists.');
+        if (error?.code !== 'P2002' && error?.code !== 'IDENTITY_CONFLICT') throw error;
+        const rowError = toRowError(
+          row,
+          rowNumber,
+          error?.code === 'IDENTITY_CONFLICT' ? 'IDENTITY_CONFLICT' : 'UNIQUE_CONFLICT',
+          error?.message || 'Repair order, VIN, or registration number already exists.',
+        );
         errors.push({ ...rowError, status: 'rejected' });
         await prisma.$transaction(async (transaction) => {
           await assertImportBatchProcessing(transaction, batch.id);

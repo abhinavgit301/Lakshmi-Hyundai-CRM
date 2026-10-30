@@ -10,7 +10,22 @@ async function loadQuotaRows(ccmId, range) {
     select: { id: true, name: true },
     orderBy: { name: 'asc' },
   });
-  const counts = await getCreCallCounts({ creIds: cres.map((cre) => cre.id), start: range.start, end: range.end });
+  const counts = await getCreCallCounts({
+    creIds: cres.map((cre) => cre.id),
+    start: range.start,
+    end: range.end,
+    ccmId,
+    scopeWhere: {
+      ccmId,
+      customer: { is: { ccmId } },
+      AND: [{
+        OR: [
+          { vehicleId: null },
+          { vehicle: { is: { ccmId } } },
+        ],
+      }],
+    },
+  });
   return buildQuotaRows(cres, counts);
 }
 

@@ -1,6 +1,5 @@
 import { prisma } from '../config/prisma.js';
-import { creCustomerWhere, isVehicleAssignedToCre } from '../utils/creAccess.js';
-import { canAccessRecord } from '../utils/roleAccess.js';
+import { creCustomerWhere, creVehicleWhere, isVehicleAssignedToCre } from '../utils/creAccess.js';
 import { validateCallLogPayload, validateFollowUpPayload } from '../utils/workflowRules.js';
 import { getCreCallCounts } from '../utils/callMetrics.js';
 import { DAILY_TARGETS, freeServiceCustomerIdsForMonth, isAnsweredOutcome } from '../utils/serviceCalendar.js';
@@ -17,11 +16,7 @@ function normalizeRole(role) {
   if (value === 'GM') return 'GM';
   if (value === 'CCM') return 'CCM';
   if (value === 'FREE_SERVICE_CRE' || value === 'FREE-SERVICE CRE') return 'FREE_SERVICE_CRE';
-  return 'CRE';
-}
-
-function userForAccess(user) {
-  return { ...user, role: normalizeRole(user?.role) };
+  return value;
 }
 
 async function findAccessibleCustomer(customerId, user) {
@@ -34,14 +29,13 @@ async function findAccessibleCustomer(customerId, user) {
     },
   });
 
-  if (!customer || !canAccessRecord(userForAccess(user), customer)) {
-    return null;
-  }
-
-  if (normalizeRole(user?.role) === 'CRE') {
-    const assignedToCre = customer.vehicles.some((vehicle) => isVehicleAssignedToCre(vehicle, user));
-    if (!assignedToCre) return null;
-  }
+  if (!customer) return null;
+  const role = normalizeRole(user?.role);
+  if (role === 'Admin' || role === 'GM') return customer;
+  if (!user?.ccmId || customer.ccmId !== user.ccmId) return null;
+  if (role === 'CCM') return customer;
+  if (role !== 'CRE') return null;
+  if (!customer.vehicles.some((vehicle) => isVehicleAssignedToCre(vehicle, user))) return null;
 
   return customer;
 }
@@ -51,13 +45,33 @@ export function callLogVisibility(user, customerId = '') {
   let visibility;
   if (role === 'Admin' || role === 'GM') visibility = {};
   else if (role === 'CCM') {
-    visibility = { customer: { is: { OR: [{ ccmId: user.ccmId }, { ccmId: null }] } } };
-  } else {
+    const ccmId = user.ccmId || 'no-access';
     visibility = {
+      ccmId,
+      customer: { is: { ccmId } },
+      AND: [{
+        OR: [
+          { vehicleId: null },
+          { vehicle: { is: { ccmId } } },
+        ],
+      }],
+    };
+  } else if (role === 'CRE') {
+    const ccmId = user.ccmId || 'no-access';
+    visibility = {
+      ccmId,
       assignedToId: user.id,
       customer: { is: creCustomerWhere(user) },
       callSource: { in: allowedServiceSources(user) },
+      AND: [{
+        OR: [
+          { vehicleId: null },
+          { vehicle: { is: { ccmId, ...creVehicleWhere(user) } } },
+        ],
+      }],
     };
+  } else {
+    visibility = { id: 'no-access' };
   }
 
   return { ...visibility, ...(customerId ? { customerId } : {}) };
@@ -67,12 +81,31 @@ function followUpVisibility(user) {
   const role = normalizeRole(user?.role);
   if (role === 'Admin' || role === 'GM') return {};
   if (role === 'CCM') {
-    return { customer: { is: { OR: [{ ccmId: user.ccmId }, { ccmId: null }] } } };
+    const ccmId = user.ccmId || 'no-access';
+    return {
+      ccmId,
+      customer: { is: { ccmId } },
+      AND: [{
+        OR: [
+          { vehicleId: null },
+          { vehicle: { is: { ccmId } } },
+        ],
+      }],
+    };
   }
 
+  if (role !== 'CRE') return { id: 'no-access' };
+  const ccmId = user.ccmId || 'no-access';
   return {
+    ccmId,
     customer: { is: creCustomerWhere(user) },
     source: { in: allowedServiceSources(user) },
+    AND: [{
+      OR: [
+        { vehicleId: null },
+        { vehicle: { is: { ccmId, ...creVehicleWhere(user) } } },
+      ],
+    }],
   };
 }
 
@@ -119,11 +152,11 @@ export async function getFreeServicePerformanceSummary(req, res) {
     if (!userId) return res.status(400).json({ message: 'creId is required for a CCM to view performance.' });
     target = await prisma.user.findFirst({
       where: { id: userId, role: 'FREE_SERVICE_CRE', ccmId: req.user.ccmId },
-      select: { id: true, name: true },
+      select: { id: true, name: true, ccmId: true },
     });
     if (!target) return res.status(404).json({ message: 'Free-Service CRE not found in your team.' });
   } else {
-    target = { id: req.user.id, name: req.user.name };
+    target = { id: req.user.id, name: req.user.name, ccmId: req.user.ccmId };
   }
 
   const monthRange = workshopMonthRange(year, month);
@@ -132,8 +165,19 @@ export async function getFreeServicePerformanceSummary(req, res) {
   }
   const { start, end } = monthRange;
   const selectedRange = performanceRange === 'month' ? monthRange : requestedDay;
+  const teamCallScope = {
+    ccmId: target.ccmId || 'no-access',
+    customer: { is: { ccmId: target.ccmId || 'no-access' } },
+    AND: [{
+      OR: [
+        { vehicleId: null },
+        { vehicle: { is: { ccmId: target.ccmId || 'no-access' } } },
+      ],
+    }],
+  };
   const calls = await prisma.callLog.findMany({
     where: {
+      ...teamCallScope,
       createdById: target.id,
       callSource: 'FREE_SERVICE',
       createdAt: { gte: start, lt: end },
@@ -155,10 +199,13 @@ export async function getFreeServicePerformanceSummary(req, res) {
     start: selectedRange.start,
     end: selectedRange.end,
     callSources: ['FREE_SERVICE'],
+    ccmId: target.ccmId || 'no-access',
+    scopeWhere: teamCallScope,
   });
   const selectedActivity = selectedCounts.get(target.id) || { callsMade: 0, callsPickedUp: 0 };
   const recentCalls = await prisma.callLog.findMany({
     where: {
+      ...teamCallScope,
       createdById: target.id,
       callSource: 'FREE_SERVICE',
       createdAt: { gte: selectedRange.start, lt: selectedRange.end },
@@ -263,7 +310,7 @@ export async function getCrePerformanceSummary(req, res) {
   const [callsThisMonth, customersReachedThisMonth, scopedRecords, pendingFollowUps, appointmentsSetThisMonth, recentCalls, selectedCounts, missedWarrantyCases, lifetimeCalls, lifetimeAppointments] = await Promise.all([
     prisma.callLog.count({ where: monthFilter }),
     prisma.callLog.groupBy({ by: ['customerId'], where: monthFilter }),
-    loadCallListRecords(dueWhere, now),
+    loadCallListRecords(dueWhere, now, targetUser),
     prisma.followUp.count({ where: { ...followUpVisibilityFilter, status: 'pending' } }),
     prisma.callLog.count({ where: { ...monthFilter, outcome: 'APPOINTMENT_SET' } }),
     prisma.callLog.findMany({
@@ -284,11 +331,44 @@ export async function getCrePerformanceSummary(req, res) {
       start: selectedRange.start,
       end: selectedRange.end,
       callSources: ordinaryCallSources,
+      ccmId: targetCre.ccmId || 'no-access',
+      scopeWhere: {
+        ccmId: targetCre.ccmId || 'no-access',
+        customer: { is: creCustomerWhere(targetUser) },
+        AND: [{
+          OR: [
+            { vehicleId: null },
+            { vehicle: { is: { ccmId: targetCre.ccmId || 'no-access', ...creVehicleWhere(targetUser) } } },
+          ],
+        }],
+      },
     }),
     canAccessServiceSource(targetUser, 'WARRANTY')
-      ? findMissedWarrantyCases({ scope: dueWhere, year, month, now })
+      ? findMissedWarrantyCases({
+        scope: dueWhere,
+        vehicleScope: role === 'CCM'
+          ? { ccmId: targetCre.ccmId || 'no-access' }
+          : { ccmId: targetCre.ccmId || 'no-access', ...creVehicleWhere(targetUser) },
+        callScope: callVisibility,
+        year,
+        month,
+        now,
+      })
       : Promise.resolve([]),
-    prisma.callLog.count({ where: { createdById: targetCre.id } }),
+    prisma.callLog.count({
+      where: {
+        ccmId: targetCre.ccmId || 'no-access',
+        createdById: targetCre.id,
+        callSource: { in: allowedServiceSources(targetUser) },
+        customer: { is: creCustomerWhere(targetUser) },
+        AND: [{
+          OR: [
+            { vehicleId: null },
+            { vehicle: { is: { ccmId: targetCre.ccmId || 'no-access', ...creVehicleWhere(targetUser) } } },
+          ],
+        }],
+      },
+    }),
     // Count each persisted appointment row once, including cancelled appointments. Deleted rows
     // are intentionally absent, matching the appointment system's existing hard-delete behavior.
     prisma.appointment.count({ where: appointmentVisibilityWhere(targetUser) }),
@@ -353,12 +433,27 @@ export async function createCallLog(req, res) {
   const customer = await findAccessibleCustomer(customerId, req.user);
   if (!customer) return res.status(404).json({ message: 'Customer not found.' });
 
+  let vehicle = null;
   if (vehicleId) {
-    const vehicle = customer.vehicles.find((entry) => entry.id === vehicleId);
+    vehicle = customer.vehicles.find((entry) => entry.id === vehicleId);
     if (!vehicle) return res.status(400).json({ message: 'Vehicle does not belong to this customer.' });
+    if (vehicle.ccmId !== customer.ccmId
+      || (['CCM', 'CRE'].includes(normalizeRole(req.user.role))
+        && (!req.user.ccmId || vehicle.ccmId !== req.user.ccmId || customer.ccmId !== req.user.ccmId))) {
+      return res.status(404).json({ message: 'Customer not found.' });
+    }
     if (normalizeRole(req.user.role) === 'CRE' && !isVehicleAssignedToCre(vehicle, req.user)) {
       return res.status(404).json({ message: 'Customer not found.' });
     }
+  }
+
+  const ccmId = customer.ccmId || vehicle?.ccmId || null;
+  if (vehicle && customer.ccmId !== vehicle.ccmId) {
+    return res.status(400).json({ message: 'Customer and vehicle ownership do not match.' });
+  }
+  if (['CCM', 'CRE'].includes(normalizeRole(req.user.role))
+    && (!req.user.ccmId || ccmId !== req.user.ccmId)) {
+    return res.status(404).json({ message: 'Customer not found.' });
   }
 
   if (milestoneId) {
@@ -375,6 +470,7 @@ export async function createCallLog(req, res) {
       data: {
         customerId,
         vehicleId,
+        ccmId,
         outcome,
         callSource,
         milestoneId,
@@ -393,7 +489,9 @@ export async function createCallLog(req, res) {
     // customer's open follow-up in the same list: it is rescheduled in place when the call sets a new
     // date, and otherwise completed so the customer leaves the queue. Other lists are untouched.
     const openWhere = {
+      ...followUpVisibility(req.user),
       customerId,
+      ccmId: ccmId || 'no-access',
       source: callSource,
       status: 'pending',
       ...(milestoneId ? { milestoneId } : {}),
@@ -403,13 +501,13 @@ export async function createCallLog(req, res) {
 
     let followUp = null;
     if (followUpAt) {
-      const data = { followUpAt, category: outcome, notes, vehicleId, creId, milestoneId };
+      const data = { followUpAt, category: outcome, notes, vehicleId, ccmId, milestoneId };
       if (open.length) {
         followUp = await transaction.followUp.update({ where: { id: open[0].id }, data });
         const duplicates = open.slice(1).map((entry) => entry.id);
         if (duplicates.length) await transaction.followUp.updateMany({ where: { id: { in: duplicates } }, data: { status: 'completed' } });
       } else {
-        followUp = await transaction.followUp.create({ data: { customerId, source: callSource, ...data } });
+        followUp = await transaction.followUp.create({ data: { customerId, source: callSource, creId, ...data } });
       }
     } else if (open.length) {
       await transaction.followUp.updateMany({ where: { id: { in: open.map((entry) => entry.id) } }, data: { status: 'completed' } });
@@ -462,13 +560,41 @@ export async function createFollowUp(req, res) {
   }
   const customer = await findAccessibleCustomer(customerId, req.user);
   if (!customer) return res.status(404).json({ message: 'Customer not found.' });
-  if (vehicleId && !customer.vehicles.some((vehicle) => vehicle.id === vehicleId)) {
-    return res.status(400).json({ message: 'Vehicle does not belong to this customer.' });
+  let vehicle = null;
+  if (vehicleId) {
+    vehicle = customer.vehicles.find((entry) => entry.id === vehicleId);
+    if (!vehicle) return res.status(400).json({ message: 'Vehicle does not belong to this customer.' });
+    if (vehicle.ccmId !== customer.ccmId
+      || (['CCM', 'CRE'].includes(normalizeRole(req.user.role))
+        && (!req.user.ccmId || vehicle.ccmId !== req.user.ccmId || customer.ccmId !== req.user.ccmId))) {
+      return res.status(404).json({ message: 'Customer not found.' });
+    }
+    if (normalizeRole(req.user.role) === 'CRE' && !isVehicleAssignedToCre(vehicle, req.user)) {
+      return res.status(404).json({ message: 'Customer not found.' });
+    }
+  }
+  const ccmId = customer.ccmId || vehicle?.ccmId || null;
+  if (vehicle && customer.ccmId !== vehicle.ccmId) {
+    return res.status(400).json({ message: 'Customer and vehicle ownership do not match.' });
+  }
+  if (['CCM', 'CRE'].includes(normalizeRole(req.user.role))
+    && (!req.user.ccmId || ccmId !== req.user.ccmId)) {
+    return res.status(404).json({ message: 'Customer not found.' });
+  }
+  if (milestoneId) {
+    const milestone = await prisma.freeServiceMilestone.findUnique({
+      where: { id: milestoneId },
+      select: { vehicleId: true },
+    });
+    if (!milestone || milestone.vehicleId !== vehicleId) {
+      return res.status(400).json({ message: 'Free-service milestone does not belong to this vehicle.' });
+    }
   }
 
   const followUp = await prisma.followUp.create({
     data: {
       customerId,
+      ccmId,
       category,
       notes,
       followUpAt,
@@ -494,10 +620,12 @@ export async function updateFollowUpStatus(req, res) {
   });
   if (!existing) return res.status(404).json({ message: 'Follow-up not found.' });
 
-  const followUp = await prisma.followUp.update({
-    where: { id: existing.id },
+  const result = await prisma.followUp.updateMany({
+    where: { id: existing.id, ...followUpVisibility(req.user) },
     data: { status },
   });
+  if (result.count !== 1) return res.status(404).json({ message: 'Follow-up not found.' });
+  const followUp = await prisma.followUp.findUnique({ where: { id: existing.id } });
 
   return res.json({ followUp });
 }

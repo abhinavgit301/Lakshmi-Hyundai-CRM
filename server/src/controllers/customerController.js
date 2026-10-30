@@ -12,10 +12,16 @@ export async function createCustomer(req, res) {
 
   const role = normalizedRole(req.user?.role);
   const requestedCcmId = req.body?.ccmId ? String(req.body.ccmId).trim() : null;
-  const ccmId = role === 'CCM' ? req.user.ccmId : requestedCcmId;
+  if (!['ADMIN', 'GM', 'CCM'].includes(role)) {
+    return res.status(403).json({ message: 'You are not permitted to create customers.' });
+  }
+  if (role === 'CCM' && requestedCcmId && requestedCcmId !== req.user.ccmId) {
+    return res.status(403).json({ message: 'CCM users may only create customers for their authenticated CCM.' });
+  }
+  const ccmId = role === 'CCM' ? String(req.user.ccmId || '').trim() : requestedCcmId;
 
-  if (role === 'CCM' && !ccmId) {
-    return res.status(403).json({ message: 'A CCM assignment is required to create customers.' });
+  if (!ccmId) {
+    return res.status(400).json({ message: 'Select an active CCM assignment.' });
   }
 
   if (ccmId) {

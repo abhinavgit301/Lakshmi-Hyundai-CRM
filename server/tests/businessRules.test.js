@@ -43,6 +43,8 @@ test('CCM access is limited to their own team', () => {
   const actor = { id: 'ccm-1', role: 'CCM', ccmId: 'ccm-1' };
   assert.equal(canAccessRecord(actor, { ccmId: 'ccm-1' }), true);
   assert.equal(canAccessRecord(actor, { ccmId: 'ccm-2' }), false);
+  assert.equal(canAccessRecord({ id: 'ccm-unassigned', role: 'CCM' }, { ccmId: 'ccm-1' }), false);
+  assert.equal(canAccessRecord(actor, {}), false);
 });
 
 test('CRE access is limited to assigned records and same CCM', () => {
@@ -50,6 +52,7 @@ test('CRE access is limited to assigned records and same CCM', () => {
   assert.equal(canAccessRecord(actor, { ccmId: 'ccm-1', assigneeId: 'cre-1' }), true);
   assert.equal(canAccessRecord(actor, { ccmId: 'ccm-1', assigneeId: 'cre-2' }), false);
   assert.equal(canAccessRecord(actor, { ccmId: 'ccm-2', assigneeId: 'cre-1' }), false);
+  assert.equal(canAccessRecord(actor, { ccmId: 'ccm-1' }), false);
 });
 
 test('repair order import marks duplicate rows as skipped', () => {
@@ -57,7 +60,24 @@ test('repair order import marks duplicate rows as skipped', () => {
   const result = evaluateRow({ vin: '1hgbh41jxz', roNumber: 'RO-1001', ccmId: 'ccm-1', ownerCcmId: 'ccm-1' }, existing);
 
   assert.equal(result.status, 'skipped');
-  assert.equal(result.reason, 'Duplicate RO/VIN combination');
+  assert.equal(result.reason, 'Duplicate repair order number');
+});
+
+test('repair-order numbers are globally unique across different VINs', () => {
+  const result = evaluateRow(
+    { vin: 'VIN-2', roNumber: 'ro-1001', ccmId: 'ccm-2', ownerCcmId: 'ccm-2' },
+    new Map([['RO-1001', 'VIN-1']]),
+  );
+  assert.equal(result.status, 'rejected');
+  assert.match(result.reason, /different VIN/i);
+});
+
+test('same repair order and VIN is treated as an existing global duplicate', () => {
+  const result = evaluateRow(
+    { vin: 'vin-1', roNumber: 'ro-1001' },
+    new Map([['RO-1001', 'VN1']]),
+  );
+  assert.equal(result.status, 'skipped');
 });
 
 test('repair order import allows multiple repair orders for the same VIN', () => {
@@ -245,6 +265,10 @@ test('Free-Service CRE appointment scope is own customerless appointments only',
     ccmId: 'ccm-1',
     createdById: 'free-cre-1',
     customerId: null,
+    OR: [
+      { vehicleId: null },
+      { vehicle: { is: { ccmId: 'ccm-1' } } },
+    ],
   });
 });
 
@@ -413,6 +437,15 @@ test('monthly import classifies invalid and repeated records without overwriting
   assert.equal(result.addedCount, 1);
   assert.equal(result.skippedCount, 1);
   assert.equal(result.rejectedCount, 1);
+});
+
+test('monthly rows without VINs do not use mobile numbers as unique identifiers', () => {
+  const result = classifyMonthlyRows([
+    { rowNumber: 2, row: { customerName: 'Asha', mobileNumber: '9876543210' } },
+    { rowNumber: 3, row: { customerName: 'Bala', mobileNumber: '9876543210' } },
+  ]);
+  assert.equal(result.addedCount, 2);
+  assert.equal(result.skippedCount, 0);
 });
 
 test('monthly CSV parser accepts normalized required customer headers', async () => {

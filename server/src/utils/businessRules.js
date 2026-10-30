@@ -40,15 +40,30 @@ export function evaluateRepairOrderRow(row = {}, existingKeys = []) {
   }
 
   const duplicateKey = buildDuplicateKey(normalizedVin, repairOrderNumber);
+  const normalizedRepairOrderNumber = repairOrderNumber.toUpperCase();
+  const existingVin = existingKeys instanceof Map
+    ? existingKeys.get(normalizedRepairOrderNumber)
+    : null;
+  const isSameRepairOrder = existingKeys instanceof Map
+    ? existingKeys.has(normalizedRepairOrderNumber)
+    : existingKeys instanceof Set
+      ? existingKeys.has(normalizedRepairOrderNumber) || existingKeys.has(duplicateKey)
+      : existingKeys.includes(normalizedRepairOrderNumber) || existingKeys.includes(duplicateKey);
 
-  const isDuplicate = existingKeys instanceof Set
-    ? existingKeys.has(duplicateKey)
-    : existingKeys.includes(duplicateKey);
+  if (isSameRepairOrder && existingVin && existingVin !== normalizedVin) {
+    return {
+      status: 'rejected',
+      reason: 'Repair order number is already assigned to a different VIN',
+      normalizedVin,
+      repairOrderNumber,
+      duplicateKey,
+    };
+  }
 
-  if (isDuplicate) {
+  if (isSameRepairOrder) {
     return {
       status: 'skipped',
-      reason: 'Duplicate RO/VIN combination',
+      reason: 'Duplicate repair order number',
       normalizedVin,
       repairOrderNumber,
       duplicateKey,

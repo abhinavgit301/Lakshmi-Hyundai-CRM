@@ -69,9 +69,9 @@ async function findDataset(ccm, year, month) {
 async function getExistingKeys(datasetId, transaction = prisma) {
   const entries = await transaction.monthlyCustomerDataEntry.findMany({
     where: { datasetId },
-    select: { vin: true, mobileNumber: true },
+    select: { vin: true },
   });
-  return new Set(entries.map(monthlyEntryDuplicateKey));
+  return new Set(entries.map(monthlyEntryDuplicateKey).filter(Boolean));
 }
 
 async function loadMonthContext(req, res) {
@@ -97,30 +97,15 @@ async function loadMonthContext(req, res) {
 }
 
 async function persistLinkedEntities(transaction, ccmId, row) {
-  const normalizedMobile = row.mobileNumber.replace(/\D/g, '');
   let vehicle = row.vin
     ? await transaction.vehicle.findUnique({ where: { vin: row.vin }, include: { customer: true } })
     : null;
   let customer = vehicle?.customer || null;
 
-  if (vehicle && ((vehicle.ccmId && vehicle.ccmId !== ccmId) || (customer?.ccmId && customer.ccmId !== ccmId))) {
-    const conflict = new Error('This VIN belongs to another CCM and cannot be added to this monthly dataset.');
+  if (vehicle && (vehicle.ccmId !== ccmId || customer?.ccmId !== ccmId)) {
+    const conflict = new Error('This VIN does not have matching ownership for the selected CCM and cannot be added to this monthly dataset.');
     conflict.code = 'MONTHLY_CCM_CONFLICT';
     throw conflict;
-  }
-
-  if (!customer) {
-    const phoneMatches = await transaction.customer.findMany({
-      where: { mobileNumber: { not: null } },
-      select: { id: true, fullName: true, customerCode: true, mobileNumber: true, ccmId: true },
-    });
-    const phoneMatch = phoneMatches.find((record) => record.mobileNumber.replace(/\D/g, '') === normalizedMobile) || null;
-    if (phoneMatch?.ccmId && phoneMatch.ccmId !== ccmId) {
-      const conflict = new Error('This phone number belongs to a customer assigned to another CCM.');
-      conflict.code = 'MONTHLY_CCM_CONFLICT';
-      throw conflict;
-    }
-    customer = phoneMatch;
   }
 
   if (!customer) {
@@ -180,7 +165,7 @@ function monthlyEntryData(datasetId, createdById, ccmId, row, links, source) {
     customerId: links.customer.id,
     vehicleId: links.vehicle?.id || null,
     createdById,
-    dedupeKey: monthlyEntryDuplicateKey(row),
+    dedupeKey: monthlyEntryDuplicateKey(row) || `row:${randomUUID()}`,
     customerName: row.customerName,
     mobileNumber: row.mobileNumber,
     email: row.email,
@@ -244,7 +229,7 @@ export async function createMonthlyCustomerEntry(req, res) {
   const dataset = await getDataset(context.ccm.id, context.year, context.month);
   const key = monthlyEntryDuplicateKey(validation.value);
   const existingKeys = await getExistingKeys(dataset.id);
-  if (existingKeys.has(key)) return res.status(409).json({ message: 'This customer or vehicle is already in the selected month.' });
+  if (key && existingKeys.has(key)) return res.status(409).json({ message: 'This vehicle is already in the selected month.' });
 
   try {
     const entry = await prisma.$transaction(async (transaction) => {
@@ -362,7 +347,7 @@ export async function importMonthlyCustomerData(req, res) {
       }
 
       const key = monthlyEntryDuplicateKey(item.row);
-      if (seenKeys.has(key)) {
+      if (key && seenKeys.has(key)) {
         skippedRows += 1;
         rowErrors.push({
           importId: importRecord.id,
@@ -385,7 +370,7 @@ export async function importMonthlyCustomerData(req, res) {
             data: monthlyEntryData(dataset.id, req.user.id, prepared.context.ccm.ccmId, item.row, links, 'import'),
           });
         });
-        seenKeys.add(key);
+        if (key) seenKeys.add(key);
         addedRows += 1;
       } catch (error) {
         if (error?.code !== 'P2002' && error?.code !== 'MONTHLY_CCM_CONFLICT') throw error;

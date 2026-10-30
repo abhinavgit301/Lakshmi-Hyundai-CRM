@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { prisma } from '../config/prisma.js';
 import { appointmentVisibilityWhere } from '../utils/appointmentAccess.js';
 import { evaluateRepairOrderRow } from '../utils/businessRules.js';
-import { creCustomerWhere } from '../utils/creAccess.js';
-import { buildDuplicateKey, normalizeVin } from '../utils/roleAccess.js';
+import { creCustomerWhere, creVehicleWhere, workshopVisitVisibilityWhere } from '../utils/creAccess.js';
+import { normalizeVin } from '../utils/roleAccess.js';
 import { addMonths, classifyServiceDue, getLatestServiceDate, getYearlyDueDate, parseStoredDate } from '../utils/serviceDue.js';
 import {
   normalizeSaleDate,
@@ -46,24 +46,109 @@ export function getVisibilityWhere(user) {
   return { id: 'no-access' };
 }
 
+export function operationalReadScope(user) {
+  const role = normalizeRole(user?.role);
+  if (role === 'ADMIN' || role === 'GM') {
+    return {
+      customer: {},
+      vehicle: {},
+      call: {},
+      appointment: appointmentVisibilityWhere(user),
+      followUp: {},
+      importBatch: {},
+      vinConflict: {},
+      allocation: {},
+    };
+  }
+  if (role === 'CCM') {
+    const ccmId = user?.ccmId || 'no-access';
+    const customer = { ccmId };
+    const linkedVehicle = {
+      OR: [{ vehicleId: null }, { vehicle: { is: { ccmId } } }],
+    };
+    return {
+      customer,
+      vehicle: { ccmId },
+      call: { customer: { is: customer }, AND: [linkedVehicle] },
+      appointment: appointmentVisibilityWhere(user),
+      followUp: { customer: { is: customer }, AND: [linkedVehicle] },
+      importBatch: { ccmId },
+      vinConflict: { targetCcmId: ccmId },
+      allocation: { ccmId },
+    };
+  }
+  if (role === 'CRE') {
+    const ccmId = user?.ccmId || 'no-access';
+    const customer = creCustomerWhere(user);
+    const linkedVehicle = {
+      OR: [
+        { vehicleId: null },
+        { vehicle: { is: { ccmId, ...creVehicleWhere(user) } } },
+      ],
+    };
+    return {
+      customer,
+      vehicle: { ccmId, ...creVehicleWhere(user) },
+      call: {
+        createdById: user?.id || 'no-access',
+        callSource: { in: allowedServiceSources(user) },
+        customer: { is: customer },
+        AND: [linkedVehicle],
+      },
+      appointment: appointmentVisibilityWhere(user),
+      followUp: {
+        source: { in: allowedServiceSources(user) },
+        customer: { is: customer },
+        AND: [linkedVehicle],
+      },
+      importBatch: { importedByUserId: user?.id || 'no-access' },
+      vinConflict: { targetCcmId: ccmId },
+      allocation: { ccmId, creId: user?.id || 'no-access' },
+    };
+  }
+  const denied = { id: 'no-access' };
+  return {
+    customer: denied,
+    vehicle: denied,
+    call: denied,
+    appointment: denied,
+    followUp: denied,
+    importBatch: denied,
+    vinConflict: denied,
+    allocation: denied,
+  };
+}
+
 export async function getDashboardSummary(req, res) {
   const user = req.user;
   const role = normalizeRole(user?.role);
   const now = new Date();
   const dayRange = workshopDayRange(now);
   const monthInfo = workshopMonthOf(now);
+  const scope = operationalReadScope(user);
   if (role === 'FREE_SERVICE_CRE') {
+    const teamCallScope = {
+      ccmId: user.ccmId || 'no-access',
+      customer: { is: { ccmId: user.ccmId || 'no-access' } },
+      AND: [{
+        OR: [
+          { vehicleId: null },
+          { vehicle: { is: { ccmId: user.ccmId || 'no-access' } } },
+        ],
+      }],
+    };
     const counts = await getCreCallCounts({
       creIds: [user.id],
       start: dayRange.start,
       end: dayRange.end,
       callSources: ['FREE_SERVICE'],
+      ccmId: user.ccmId || 'no-access',
+      scopeWhere: teamCallScope,
     });
     const activity = counts.get(user.id) || { callsMade: 0, callsPickedUp: 0 };
     const appointments = await prisma.appointment.findMany({
       where: {
-        createdById: user.id,
-        customerId: null,
+        ...appointmentVisibilityWhere(user),
         scheduledAt: { gte: dayRange.start, lt: dayRange.end },
       },
       orderBy: { scheduledAt: 'asc' },
@@ -99,10 +184,11 @@ export async function getDashboardSummary(req, res) {
     pendingVinConflicts,
     assignedAllocations,
   ] = await Promise.all([
-    prisma.customer.count(),
-    prisma.vehicle.count({ where: { status: 'ACTIVE' } }),
+    prisma.customer.count({ where: scope.customer }),
+    prisma.vehicle.count({ where: { ...scope.vehicle, status: 'ACTIVE' } }),
     prisma.callLog.count({
       where: {
+        ...scope.call,
         createdAt: {
           gte: dayRange.start,
           lt: dayRange.end,
@@ -111,18 +197,19 @@ export async function getDashboardSummary(req, res) {
     }),
     prisma.appointment.count({
       where: {
+        ...scope.appointment,
         scheduledAt: {
           gte: dayRange.start,
           lt: dayRange.end,
         },
       },
     }),
-    prisma.followUp.count({ where: { status: 'pending' } }),
-    prisma.callLog.count(),
-    prisma.callLog.count({ where: { outcome: 'APPOINTMENT_SET' } }),
-    prisma.importBatch.aggregate({ _sum: { totalRows: true, flaggedRows: true } }),
-    prisma.vINConflictReview.count({ where: { status: 'pending' } }),
-    prisma.allocation.count({ where: { status: 'assigned' } }),
+    prisma.followUp.count({ where: { ...scope.followUp, status: 'pending' } }),
+    prisma.callLog.count({ where: scope.call }),
+    prisma.callLog.count({ where: { ...scope.call, outcome: 'APPOINTMENT_SET' } }),
+    prisma.importBatch.aggregate({ where: scope.importBatch, _sum: { totalRows: true, flaggedRows: true } }),
+    prisma.vINConflictReview.count({ where: { ...scope.vinConflict, status: 'pending' } }),
+    prisma.allocation.count({ where: { ...scope.allocation, status: 'assigned' } }),
   ]);
 
   const summary = {
@@ -142,17 +229,28 @@ export async function getDashboardSummary(req, res) {
   if (role === 'CRE') {
     const dueWhere = creDueWhere(user.id, user.ccmId);
     const [scopedRecords, creCounts, followUps, todayAppointments, missedWarranty] = await Promise.all([
-      loadCallListRecords(dueWhere, now),
+      loadCallListRecords(dueWhere, now, user),
       getCreCallCounts({
         creIds: [user.id],
         start: dayRange.start,
         end: dayRange.end,
         callSources: allowedServiceSources(user).filter((source) => source !== 'WARRANTY'),
+        ccmId: user.ccmId || 'no-access',
+        scopeWhere: {
+          ccmId: user.ccmId || 'no-access',
+          customer: { is: creCustomerWhere(user) },
+          AND: [{
+            OR: [
+              { vehicleId: null },
+              { vehicle: { is: { ccmId: user.ccmId || 'no-access', ...creVehicleWhere(user) } } },
+            ],
+          }],
+        },
       }),
       prisma.followUp.findMany({
         where: {
           status: 'pending',
-          customer: { is: creCustomerWhere(user) },
+          ...scope.followUp,
           source: { in: allowedServiceSources(user) },
         },
         include: {
@@ -174,7 +272,14 @@ export async function getDashboardSummary(req, res) {
         orderBy: { scheduledAt: 'asc' },
       }),
       canAccessServiceSource(user, 'WARRANTY')
-        ? findMissedWarrantyCases({ scope: dueWhere, year: monthInfo.year, month: monthInfo.month, now })
+        ? findMissedWarrantyCases({
+          scope: dueWhere,
+          vehicleScope: scope.vehicle,
+          callScope: scope.call,
+          year: monthInfo.year,
+          month: monthInfo.month,
+          now,
+        })
         : Promise.resolve([]),
     ]);
 
@@ -256,7 +361,7 @@ export async function getDashboardSummary(req, res) {
         orderBy: { name: 'asc' },
       }),
       prisma.appointment.findMany({
-        where: { ccmId, scheduledAt: { gte: dayRange.start, lt: dayRange.end } },
+        where: { ...scope.appointment, ccmId, scheduledAt: { gte: dayRange.start, lt: dayRange.end } },
         include: {
           customer: { select: { id: true, fullName: true, mobileNumber: true } },
           vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
@@ -268,14 +373,26 @@ export async function getDashboardSummary(req, res) {
         where: { ccmId, ownerUserId: null },
       }),
       prisma.vehicle.count({ where: { ccmId } }),
-      prisma.followUp.count({ where: { status: 'pending', customer: { is: { ccmId } } } }),
+      prisma.followUp.count({ where: { ...scope.followUp, status: 'pending' } }),
     ]);
 
     const creIds = cres.map((c) => c.id);
     const prevDayRange = workshopDayRange(now, -1);
     const [todayCounts, prevCounts] = await Promise.all([
-      getCreCallCounts({ creIds, start: dayRange.start, end: dayRange.end }),
-      getCreCallCounts({ creIds, start: prevDayRange.start, end: prevDayRange.end }),
+      getCreCallCounts({
+        creIds,
+        start: dayRange.start,
+        end: dayRange.end,
+        ccmId,
+        scopeWhere: scope.call,
+      }),
+      getCreCallCounts({
+        creIds,
+        start: prevDayRange.start,
+        end: prevDayRange.end,
+        ccmId,
+        scopeWhere: scope.call,
+      }),
     ]);
 
     const creBoard = buildQuotaRows(cres, todayCounts);
@@ -445,7 +562,23 @@ function getAgeInMonths(saleDate, now) {
   return Math.max(0, months);
 }
 
-export async function loadCallListRecords(where, now = new Date()) {
+export async function loadCallListRecords(where, now = new Date(), user = null) {
+  const role = normalizeRole(user?.role);
+  const ccmId = user?.ccmId || 'no-access';
+  const allocationWhere = role === 'ADMIN' || role === 'GM'
+    ? { status: 'assigned' }
+    : role === 'CCM'
+      ? { status: 'assigned', ccmId }
+      : role === 'CRE'
+        ? { status: 'assigned', ccmId, creId: user?.id || 'no-access' }
+        : { id: 'no-access' };
+  const monthlyEntryWhere = role === 'ADMIN' || role === 'GM'
+    ? {}
+    : role === 'CCM' || role === 'CRE'
+      ? { dataset: { is: { ccmId } } }
+      : { id: 'no-access' };
+  const visitWhere = workshopVisitVisibilityWhere(user);
+  const appointmentWhere = appointmentVisibilityWhere(user || {});
   const upcomingAppointmentWhere = {
     scheduledAt: { gte: now },
     status: { in: ['PENDING', 'CONFIRMED', 'RESCHEDULED'] },
@@ -457,6 +590,7 @@ export async function loadCallListRecords(where, now = new Date()) {
       vehicle: {
         include: {
           workshopVisits: {
+            where: visitWhere,
             orderBy: [
               { visitDate: { sort: 'desc', nulls: 'last' } },
               { repairOrderNo: 'asc' },
@@ -473,13 +607,14 @@ export async function loadCallListRecords(where, now = new Date()) {
             },
           },
           allocations: {
-            where: { status: 'assigned' },
+            where: allocationWhere,
             orderBy: { createdAt: 'desc' },
             take: 1,
             select: { serviceType: true },
           },
           monthlyDataEntries: {
             where: {
+              ...monthlyEntryWhere,
               OR: [
                 { serviceType: { not: null } },
                 { nextServiceDueDate: { not: null } },
@@ -490,7 +625,7 @@ export async function loadCallListRecords(where, now = new Date()) {
             select: { serviceType: true, nextServiceDueDate: true },
           },
           appointments: {
-            where: upcomingAppointmentWhere,
+            where: { ...upcomingAppointmentWhere, ...appointmentWhere },
             orderBy: { scheduledAt: 'asc' },
             take: 1,
             select: { id: true, scheduledAt: true, status: true },
@@ -498,7 +633,7 @@ export async function loadCallListRecords(where, now = new Date()) {
           customer: {
             include: {
               appointments: {
-                where: { ...upcomingAppointmentWhere, vehicleId: null },
+                where: { ...upcomingAppointmentWhere, ...appointmentWhere, vehicleId: null },
                 orderBy: { scheduledAt: 'asc' },
                 take: 1,
                 select: { id: true, scheduledAt: true, status: true },
@@ -566,7 +701,7 @@ export async function getCallList(req, res) {
   }
   const validated = validateMasterCallListFilters(req.query);
   if (validated.error) return res.status(400).json({ message: validated.error });
-  const records = await loadCallListRecords(getVisibilityWhere(req.user));
+  const records = await loadCallListRecords(getVisibilityWhere(req.user), new Date(), req.user);
   return res.json({
     records: filterMasterCallListRecords(records, validated.filters, req.user?.role),
   });
@@ -579,21 +714,21 @@ export function creDueWhere(creId, ccmId) {
     ccmId: ccmId || 'no-access',
     OR: [
       { ownerUserId: creId || 'no-access' },
-      { vehicle: { is: { allocations: { some: { creId: creId || 'no-access', status: 'assigned' } } } } },
+      { vehicle: { is: { allocations: { some: { creId: creId || 'no-access', ccmId: ccmId || 'no-access', status: 'assigned' } } } } },
     ],
   };
 }
 
 // Classifies loaded records into a due cohort ('1y' or '6m') as of `asOf`, so the same logic can
 // recompute a past month's cohort for performance history, not just "right now".
-export async function loadDueRecords(where, dueWindow, asOf = new Date()) {
-  const cohorts = await loadDueCohorts(where, asOf);
+export async function loadDueRecords(where, dueWindow, asOf = new Date(), user = null) {
+  const cohorts = await loadDueCohorts(where, asOf, user);
   return dueWindow === '1y' ? cohorts.oneYear : cohorts.sixMonth;
 }
 
 // Both cohorts from a single load of the master call list.
-export async function loadDueCohorts(where, asOf = new Date()) {
-  return classifyDueCohorts(await loadCallListRecords(where, asOf), asOf);
+export async function loadDueCohorts(where, asOf = new Date(), user = null) {
+  return classifyDueCohorts(await loadCallListRecords(where, asOf, user), asOf);
 }
 
 export function classifyDueCohorts(records, asOf = new Date()) {
@@ -630,7 +765,7 @@ export async function getDueCallList(req, res) {
   const where = role === 'CCM'
     ? { ccmId: req.user?.ccmId || 'no-access' }
     : creDueWhere(req.user?.id, req.user?.ccmId);
-  const due = await loadDueRecords(where, dueWindow);
+  const due = await loadDueRecords(where, dueWindow, new Date(), req.user);
   return res.json({ records: due });
 }
 
@@ -922,24 +1057,33 @@ export async function getCustomers(req, res) {
   const user = req.user;
   const role = normalizeRole(user?.role);
 
-  let where = {};
-
-  if (role === 'CCM') {
-    where = {
-      OR: [{ ccmId: user?.ccmId || null }, { ccmId: null }],
-    };
-  }
-
-  if (role === 'CRE') {
-    where = creCustomerWhere(user);
-  }
+  const where = role === 'ADMIN' || role === 'GM'
+    ? {}
+    : role === 'CCM'
+      ? { ccmId: user?.ccmId || 'no-access' }
+      : role === 'CRE'
+        ? creCustomerWhere(user)
+        : { id: 'no-access' };
+  const allocationWhere = role === 'ADMIN' || role === 'GM'
+    ? {}
+    : role === 'CCM'
+      ? { ccmId: user?.ccmId || 'no-access' }
+      : role === 'CRE'
+        ? { ccmId: user?.ccmId || 'no-access', creId: user?.id || 'no-access', status: 'assigned' }
+        : { id: 'no-access' };
 
   const rows = await prisma.customer.findMany({
     where,
     include: {
       vehicles: {
+        ...(role === 'CCM'
+          ? { where: { ccmId: user?.ccmId || 'no-access' } }
+          : role === 'CRE'
+            ? { where: creVehicleWhere(user) }
+            : {}),
         include: {
           allocations: {
+            where: allocationWhere,
             include: {
               cre: { select: { id: true, name: true, username: true } },
             },
@@ -947,6 +1091,7 @@ export async function getCustomers(req, res) {
         },
       },
       visits: {
+        where: workshopVisitVisibilityWhere(user),
         orderBy: [
           { visitDate: { sort: 'desc', nulls: 'last' } },
           { repairOrderNo: 'asc' },

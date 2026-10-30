@@ -61,7 +61,15 @@ export async function syncFreeServiceMilestones(vehicles, db = prisma) {
 
 // Missed-warranty cases whose warranty expired during the given calendar month: one per vehicle, with no
 // answered warranty call before the warranty lapsed. `scope` is a MasterCallList filter for the CRE/team.
-export async function findMissedWarrantyCases({ scope, year, month, now = new Date(), timeZone = getWorkshopTimezone() }) {
+export async function findMissedWarrantyCases({
+  scope,
+  vehicleScope = {},
+  callScope = {},
+  year,
+  month,
+  now = new Date(),
+  timeZone = getWorkshopTimezone(),
+}) {
   const monthStart = new Date(year, month - 1, 1);
   const monthEnd = new Date(year, month, 1);
   // Sale-date range that can expire inside the month, padded a day either side for month-end clamping.
@@ -69,7 +77,11 @@ export async function findMissedWarrantyCases({ scope, year, month, now = new Da
   const saleTo = new Date(addMonths(monthEnd, -36).getTime() + 86400000);
 
   const vehicles = await prisma.vehicle.findMany({
-    where: { saleDate: { gte: saleFrom, lt: saleTo }, masterCallListEntries: { some: scope } },
+    where: {
+      ...vehicleScope,
+      saleDate: { gte: saleFrom, lt: saleTo },
+      masterCallListEntries: { some: scope },
+    },
     select: { id: true, vin: true, registrationNumber: true, saleDate: true, customerId: true, customer: { select: { fullName: true } } },
   });
 
@@ -81,7 +93,7 @@ export async function findMissedWarrantyCases({ scope, year, month, now = new Da
   if (!dated.length) return [];
 
   const calls = await prisma.callLog.findMany({
-    where: { vehicleId: { in: dated.map((entry) => entry.vehicle.id) }, callSource: 'WARRANTY' },
+    where: { ...callScope, vehicleId: { in: dated.map((entry) => entry.vehicle.id) }, callSource: 'WARRANTY' },
     select: { vehicleId: true, outcome: true, createdAt: true, callSource: true },
   });
   const callsByVehicle = new Map();

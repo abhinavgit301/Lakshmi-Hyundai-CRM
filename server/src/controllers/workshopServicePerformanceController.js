@@ -119,7 +119,7 @@ export async function getWorkshopServicePerformance(req, res) {
 
   const role = String(req.user?.role || '').toUpperCase();
   // A CCM only ever sees their own team's service volume; GM/Admin may optionally filter to one team.
-  const ccmId = role === 'CCM' ? req.user.ccmId : String(req.query.ccmId || '').trim() || null;
+  const ccmId = role === 'CCM' ? String(req.user.ccmId || '').trim() : String(req.query.ccmId || '').trim() || null;
   if (role === 'CCM' && !ccmId) {
     return res.status(403).json({ message: 'A CCM assignment is required to view workshop performance.' });
   }

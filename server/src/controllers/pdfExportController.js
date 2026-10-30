@@ -119,7 +119,12 @@ export async function exportWorkshopPerformancePdf(req, res) {
     return res.status(403).json({ message: 'Access denied.' });
   }
 
-  const ccmId = role === 'CCM' ? req.user.ccmId : String(req.query.ccmId || '').trim() || null;
+  const ccmId = role === 'CCM'
+    ? String(req.user.ccmId || '').trim()
+    : String(req.query.ccmId || '').trim() || null;
+  if (role === 'CCM' && !ccmId) {
+    return res.status(403).json({ message: 'A CCM assignment is required to export workshop performance.' });
+  }
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonthNum = now.getMonth() + 1;

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Writable } from 'node:stream';
 import { exportWorkshopPerformancePdf, exportReportsPdf } from '../src/controllers/pdfExportController.js';
+import { prisma } from '../src/config/prisma.js';
 
 function mockRes() {
   const headers = {};
@@ -26,6 +27,39 @@ function mockRes() {
   return res;
 }
 
+async function withPrismaMocks(overrides, run) {
+  const originals = Object.fromEntries(Object.entries(overrides).map(([path]) => {
+    const [model, method] = path.split('.');
+    return [path, model === '$queryRaw' ? prisma.$queryRaw : prisma[model][method]];
+  }));
+  for (const [path, implementation] of Object.entries(overrides)) {
+    const [model, method] = path.split('.');
+    if (model === '$queryRaw') prisma.$queryRaw = implementation;
+    else prisma[model][method] = implementation;
+  }
+  try {
+    await run();
+  } finally {
+    for (const [path, implementation] of Object.entries(originals)) {
+      const [model, method] = path.split('.');
+      if (model === '$queryRaw') prisma.$queryRaw = implementation;
+      else prisma[model][method] = implementation;
+    }
+  }
+}
+
+const emptyReportDataMocks = {
+  'user.findMany': async () => [
+    { id: 'ccm-test-1', name: 'Test CCM', role: 'CCM', ccmId: 'ccm-test-1' },
+    { id: 'cre-test-1', name: 'Test CRE', role: 'CRE', ccmId: 'ccm-test-1' },
+  ],
+  'callLog.findMany': async () => [],
+  'appointment.findMany': async () => [],
+  'masterCallList.groupBy': async () => [],
+  '$queryRaw': async () => [],
+  'workshopVisit.count': async () => 0,
+};
+
 test('exportReportsPdf rejects CCM users with 403 Forbidden', async () => {
   const req = { user: { role: 'CCM', ccmId: 'ccm-1' }, query: {} };
   const res = mockRes();
@@ -49,6 +83,14 @@ test('exportWorkshopPerformancePdf rejects CRE users with 403 Forbidden', async 
   assert.match(res.jsonData?.message, /access denied/i);
 });
 
+test('exportWorkshopPerformancePdf fails closed for a CCM without ccmId', async () => {
+  const req = { user: { role: 'CCM', name: 'Test CCM' }, query: {} };
+  const res = mockRes();
+  await exportWorkshopPerformancePdf(req, res);
+  assert.equal(res.statusCode, 403);
+  assert.match(res.jsonData?.message, /CCM assignment is required/i);
+});
+
 test('exportReportsPdf generates a multi-page PDF buffer with correct headers for Admin and GM', async () => {
   const req = {
     user: { role: 'ADMIN', name: 'System Admin' },
@@ -56,9 +98,11 @@ test('exportReportsPdf generates a multi-page PDF buffer with correct headers fo
   };
   const res = mockRes();
 
-  await new Promise((resolve) => {
-    res.on('finish', resolve);
-    exportReportsPdf(req, res);
+  await withPrismaMocks(emptyReportDataMocks, async () => {
+    await new Promise((resolve) => {
+      res.on('finish', resolve);
+      exportReportsPdf(req, res);
+    });
   });
 
   assert.equal(res.statusCode, 200);
@@ -75,9 +119,11 @@ test('exportWorkshopPerformancePdf generates combined 3-chart PDF for CCM scoped
   };
   const res = mockRes();
 
-  await new Promise((resolve) => {
-    res.on('finish', resolve);
-    exportWorkshopPerformancePdf(req, res);
+  await withPrismaMocks(emptyReportDataMocks, async () => {
+    await new Promise((resolve) => {
+      res.on('finish', resolve);
+      exportWorkshopPerformancePdf(req, res);
+    });
   });
 
   assert.equal(res.statusCode, 200);

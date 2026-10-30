@@ -1,9 +1,10 @@
 export function canAccessServiceSource(user, source) {
   const role = String(user?.role || '').toUpperCase();
   const normalizedSource = String(source || '').toUpperCase();
-
   if (role === 'FREE_SERVICE_CRE') return false;
-  if (role !== 'CRE' || normalizedSource === 'SERVICE') return true;
+  if (['ADMIN', 'GM', 'CCM'].includes(role)) return true;
+  if (role !== 'CRE') return false;
+  if (normalizedSource === 'SERVICE') return true;
   if (normalizedSource === 'FREE_SERVICE') return user?.freeServiceEnabled === true;
   if (normalizedSource === 'WARRANTY') return user?.warrantyEnabled === true;
   return false;

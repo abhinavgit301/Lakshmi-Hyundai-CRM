@@ -42,17 +42,17 @@ export function canAccessRecord(actor, record = {}) {
   }
 
   if (role === 'CCM') {
-    const actorCcmId = actor.ccmId;
+    const actorCcmId = String(actor.ccmId || '').trim();
     const recordCcmId = record.ccmId || record.ownerCcmId;
 
-    return !recordCcmId || String(actorCcmId) === String(recordCcmId);
+    return Boolean(actorCcmId && recordCcmId && String(actorCcmId) === String(recordCcmId));
   }
 
   if (role === 'CRE') {
-    const actorCcmId = actor.ccmId;
+    const actorCcmId = String(actor.ccmId || '').trim();
     const recordCcmId = record.ccmId || record.ownerCcmId;
-    const sameCcm = !recordCcmId || String(actorCcmId) === String(recordCcmId);
-    const isAssigned = !record.assigneeId || String(record.assigneeId) === String(actor.id);
+    const sameCcm = Boolean(actorCcmId && recordCcmId && String(actorCcmId) === String(recordCcmId));
+    const isAssigned = Boolean(record.assigneeId && String(record.assigneeId) === String(actor.id));
 
     return sameCcm && isAssigned;
   }

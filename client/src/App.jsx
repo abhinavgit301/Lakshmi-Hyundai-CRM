@@ -3901,9 +3901,18 @@ function App() {
                           <td>{new Date(batch.createdAt).toLocaleString()}</td>
                           <td title={batch.recoveryBlockedReason || undefined}>
                             {batch.status === 'rolled_back' ? 'Rolled back' : batch.status === 'permanently_deleted' ? 'Permanently deleted' : batch.status === 'completed' ? 'Completed' : batch.status}
-                            {batch.permanentDeletion && <small className="import-invalidation-note" title={`Caused by import ${batch.permanentDeletion.causedByImportIds.join(', ')}`}>
-                              {batch.permanentDeletion.invalidatedChanges} changes invalidated{batch.permanentDeletion.invalidatedRows.length > 0 ? ` · rows ${batch.permanentDeletion.invalidatedRows.join(', ')}` : ''}
-                            </small>}
+                            {batch.permanentDeletion && (
+                              <details className="import-invalidation-note">
+                                <summary>
+                                  {batch.permanentDeletion.invalidatedChanges} changes invalidated
+                                  {batch.permanentDeletion.invalidatedRows.length > 0
+                                    ? ` · ${batch.permanentDeletion.invalidatedRows.length} rows`
+                                    : ''}
+                                </summary>
+                                <span>Rows: {batch.permanentDeletion.invalidatedRows.join(', ') || '—'}</span>
+                                <span>Caused by import: {batch.permanentDeletion.causedByImportIds.join(', ') || 'Unknown'}</span>
+                              </details>
+                            )}
                           </td>
                           <td>{batch.processedRows == null ? `Unknown / ${batch.totalRows} (unverified)` : `${batch.processedRows} / ${batch.totalRows}${batch.statsComplete ? '' : legacyStoredOutcomes ? ' (legacy status; row details unverified)' : ' (partial)'}`}</td>
                           <td title={batch.affectedCountsComplete ? 'Distinct affected records verified from durable change logs.' : batch.processingStartedAt ? 'Distinct records currently represented in durable change logs; completeness is not verified.' : 'No verified change-log count is available for this historical import.'}>

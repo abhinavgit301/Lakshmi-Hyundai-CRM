@@ -638,11 +638,24 @@ th {
 }
 
 .import-invalidation-note {
-  display: block;
+  display: grid;
+  gap: 4px;
+  max-width: 260px;
   margin-top: 3px;
   color: var(--text-muted);
   font-size: 0.72rem;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.import-invalidation-note summary {
+  color: #647276;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.import-invalidation-note span {
+  display: block;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .permanent-deletion-batches {

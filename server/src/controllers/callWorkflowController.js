@@ -5,7 +5,7 @@ import { validateCallLogPayload, validateFollowUpPayload } from '../utils/workfl
 import { getCreCallCounts } from '../utils/callMetrics.js';
 import { DAILY_TARGETS, freeServiceCustomerIdsForMonth, isAnsweredOutcome } from '../utils/serviceCalendar.js';
 import { findMissedWarrantyCases } from '../utils/serviceLists.js';
-import { workshopDayRange, workshopMonthOf, workshopMonthRange, zonedDateKey } from '../utils/workshopTime.js';
+import { parseDateKey, workshopDayRange, workshopMonthOf, workshopMonthRange, zonedDateKey } from '../utils/workshopTime.js';
 import { allowedServiceSources, canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { appointmentVisibilityWhere } from '../utils/appointmentAccess.js';
 import { appointmentConversionRatePercent } from '../utils/performanceMetrics.js';
@@ -104,6 +104,11 @@ export async function getFreeServicePerformanceSummary(req, res) {
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12 || year < 2000 || year > 2100) {
     return res.status(400).json({ message: 'A valid year and month are required.' });
   }
+  const performanceDateKey = String(req.query.date || workshopDayRange().dateKey);
+  const requestedDay = parseDateKey(performanceDateKey);
+  if (!requestedDay || performanceDateKey > workshopDayRange().dateKey) {
+    return res.status(400).json({ message: 'date must be a valid workshop date no later than today.' });
+  }
 
   let target;
   if (role === 'CCM') {
@@ -137,14 +142,19 @@ export async function getFreeServicePerformanceSummary(req, res) {
     dailyRows.set(date, row);
   }
 
-  const now = new Date();
-  const todayKey = workshopDayRange(now).dateKey;
-  const today = dailyRows.get(todayKey) || { callsMade: 0, callsPickedUp: 0 };
+  const selectedDayCounts = await getCreCallCounts({
+    creIds: [target.id],
+    start: requestedDay.start,
+    end: requestedDay.end,
+    callSources: ['FREE_SERVICE'],
+  });
+  const selectedDay = selectedDayCounts.get(target.id) || { callsMade: 0, callsPickedUp: 0 };
   return res.json({
     user: { id: target.id, name: target.name, role: 'FREE_SERVICE_CRE' },
+    performanceDate: performanceDateKey,
     dailyTargets: {
-      callsMade: { actual: today.callsMade, target: DAILY_TARGETS.callsMade },
-      callsPickedUp: { actual: today.callsPickedUp, target: DAILY_TARGETS.callsPickedUp },
+      callsMade: { actual: selectedDay.callsMade, target: DAILY_TARGETS.callsMade },
+      callsPickedUp: { actual: selectedDay.callsPickedUp, target: DAILY_TARGETS.callsPickedUp },
     },
     callsThisMonth: calls.length,
     dailyPerformance: [...dailyRows.values()],
@@ -159,6 +169,11 @@ export async function getCrePerformanceSummary(req, res) {
   const month = Number(req.query.month);
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12 || year < 2000 || year > 2100) {
     return res.status(400).json({ message: 'A valid year and month are required.' });
+  }
+  const performanceDateKey = String(req.query.date || workshopDayRange().dateKey);
+  const requestedDay = parseDateKey(performanceDateKey);
+  if (!requestedDay || performanceDateKey > workshopDayRange().dateKey) {
+    return res.status(400).json({ message: 'date must be a valid workshop date no later than today.' });
   }
 
   let targetCre;
@@ -220,7 +235,11 @@ export async function getCrePerformanceSummary(req, res) {
     prisma.followUp.count({ where: { ...followUpVisibilityFilter, status: 'pending' } }),
     prisma.callLog.count({ where: { ...monthFilter, outcome: 'APPOINTMENT_SET' } }),
     prisma.callLog.findMany({
-      where: { ...callVisibility, callSource: { in: ordinaryCallSources } },
+      where: {
+        ...callVisibility,
+        callSource: { in: ordinaryCallSources },
+        createdAt: { gte: requestedDay.start, lt: requestedDay.end },
+      },
       include: {
         customer: { select: { id: true, fullName: true, mobileNumber: true } },
         vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
@@ -228,13 +247,12 @@ export async function getCrePerformanceSummary(req, res) {
       orderBy: { createdAt: 'desc' },
       take: 6,
     }),
-    isCurrentMonth
-      ? getCreCallCounts({
-        creIds: [targetCre.id],
-        ...workshopDayRange(now),
-        callSources: ordinaryCallSources,
-      })
-      : Promise.resolve(null),
+    getCreCallCounts({
+      creIds: [targetCre.id],
+      start: requestedDay.start,
+      end: requestedDay.end,
+      callSources: ordinaryCallSources,
+    }),
     canAccessServiceSource(targetUser, 'WARRANTY')
       ? findMissedWarrantyCases({ scope: dueWhere, year, month, now })
       : Promise.resolve([]),
@@ -257,18 +275,17 @@ export async function getCrePerformanceSummary(req, res) {
   ].filter(Boolean));
   const assignedCustomerCount = workloadCustomerIds.size;
   const dueServicesCount = countOverdueRecords(scopedRecords, now);
-  const dayCounts = dailyCounts?.get(targetCre.id) || null;
+  const dayCounts = dailyCounts.get(targetCre.id) || { callsMade: 0, callsPickedUp: 0 };
 
   return res.json({
     cre: { id: targetCre.id, name: targetCre.name },
     period: { year, month, isCurrentMonth },
-    callsToday: dayCounts ? dayCounts.callsMade : null,
-    dailyTargets: dayCounts
-      ? {
-        callsMade: { actual: dayCounts.callsMade, target: DAILY_TARGETS.callsMade },
-        callsPickedUp: { actual: dayCounts.callsPickedUp, target: DAILY_TARGETS.callsPickedUp },
-      }
-      : null,
+    performanceDate: performanceDateKey,
+    callsToday: dayCounts.callsMade,
+    dailyTargets: {
+      callsMade: { actual: dayCounts.callsMade, target: DAILY_TARGETS.callsMade },
+      callsPickedUp: { actual: dayCounts.callsPickedUp, target: DAILY_TARGETS.callsPickedUp },
+    },
     callsThisMonth,
     lifetimeCalls,
     lifetimeAppointments,

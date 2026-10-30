@@ -403,6 +403,8 @@ function App() {
   const [dueError, setDueError] = useState('');
   const [dueSearch, setDueSearch] = useState('');
   const [followUpSearch, setFollowUpSearch] = useState('');
+  const [accordionDueCategoryFilter, setAccordionDueCategoryFilter] = useState('');
+  const [accordionRepairTypeFilter, setAccordionRepairTypeFilter] = useState('');
   const [followUpListRecords, setFollowUpListRecords] = useState([]);
   const [allocationSearch, setAllocationSearch] = useState('');
   const [dueIssues, setDueIssues] = useState([]);
@@ -436,6 +438,7 @@ function App() {
   const [performanceError, setPerformanceError] = useState('');
   const [performanceYear, setPerformanceYear] = useState(new Date().getFullYear());
   const [performanceMonth, setPerformanceMonth] = useState(new Date().getMonth() + 1);
+  const [performanceDate, setPerformanceDate] = useState(() => localDateKey(new Date()));
   const [performanceCreId, setPerformanceCreId] = useState('');
   const [followUps, setFollowUps] = useState([]);
   const [followUpsLoading, setFollowUpsLoading] = useState(false);
@@ -1170,6 +1173,8 @@ function App() {
     setActiveView(viewName);
     setCustomersMenuOpen(true);
     setDueSearch('');
+    setAccordionDueCategoryFilter('');
+    setAccordionRepairTypeFilter('');
     setDueRecords([]);
     setDueIssues([]);
     setCustomerPanel({ customerId: null, mode: 'options' });
@@ -1403,6 +1408,8 @@ function App() {
     setFollowUpMenuOpen(true);
     setFollowUps([]);
     setFollowUpSearch('');
+    setAccordionDueCategoryFilter('');
+    setAccordionRepairTypeFilter('');
     setDueError('');
     setCustomerPanel({ customerId: null, mode: 'options' });
     setCallError('');
@@ -1521,12 +1528,13 @@ function App() {
     await loadBoard('');
   }
 
-  async function loadPerformance(year, month, creId, freeServiceSelected) {
+  async function loadPerformance(year, month, creId, freeServiceSelected, date = performanceDate) {
     setPerformanceLoading(true);
     setPerformanceError('');
     try {
       const params = new URLSearchParams({ year: String(year), month: String(month) });
       if (creId) params.set('creId', creId);
+      if (date) params.set('date', date);
       const isFreeServiceCre = freeServiceSelected ?? (currentRole === 'FREE_SERVICE_CRE' || freeServiceCres.some((user) => user.id === creId));
       const response = await api.get(`/performance/${isFreeServiceCre ? 'free-service' : 'summary'}?${params}`);
       setPerformance(response.data);
@@ -1545,6 +1553,17 @@ function App() {
     else setPerformance(null);
   }
 
+  function changePerformanceDate(date) {
+    if (!date) return;
+    const [year, month] = date.split('-').map(Number);
+    setPerformanceDate(date);
+    setPerformanceYear(year);
+    setPerformanceMonth(month);
+    if (currentRole === 'CRE' || currentRole === 'FREE_SERVICE_CRE' || performanceCreId) {
+      loadPerformance(year, month, performanceCreId, undefined, date);
+    }
+  }
+
   function changePerformanceCre(creId) {
     setPerformanceCreId(creId);
     if (creId) loadPerformance(performanceYear, performanceMonth, creId);
@@ -1556,6 +1575,8 @@ function App() {
     const now = new Date();
     setPerformanceYear(now.getFullYear());
     setPerformanceMonth(now.getMonth() + 1);
+    const today = localDateKey(now);
+    setPerformanceDate(today);
     if (currentRole === 'CCM') {
       let teamFreeServiceCres = freeServiceCres;
       if (allocationCres.length === 0 || freeServiceCres.length === 0) {
@@ -1574,12 +1595,13 @@ function App() {
           now.getMonth() + 1,
           performanceCreId,
           teamFreeServiceCres.some((user) => user.id === performanceCreId),
+          today,
         );
       }
       else setPerformance(null);
       return;
     }
-    await loadPerformance(now.getFullYear(), now.getMonth() + 1, '');
+    await loadPerformance(now.getFullYear(), now.getMonth() + 1, '', undefined, today);
   }
 
   async function changeFollowUpStatus(followUpId, status) {
@@ -1956,6 +1978,11 @@ function App() {
   const canAccessFreeService = currentRole !== 'CRE' || currentUser?.freeServiceEnabled === true;
   const canAccessWarranty = currentRole !== 'CRE' || currentUser?.warrantyEnabled === true;
   const viewingFreeServicePerformance = currentRole === 'FREE_SERVICE_CRE' || freeServiceCres.some((user) => user.id === performanceCreId);
+  const performanceDateLabel = new Date(`${performanceDate}T12:00:00`).toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
   useEffect(() => {
     if (currentRole !== 'CRE' || !currentUser?.id) return undefined;
 
@@ -2410,7 +2437,6 @@ function App() {
                     const details = visit.importedDetails || {};
                     const visitId = `${visit.repairOrderNo || 'repair'}-${visit.visitDate || index}`;
                     const detailEntries = [
-                      ['Repair Order', visit.repairOrderNo || getImportedDetail(details, 'roNumber', 'repairOrderNo')],
                       ['G.P. Date', visit.gpDate || getImportedDetail(details, 'gpDate')],
                       ['R/O Date', visit.visitDate || getImportedDetail(details, 'visitDate', 'roDate')],
                       ['Closing Date', visit.closingDate || getImportedDetail(details, 'closingDate')],
@@ -2547,9 +2573,7 @@ function App() {
     } : {}),
   };
   const dueSearchTerm = dueSearch.trim().toLowerCase();
-  const visibleDueRecords = dueSearchTerm
-    ? dueRecords.filter((record) => [record.name, record.mobile, record.vin, record.model, record.registrationNumber, record.milestoneName].some((value) => String(value || '').toLowerCase().includes(dueSearchTerm)))
-    : dueRecords;
+  const visibleDueRecords = dueRecords.filter((record) => matchesAccordionFilters(record, dueSearchTerm));
   const allocationSearchTerm = allocationSearch.trim().toLowerCase();
   const allocationRecords = currentRole === 'CCM' ? masterRecords.filter((record) => Boolean(record.assigneeId)) : masterRecords;
   const visibleAllocationRecords = allocationSearchTerm
@@ -2592,10 +2616,23 @@ function App() {
       callSource: followUp.source,
     };
   }) : [];
-  const visibleFollowUpTableRecords = followUpSearchTerm
-    ? followUpTableRecords.filter((record) => [record.name, record.mobile, record.vin, record.model, record.registrationNumber, record.milestoneName, record.assigneeName]
-      .some((value) => String(value || '').toLowerCase().includes(followUpSearchTerm)))
-    : followUpTableRecords;
+  const visibleFollowUpTableRecords = followUpTableRecords.filter((record) => matchesAccordionFilters(record, followUpSearchTerm));
+  const visibleFollowUps = followUps.filter((followUp) => {
+    const record = (followUp.vehicleId && followUpListRecords.find((entry) => entry.vehicleId === followUp.vehicleId))
+      || (followUp.vehicleId && calls.find((entry) => entry.vehicleId === followUp.vehicleId))
+      || followUpListRecords.find((entry) => entry.customerId === followUp.customer.id)
+      || calls.find((entry) => entry.customerId === followUp.customer.id);
+    return matchesAccordionFilters({
+      ...record,
+      name: followUp.customer.fullName || record?.name,
+      mobile: followUp.customer.mobileNumber || record?.mobile,
+      vin: followUp.vehicle?.vin || record?.vin,
+      model: followUp.vehicle?.model || record?.model,
+      registrationNumber: followUp.vehicle?.registrationNumber || record?.registrationNumber,
+      assigneeName: followUp.cre?.name || record?.assigneeName,
+      repairOrderNo: record?.repairOrderNo,
+    }, followUpSearchTerm);
+  });
   const weekDays = Array.from({ length: 7 }, (_, offset) => {
     const date = new Date();
     date.setDate(date.getDate() + offset);
@@ -2627,8 +2664,90 @@ function App() {
     );
   }
 
+  function matchesAccordionFilters(record, search) {
+    if (accordionDueCategoryFilter) {
+      const dueCategory = record.dueCategory;
+      if (accordionDueCategoryFilter === 'allDue') {
+        if (!['6m', '1y'].includes(dueCategory)) return false;
+      } else if (dueCategory !== accordionDueCategoryFilter) return false;
+    }
+    if (accordionRepairTypeFilter && record.type !== accordionRepairTypeFilter) return false;
+    if (!search) return true;
+
+    const searchValues = [
+      record.name,
+      record.customerName,
+      record.mobile,
+      record.mobileNumber,
+      record.vin,
+      record.model,
+      record.registrationNumber,
+      record.milestoneName,
+      record.assigneeName,
+      record.repairOrderNo,
+      record.roNumber,
+      ...(record.workshopVisits || []).flatMap((visit) => [
+        visit.repairOrderNo,
+        visit.importedDetails?.roNumber,
+      ]),
+    ];
+    return searchValues.some((value) => String(value || '').toLowerCase().includes(search));
+  }
+
+  function renderAccordionFilters(search, setSearch, ariaLabel) {
+    return (
+      <div className="master-list-filters accordion-list-filters" aria-label={ariaLabel}>
+        <label className="master-list-search">
+          Search customers
+          <span className="master-list-search-control">
+            <input
+              type="search"
+              value={search}
+              placeholder="Name, mobile, VIN, registration or RO"
+              aria-label="Search by customer name, mobile, VIN, registration number, or repair order"
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            {search && (
+              <button type="button" className="master-list-clear-search" aria-label="Clear search" onClick={() => setSearch('')}>
+                <X size={15} aria-hidden="true" />
+              </button>
+            )}
+          </span>
+        </label>
+        <label>
+          Due category
+          <select value={accordionDueCategoryFilter} onChange={(event) => setAccordionDueCategoryFilter(event.target.value)}>
+            <option value="">All customers</option>
+            <option value="6m">6 Months Due</option>
+            <option value="1y">1 Year Due</option>
+            <option value="allDue">All Due Customers</option>
+          </select>
+        </label>
+        <label>
+          Repair type
+          <select value={accordionRepairTypeFilter} onChange={(event) => setAccordionRepairTypeFilter(event.target.value)}>
+            <option value="">All repair types</option>
+            {MASTER_REPAIR_TYPE_ORDER.map((type) => (
+              <option key={type} value={type}>{type === 'Free' ? 'Free Service' : type === 'Paid' ? 'Paid Service' : type}</option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          className="outline-btn master-list-clear-filters"
+          disabled={!search && !accordionDueCategoryFilter && !accordionRepairTypeFilter}
+          onClick={() => {
+            setSearch('');
+            setAccordionDueCategoryFilter('');
+            setAccordionRepairTypeFilter('');
+          }}
+        >Clear filters</button>
+      </div>
+    );
+  }
+
   // Free Service and Warranty lists. CREs get a call icon; CCMs see/assign the allocated CRE.
-  function renderServiceListTable(kind, records = visibleDueRecords, followUpQueue = false) {
+  function renderServiceListTable(kind, records = visibleDueRecords, followUpQueue = false, emptyMessage) {
     const isFree = kind === 'free';
     const lastColumn = currentRole === 'CCM' ? 'Allocated CRE' : 'Call';
     const columnCount = 11;
@@ -2702,7 +2821,7 @@ function App() {
               </tr>
             ))}
             {!dueLoading && records.length === 0 && (
-              <tr><td colSpan={columnCount + (followUpQueue ? 1 : 0)} className="empty-state">{followUpQueue ? `No ${isFree ? 'free service' : 'warranty'} follow-ups scheduled.` : isFree ? 'No free-service customers are ready to call.' : 'No warranties are in their calling month.'}</td></tr>
+              <tr><td colSpan={columnCount + (followUpQueue ? 1 : 0)} className="empty-state">{emptyMessage || (followUpQueue ? `No ${isFree ? 'free service' : 'warranty'} follow-ups scheduled.` : isFree ? 'No free-service customers are ready to call.' : 'No warranties are in their calling month.')}</td></tr>
             )}
           </tbody>
         </table>
@@ -3060,6 +3179,18 @@ function App() {
               <select aria-label="Year" value={performanceYear} onChange={(event) => changePerformancePeriod(Number(event.target.value), performanceMonth)}>
                 {Array.from({ length: 5 }, (_, index) => new Date().getFullYear() - index).map((year) => <option key={year} value={year}>{year}</option>)}
               </select>
+              {(currentRole === 'CRE' || currentRole === 'FREE_SERVICE_CRE' || (currentRole === 'CCM' && performanceCreId)) && (
+                <label className="inline-filter performance-date-filter">
+                  Activity date
+                  <input
+                    type="date"
+                    aria-label="View performance for date"
+                    value={performanceDate}
+                    max={localDateKey(new Date())}
+                    onChange={(event) => changePerformanceDate(event.target.value)}
+                  />
+                </label>
+              )}
               <span className="live-indicator">{performanceLoading ? 'Updating…' : ''}</span>
             </div>
           ) : activeView === 'Workshop Performance' && ['ADMIN', 'GM', 'CCM'].includes(currentRole) ? (
@@ -3306,8 +3437,8 @@ function App() {
               <>
                 <section className="performance-kpis" aria-label="Free-Service CRE performance metrics">
                   {[
-                    ['Calls made today', performance?.dailyTargets?.callsMade, 120],
-                    ['Pickups achieved today', performance?.dailyTargets?.callsPickedUp, 80],
+                    [`Calls made · ${performanceDateLabel}`, performance?.dailyTargets?.callsMade, 120],
+                    [`Pickups · ${performanceDateLabel}`, performance?.dailyTargets?.callsPickedUp, 80],
                   ].map(([label, metric, target]) => {
                     const actual = metric?.actual ?? 0;
                     const percent = Math.min(100, Math.round((actual / target) * 100));
@@ -3327,7 +3458,7 @@ function App() {
                 <section className="panel customer-list-panel">
                   <div className="panel-header"><h3>Historical daily activity</h3><span>{monthOptions[performanceMonth - 1]} {performanceYear}</span></div>
                   <div className="table-scroll"><table><thead><tr><th>Date</th><th>Calls made</th><th>Pickups achieved</th></tr></thead><tbody>
-                    {(performance?.dailyPerformance || []).map((entry) => <tr key={entry.date}><td>{formatDate(`${entry.date}T12:00:00`)}</td><td>{entry.callsMade}</td><td>{entry.callsPickedUp}</td></tr>)}
+                    {(performance?.dailyPerformance || []).map((entry) => <tr key={entry.date} className={entry.date === performanceDate ? 'performance-selected-day' : undefined}><td>{formatDate(`${entry.date}T12:00:00`)}</td><td>{entry.callsMade}</td><td>{entry.callsPickedUp}</td></tr>)}
                     {!performanceLoading && !(performance?.dailyPerformance || []).length && <tr><td colSpan="3" className="empty-state">No Free-Service call activity is recorded for this month.</td></tr>}
                   </tbody></table></div>
                 </section>
@@ -3336,8 +3467,8 @@ function App() {
             <>
             <section className="performance-kpis" aria-label="Performance metrics">
               {[
-                { label: 'Calls made today', value: performance?.dailyTargets ? `${performance.dailyTargets.callsMade.actual} / ${performance.dailyTargets.callsMade.target}` : performance ? 'N/A' : '—', detail: performance?.dailyTargets ? (performance.dailyTargets.callsMade.actual >= performance.dailyTargets.callsMade.target ? 'Daily target met' : `${performance.dailyTargets.callsMade.target - performance.dailyTargets.callsMade.actual} short of today's target`) : 'Shown for the current day only', icon: PhoneCall, tone: 'coral' },
-                { label: 'Calls picked up today', value: performance?.dailyTargets ? `${performance.dailyTargets.callsPickedUp.actual} / ${performance.dailyTargets.callsPickedUp.target}` : performance ? 'N/A' : '—', detail: performance?.dailyTargets ? (performance.dailyTargets.callsPickedUp.actual >= performance.dailyTargets.callsPickedUp.target ? 'Daily target met' : `${performance.dailyTargets.callsPickedUp.target - performance.dailyTargets.callsPickedUp.actual} short of today's target`) : 'Shown for the current day only', icon: PhoneCall, tone: 'teal' },
+                { label: `Calls made · ${performanceDateLabel}`, value: performance?.dailyTargets ? `${performance.dailyTargets.callsMade.actual} / ${performance.dailyTargets.callsMade.target}` : performance ? 'N/A' : '—', detail: performance?.dailyTargets ? (performance.dailyTargets.callsMade.actual >= performance.dailyTargets.callsMade.target ? 'Daily target met' : `${performance.dailyTargets.callsMade.target - performance.dailyTargets.callsMade.actual} short of the daily target`) : 'Daily call activity', icon: PhoneCall, tone: 'coral' },
+                { label: `Calls picked up · ${performanceDateLabel}`, value: performance?.dailyTargets ? `${performance.dailyTargets.callsPickedUp.actual} / ${performance.dailyTargets.callsPickedUp.target}` : performance ? 'N/A' : '—', detail: performance?.dailyTargets ? (performance.dailyTargets.callsPickedUp.actual >= performance.dailyTargets.callsPickedUp.target ? 'Daily target met' : `${performance.dailyTargets.callsPickedUp.target - performance.dailyTargets.callsPickedUp.actual} short of the daily target`) : 'Daily call activity', icon: PhoneCall, tone: 'teal' },
                 { label: 'Calls this month', value: performance?.callsThisMonth ?? '—', detail: 'Since latest monthly-data load', icon: Activity, tone: 'teal' },
                 ...(currentRole === 'CRE' ? [{
                   label: 'Appointment Conversion Rate',
@@ -3382,7 +3513,7 @@ function App() {
             </section>
 
             <section className="panel customer-list-panel performance-activity">
-              <div className="panel-header"><h3>Recent call activity</h3><span>{performanceLoading ? 'Loading…' : 'Latest 6'}</span></div>
+              <div className="panel-header"><h3>Calls on {performanceDateLabel}</h3><span>{performanceLoading ? 'Loading…' : `${(performance?.recentCalls || []).length} calls`}</span></div>
               <div className="table-scroll"><table><thead><tr><th>Customer</th><th>Vehicle</th><th>Outcome</th><th>When</th></tr></thead><tbody>
                 {(performance?.recentCalls || []).map((call) => <tr key={call.id}>
                   <td>{call.customer?.id ? (
@@ -3397,7 +3528,7 @@ function App() {
                   <td><span className="badge badge-neutral">{call.outcome.replaceAll('_', ' ')}</span></td>
                   <td>{new Date(call.createdAt).toLocaleString()}</td>
                 </tr>)}
-                {!performanceLoading && !performanceError && (performance?.recentCalls || []).length === 0 && <tr><td colSpan="4" className="empty-state">No calls logged yet.</td></tr>}
+                {!performanceLoading && !performanceError && (performance?.recentCalls || []).length === 0 && <tr><td colSpan="4" className="empty-state">No calls were logged on this date.</td></tr>}
               </tbody></table></div>
             </section>
             </>
@@ -4003,12 +4134,15 @@ function App() {
               <section className="panel customer-list-panel">
                 <div className="panel-header">
                   <h3>Follow-up queue · {followUpViews[activeView].label}</h3>
-                  {followUpServiceKind && <label className="inline-filter">Search
-                    <input type="search" value={followUpSearch} placeholder="Name, number, VIN, model or reg. no." onChange={(event) => setFollowUpSearch(event.target.value)} />
-                  </label>}
-                  <span>{followUpsLoading ? 'Loading…' : `${followUpServiceKind ? visibleFollowUpTableRecords.length : followUps.length} records`}</span>
+                  <span>{followUpsLoading ? 'Loading…' : `${followUpServiceKind ? visibleFollowUpTableRecords.length : visibleFollowUps.length} records`}</span>
                 </div>
-                {followUpServiceKind ? renderServiceListTable(followUpServiceKind, visibleFollowUpTableRecords, true) : <div className="table-scroll">
+                {renderAccordionFilters(followUpSearch, setFollowUpSearch, 'Follow-up filters')}
+                {followUpServiceKind ? renderServiceListTable(
+                  followUpServiceKind,
+                  visibleFollowUpTableRecords,
+                  true,
+                  followUps.length ? 'No follow-ups match the active filters.' : undefined,
+                ) : <div className="table-scroll">
                   <table className="master-call-list-table">
                     <thead>
                       <tr>
@@ -4028,7 +4162,7 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {followUps.map((followUp) => {
+                      {visibleFollowUps.map((followUp) => {
                         const record = (followUp.vehicleId && calls.find((entry) => entry.vehicleId === followUp.vehicleId))
                           || calls.find((entry) => entry.customerId === followUp.customer.id);
                         const dueValue = followUp.source === 'FREE_SERVICE' ? followUp.milestone?.dueDate : followUp.source === 'WARRANTY' ? null : record?.dueDate;
@@ -4061,7 +4195,7 @@ function App() {
                           </tr>
                         );
                       })}
-                      {!followUpsLoading && followUps.length === 0 && <tr><td colSpan="13" className="empty-state">No {followUpViews[activeView].label.toLowerCase()} follow-ups scheduled.</td></tr>}
+                      {!followUpsLoading && visibleFollowUps.length === 0 && <tr><td colSpan="13" className="empty-state">{followUps.length === 0 ? `No ${followUpViews[activeView].label.toLowerCase()} follow-ups scheduled.` : 'No follow-ups match the active filters.'}</td></tr>}
                     </tbody>
                   </table>
                 </div>}
@@ -4070,11 +4204,9 @@ function App() {
               <section className="panel customer-list-panel">
                 <div className="panel-header">
                   <h3>{dueViews[activeView].label}</h3>
-                  <label className="inline-filter">Search
-                    <input type="search" value={dueSearch} placeholder="Name, number, VIN, model or reg. no." onChange={(event) => setDueSearch(event.target.value)} />
-                  </label>
                   <span>{dueLoading ? 'Loading…' : `${visibleDueRecords.length} records`}</span>
                 </div>
+                {renderAccordionFilters(dueSearch, setDueSearch, 'Customer filters')}
                 {dueError && <p className="form-alert error" role="alert">{dueError}</p>}
                 {dueIssues.length > 0 && (
                   <details className="form-alert info data-issues">
@@ -4082,7 +4214,14 @@ function App() {
                     <ul>{dueIssues.map((issue) => <li key={issue.vehicleId}>{issue.name} · {issue.registrationNumber || issue.vin}</li>)}</ul>
                   </details>
                 )}
-                {dueViews[activeView].kind !== 'due' ? renderServiceListTable(dueViews[activeView].kind) : currentRole === 'CCM' ? renderMasterCallTable(visibleDueRecords, dueLoading) : (
+                {dueViews[activeView].kind !== 'due' ? renderServiceListTable(
+                  dueViews[activeView].kind,
+                  visibleDueRecords,
+                  false,
+                  dueRecords.length ? 'No customers match the active filters.' : undefined,
+                ) : currentRole === 'CCM' ? renderMasterCallTable(visibleDueRecords, dueLoading, {
+                  emptyMessage: dueRecords.length ? 'No customers match the active filters.' : 'No customers are due in this list.',
+                }) : (
                 <>
                 {renderMasterRepairTypeLegend()}
                 <div className="table-scroll">
@@ -4122,7 +4261,7 @@ function App() {
                           </td>
                         </tr>
                       ))}
-                      {!dueLoading && visibleDueRecords.length === 0 && <tr><td colSpan="11" className="empty-state">No customers are due in this list.</td></tr>}
+                      {!dueLoading && visibleDueRecords.length === 0 && <tr><td colSpan="11" className="empty-state">{dueRecords.length ? 'No customers match the active filters.' : 'No customers are due in this list.'}</td></tr>}
                     </tbody>
                   </table>
                 </div>

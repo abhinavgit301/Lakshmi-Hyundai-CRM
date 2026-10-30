@@ -439,6 +439,7 @@ function App() {
   const [performanceYear, setPerformanceYear] = useState(new Date().getFullYear());
   const [performanceMonth, setPerformanceMonth] = useState(new Date().getMonth() + 1);
   const [performanceDate, setPerformanceDate] = useState(() => localDateKey(new Date()));
+  const [performanceRange, setPerformanceRange] = useState('day');
   const [performanceCreId, setPerformanceCreId] = useState('');
   const [followUps, setFollowUps] = useState([]);
   const [followUpsLoading, setFollowUpsLoading] = useState(false);
@@ -1528,13 +1529,14 @@ function App() {
     await loadBoard('');
   }
 
-  async function loadPerformance(year, month, creId, freeServiceSelected, date = performanceDate) {
+  async function loadPerformance(year, month, creId, freeServiceSelected, date = performanceDate, range = performanceRange) {
     setPerformanceLoading(true);
     setPerformanceError('');
     try {
       const params = new URLSearchParams({ year: String(year), month: String(month) });
       if (creId) params.set('creId', creId);
       if (date) params.set('date', date);
+      params.set('range', range);
       const isFreeServiceCre = freeServiceSelected ?? (currentRole === 'FREE_SERVICE_CRE' || freeServiceCres.some((user) => user.id === creId));
       const response = await api.get(`/performance/${isFreeServiceCre ? 'free-service' : 'summary'}?${params}`);
       setPerformance(response.data);
@@ -1547,20 +1549,40 @@ function App() {
   }
 
   function changePerformancePeriod(year, month, creId = performanceCreId) {
-    setPerformanceYear(year);
-    setPerformanceMonth(month);
-    if (currentRole === 'CRE' || currentRole === 'FREE_SERVICE_CRE' || creId) loadPerformance(year, month, creId);
+    const now = new Date();
+    const selectedYear = Number(year);
+    const selectedMonth = selectedYear === now.getFullYear()
+      ? Math.min(Number(month), now.getMonth() + 1)
+      : Number(month);
+    const lastDay = new Date(selectedYear, selectedMonth, 0).getDate();
+    const selectedDay = Math.min(Number(performanceDate.slice(-2)), lastDay);
+    let nextDate = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(selectedDay).padStart(2, '0')}`;
+    if (nextDate > localDateKey(now)) nextDate = localDateKey(now);
+    setPerformanceYear(selectedYear);
+    setPerformanceMonth(selectedMonth);
+    setPerformanceDate(nextDate);
+    if (currentRole === 'CRE' || currentRole === 'FREE_SERVICE_CRE' || creId) {
+      loadPerformance(selectedYear, selectedMonth, creId, undefined, nextDate);
+    }
     else setPerformance(null);
   }
 
   function changePerformanceDate(date) {
     if (!date) return;
     const [year, month] = date.split('-').map(Number);
+    setPerformanceRange('day');
     setPerformanceDate(date);
     setPerformanceYear(year);
     setPerformanceMonth(month);
     if (currentRole === 'CRE' || currentRole === 'FREE_SERVICE_CRE' || performanceCreId) {
-      loadPerformance(year, month, performanceCreId, undefined, date);
+      loadPerformance(year, month, performanceCreId, undefined, date, 'day');
+    }
+  }
+
+  function changePerformanceRange(range) {
+    setPerformanceRange(range);
+    if (currentRole === 'CRE' || currentRole === 'FREE_SERVICE_CRE' || performanceCreId) {
+      loadPerformance(performanceYear, performanceMonth, performanceCreId, undefined, performanceDate, range);
     }
   }
 
@@ -1577,6 +1599,7 @@ function App() {
     setPerformanceMonth(now.getMonth() + 1);
     const today = localDateKey(now);
     setPerformanceDate(today);
+    setPerformanceRange('day');
     if (currentRole === 'CCM') {
       let teamFreeServiceCres = freeServiceCres;
       if (allocationCres.length === 0 || freeServiceCres.length === 0) {
@@ -1596,12 +1619,13 @@ function App() {
           performanceCreId,
           teamFreeServiceCres.some((user) => user.id === performanceCreId),
           today,
+          'day',
         );
       }
       else setPerformance(null);
       return;
     }
-    await loadPerformance(now.getFullYear(), now.getMonth() + 1, '', undefined, today);
+    await loadPerformance(now.getFullYear(), now.getMonth() + 1, '', undefined, today, 'day');
   }
 
   async function changeFollowUpStatus(followUpId, status) {
@@ -1978,7 +2002,9 @@ function App() {
   const canAccessFreeService = currentRole !== 'CRE' || currentUser?.freeServiceEnabled === true;
   const canAccessWarranty = currentRole !== 'CRE' || currentUser?.warrantyEnabled === true;
   const viewingFreeServicePerformance = currentRole === 'FREE_SERVICE_CRE' || freeServiceCres.some((user) => user.id === performanceCreId);
-  const performanceDateLabel = new Date(`${performanceDate}T12:00:00`).toLocaleDateString('en-IN', {
+  const performanceDateLabel = performanceRange === 'month'
+    ? `${monthOptions[performanceMonth - 1]} ${performanceYear}`
+    : new Date(`${performanceDate}T12:00:00`).toLocaleDateString('en-IN', {
     day: 'numeric',
     month: 'short',
     year: 'numeric',
@@ -3220,15 +3246,28 @@ function App() {
                   </optgroup>
                 </select>
               )}
-              <select aria-label="Month" value={performanceMonth} onChange={(event) => changePerformancePeriod(performanceYear, Number(event.target.value))}>
-                {monthOptions.map((name, index) => <option key={name} value={index + 1}>{name}</option>)}
-              </select>
-              <select aria-label="Year" value={performanceYear} onChange={(event) => changePerformancePeriod(Number(event.target.value), performanceMonth)}>
-                {Array.from({ length: 5 }, (_, index) => new Date().getFullYear() - index).map((year) => <option key={year} value={year}>{year}</option>)}
-              </select>
+              <label className="performance-control">
+                <span>View</span>
+                <select aria-label="Performance range" value={performanceRange} onChange={(event) => changePerformanceRange(event.target.value)}>
+                  <option value="day">Single day</option>
+                  <option value="month">Whole month</option>
+                </select>
+              </label>
+              <label className="performance-control">
+                <span>Month</span>
+                <select aria-label="Month" value={performanceMonth} onChange={(event) => changePerformancePeriod(performanceYear, Number(event.target.value))}>
+                  {monthOptions.map((name, index) => <option key={name} value={index + 1} disabled={performanceYear === new Date().getFullYear() && index + 1 > new Date().getMonth() + 1}>{name}</option>)}
+                </select>
+              </label>
+              <label className="performance-control">
+                <span>Year</span>
+                <select aria-label="Year" value={performanceYear} onChange={(event) => changePerformancePeriod(Number(event.target.value), performanceMonth)}>
+                  {Array.from({ length: 5 }, (_, index) => new Date().getFullYear() - index).map((year) => <option key={year} value={year}>{year}</option>)}
+                </select>
+              </label>
               {(currentRole === 'CRE' || currentRole === 'FREE_SERVICE_CRE' || (currentRole === 'CCM' && performanceCreId)) && (
-                <label className="inline-filter performance-date-filter">
-                  Activity date
+                performanceRange === 'day' && <label className="performance-control performance-date-filter">
+                  <span>Activity date</span>
                   <input
                     type="date"
                     aria-label="View performance for date"
@@ -3238,7 +3277,7 @@ function App() {
                   />
                 </label>
               )}
-              <span className="live-indicator">{performanceLoading ? 'Updating…' : ''}</span>
+              {performanceLoading && <span className="live-indicator">Updating…</span>}
             </div>
           ) : activeView === 'Workshop Performance' && ['ADMIN', 'GM', 'CCM'].includes(currentRole) ? (
             <div className="header-actions">
@@ -3491,21 +3530,21 @@ function App() {
                     const percent = Math.min(100, Math.round((actual / target) * 100));
                     return <article key={label} className="performance-kpi teal">
                       <div className="performance-kpi-heading"><span>{label}</span><PhoneCall size={17} aria-hidden="true" /></div>
-                      <strong>{actual} / {target}</strong>
-                      <small>{percent}% of daily target</small>
-                      <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>
+                      <strong>{performanceRange === 'month' ? actual : `${actual} / ${target}`}</strong>
+                      <small>{performanceRange === 'month' ? 'Total for selected month' : `${percent}% of daily target`}</small>
+                      {performanceRange === 'day' && <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>}
                     </article>;
                   })}
-                  <article className="performance-kpi coral">
+                  {performanceRange === 'day' && <article className="performance-kpi coral">
                     <div className="performance-kpi-heading"><span>Calls this month</span><Activity size={17} aria-hidden="true" /></div>
                     <strong>{performance?.callsThisMonth ?? 0}</strong>
                     <small>Persisted Free-Service call activity</small>
-                  </article>
+                  </article>}
                 </section>
                 <section className="panel customer-list-panel">
                   <div className="panel-header"><h3>Historical daily activity</h3><span>{monthOptions[performanceMonth - 1]} {performanceYear}</span></div>
                   <div className="table-scroll"><table><thead><tr><th>Date</th><th>Calls made</th><th>Pickups achieved</th></tr></thead><tbody>
-                    {(performance?.dailyPerformance || []).map((entry) => <tr key={entry.date} className={entry.date === performanceDate ? 'performance-selected-day' : undefined}><td>{formatDate(`${entry.date}T12:00:00`)}</td><td>{entry.callsMade}</td><td>{entry.callsPickedUp}</td></tr>)}
+                    {(performance?.dailyPerformance || []).map((entry) => <tr key={entry.date} className={performanceRange === 'day' && entry.date === performanceDate ? 'performance-selected-day' : undefined}><td>{formatDate(`${entry.date}T12:00:00`)}</td><td>{entry.callsMade}</td><td>{entry.callsPickedUp}</td></tr>)}
                     {!performanceLoading && !(performance?.dailyPerformance || []).length && <tr><td colSpan="3" className="empty-state">No Free-Service call activity is recorded for this month.</td></tr>}
                   </tbody></table></div>
                 </section>
@@ -3514,9 +3553,15 @@ function App() {
             <>
             <section className="performance-kpis" aria-label="Performance metrics">
               {[
-                { label: `Calls made · ${performanceDateLabel}`, value: performance?.dailyTargets ? `${performance.dailyTargets.callsMade.actual} / ${performance.dailyTargets.callsMade.target}` : performance ? 'N/A' : '—', detail: performance?.dailyTargets ? (performance.dailyTargets.callsMade.actual >= performance.dailyTargets.callsMade.target ? 'Daily target met' : `${performance.dailyTargets.callsMade.target - performance.dailyTargets.callsMade.actual} short of the daily target`) : 'Daily call activity', icon: PhoneCall, tone: 'coral' },
-                { label: `Calls picked up · ${performanceDateLabel}`, value: performance?.dailyTargets ? `${performance.dailyTargets.callsPickedUp.actual} / ${performance.dailyTargets.callsPickedUp.target}` : performance ? 'N/A' : '—', detail: performance?.dailyTargets ? (performance.dailyTargets.callsPickedUp.actual >= performance.dailyTargets.callsPickedUp.target ? 'Daily target met' : `${performance.dailyTargets.callsPickedUp.target - performance.dailyTargets.callsPickedUp.actual} short of the daily target`) : 'Daily call activity', icon: PhoneCall, tone: 'teal' },
-                { label: 'Calls this month', value: performance?.callsThisMonth ?? '—', detail: 'Since latest monthly-data load', icon: Activity, tone: 'teal' },
+                { label: `Calls made · ${performanceDateLabel}`, value: performance?.dailyTargets ? (performanceRange === 'month' ? performance.dailyTargets.callsMade.actual : `${performance.dailyTargets.callsMade.actual} / ${performance.dailyTargets.callsMade.target}`) : performance ? 'N/A' : '—', detail: performanceRange === 'month' ? 'Total for selected month' : performance?.dailyTargets ? (performance.dailyTargets.callsMade.actual >= performance.dailyTargets.callsMade.target ? 'Daily target met' : `${performance.dailyTargets.callsMade.target - performance.dailyTargets.callsMade.actual} short of the daily target`) : 'Daily call activity', icon: PhoneCall, tone: 'coral' },
+                { label: `Calls picked up · ${performanceDateLabel}`, value: performance?.dailyTargets ? (performanceRange === 'month' ? performance.dailyTargets.callsPickedUp.actual : `${performance.dailyTargets.callsPickedUp.actual} / ${performance.dailyTargets.callsPickedUp.target}`) : performance ? 'N/A' : '—', detail: performanceRange === 'month' ? 'Total for selected month' : performance?.dailyTargets ? (performance.dailyTargets.callsPickedUp.actual >= performance.dailyTargets.callsPickedUp.target ? 'Daily target met' : `${performance.dailyTargets.callsPickedUp.target - performance.dailyTargets.callsPickedUp.actual} short of the daily target`) : 'Daily call activity', icon: PhoneCall, tone: 'teal' },
+                ...(performanceRange === 'day' ? [{
+                  label: 'Calls this month',
+                  value: performance?.callsThisMonth ?? '—',
+                  detail: 'Since latest monthly-data load',
+                  icon: Activity,
+                  tone: 'teal',
+                }] : []),
                 ...(currentRole === 'CRE' ? [{
                   label: 'Appointment Conversion Rate',
                   value: performance?.appointmentConversionRatePercent == null ? '—' : `${performance.appointmentConversionRatePercent}%`,
@@ -3560,7 +3605,7 @@ function App() {
             </section>
 
             <section className="panel customer-list-panel performance-activity">
-              <div className="panel-header"><h3>Calls on {performanceDateLabel}</h3><span>{performanceLoading ? 'Loading…' : `${(performance?.recentCalls || []).length} calls`}</span></div>
+              <div className="panel-header"><h3>{performanceRange === 'month' ? `Calls during ${performanceDateLabel}` : `Calls on ${performanceDateLabel}`}</h3><span>{performanceLoading ? 'Loading…' : `${(performance?.recentCalls || []).length} calls`}</span></div>
               <div className="table-scroll"><table><thead><tr><th>Customer</th><th>Vehicle</th><th>Outcome</th><th>When</th></tr></thead><tbody>
                 {(performance?.recentCalls || []).map((call) => <tr key={call.id}>
                   <td>{call.customer?.id ? (
@@ -3575,7 +3620,7 @@ function App() {
                   <td><span className="badge badge-neutral">{call.outcome.replaceAll('_', ' ')}</span></td>
                   <td>{new Date(call.createdAt).toLocaleString()}</td>
                 </tr>)}
-                {!performanceLoading && !performanceError && (performance?.recentCalls || []).length === 0 && <tr><td colSpan="4" className="empty-state">No calls were logged on this date.</td></tr>}
+                {!performanceLoading && !performanceError && (performance?.recentCalls || []).length === 0 && <tr><td colSpan="4" className="empty-state">{performanceRange === 'month' ? 'No calls were logged during this month.' : 'No calls were logged on this date.'}</td></tr>}
               </tbody></table></div>
             </section>
             </>
@@ -3627,7 +3672,7 @@ function App() {
               {renderMasterCallTable(visibleAllocationRecords, allocationsLoading, { assignable: currentRole === 'CCM' })}
             </section>
             {callError && <p className="form-alert error" role="alert">{callError}</p>}
-            {renderCustomerActionPanel()}
+            {customerPanel.mode === 'call' && renderCustomerActionPanel()}
           </section>
         ) : activeView === 'Reports' ? (
           <section className="customer-workspace">
@@ -4002,7 +4047,7 @@ function App() {
               </div>
             </section>
             {callError && <p className="form-alert error" role="alert">{callError}</p>}
-            {renderCustomerActionPanel()}
+            {customerPanel.mode === 'call' && renderCustomerActionPanel()}
           </section>
         ) : activeView === 'Master list' ? (
           <section className="customer-workspace">
@@ -4554,7 +4599,7 @@ function App() {
                   </article>
                 </section>
                 {callError && <p className="form-alert error" role="alert">{callError}</p>}
-                {renderCustomerActionPanel()}
+                {customerPanel.mode === 'call' && renderCustomerActionPanel()}
               </section>
             ) : currentRole === 'CCM' ? (
               <section className="customer-workspace ccm-dashboard">

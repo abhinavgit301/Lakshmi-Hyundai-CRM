@@ -5,7 +5,7 @@ import {
   canAccessServiceSource,
   resolveCreServicePermissions,
 } from '../src/utils/creServicePermissions.js';
-import { createCallLog, createFollowUp, getCrePerformanceSummary, listFollowUps } from '../src/controllers/callWorkflowController.js';
+import { callLogVisibility, createCallLog, createFollowUp, getCrePerformanceSummary, listFollowUps } from '../src/controllers/callWorkflowController.js';
 import { getFreeServiceList, getWarrantyList } from '../src/controllers/serviceListsController.js';
 import { getCallList, getCustomers, getVisibilityWhere } from '../src/controllers/recordsController.js';
 import { listAllocations } from '../src/controllers/allocationController.js';
@@ -76,6 +76,27 @@ test('regular CRE Master Call List visibility includes only records assigned to 
   assert.deepEqual(getVisibilityWhere({ role: 'CRE', id: 'cre-1', ccmId: 'ccm-1' }), {
     ccmId: 'ccm-1',
     ownerUserId: 'cre-1',
+  });
+
+  test('customer-specific call history retains authenticated CRE and CCM visibility scopes', () => {
+    const creWhere = callLogVisibility({ role: 'CRE', id: 'cre-1', ccmId: 'ccm-1' }, 'customer-1');
+    assert.equal(creWhere.customerId, 'customer-1');
+    assert.equal(creWhere.assignedToId, 'cre-1');
+    assert.deepEqual(creWhere.customer.is, {
+      ccmId: 'ccm-1',
+      vehicles: {
+        some: {
+          OR: [
+            { allocations: { some: { creId: 'cre-1' } } },
+            { masterCallListEntries: { some: { ownerUserId: 'cre-1', ccmId: 'ccm-1' } } },
+          ],
+        },
+      },
+    });
+
+    const ccmWhere = callLogVisibility({ role: 'CCM', ccmId: 'ccm-1' }, 'customer-1');
+    assert.equal(ccmWhere.customerId, 'customer-1');
+    assert.deepEqual(ccmWhere.customer.is, { OR: [{ ccmId: 'ccm-1' }, { ccmId: null }] });
   });
 
   test('CCM Master Call List filters combine CRE, due category, repair type, and partial search', () => {

@@ -46,18 +46,21 @@ async function findAccessibleCustomer(customerId, user) {
   return customer;
 }
 
-function callLogVisibility(user) {
+export function callLogVisibility(user, customerId = '') {
   const role = normalizeRole(user?.role);
-  if (role === 'Admin' || role === 'GM') return {};
-  if (role === 'CCM') {
-    return { customer: { is: { OR: [{ ccmId: user.ccmId }, { ccmId: null }] } } };
+  let visibility;
+  if (role === 'Admin' || role === 'GM') visibility = {};
+  else if (role === 'CCM') {
+    visibility = { customer: { is: { OR: [{ ccmId: user.ccmId }, { ccmId: null }] } } };
+  } else {
+    visibility = {
+      assignedToId: user.id,
+      customer: { is: creCustomerWhere(user) },
+      callSource: { in: allowedServiceSources(user) },
+    };
   }
 
-  return {
-    assignedToId: user.id,
-    customer: { is: creCustomerWhere(user) },
-    callSource: { in: allowedServiceSources(user) },
-  };
+  return { ...visibility, ...(customerId ? { customerId } : {}) };
 }
 
 function followUpVisibility(user) {
@@ -74,8 +77,9 @@ function followUpVisibility(user) {
 }
 
 export async function listCallLogs(req, res) {
+  const customerId = String(req.query?.customerId || '').trim();
   const callLogs = await prisma.callLog.findMany({
-    where: callLogVisibility(req.user),
+    where: callLogVisibility(req.user, customerId),
     include: {
       customer: { select: { id: true, fullName: true, mobileNumber: true } },
       vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
@@ -83,7 +87,7 @@ export async function listCallLogs(req, res) {
       assignee: { select: { id: true, name: true } },
     },
     orderBy: { createdAt: 'desc' },
-    take: 200,
+    ...(!customerId ? { take: 200 } : {}),
   });
 
   return res.json({ callLogs });

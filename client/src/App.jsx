@@ -270,7 +270,8 @@ function App() {
   const [masterListSavingId, setMasterListSavingId] = useState(null);
   const [masterEntryFormOpen, setMasterEntryFormOpen] = useState(false);
   const [masterEntrySaving, setMasterEntrySaving] = useState(false);
-  const [selectedMasterRecordId, setSelectedMasterRecordId] = useState(null);
+  const [customerProfile, setCustomerProfile] = useState(null);
+  const [customerProfileVehicleId, setCustomerProfileVehicleId] = useState('');
   const [masterEntryForm, setMasterEntryForm] = useState({
     serialNo: '',
     roNumber: '',
@@ -1024,12 +1025,6 @@ function App() {
     }
   }
 
-  function openCustomerPanel(customer) {
-    setCallError('');
-    setCallMessage('');
-    setCustomerPanel({ customerId: customer.id, mode: 'options' });
-  }
-
   function startCall(customer, vehicleId, { callSource = 'SERVICE', milestoneId = '' } = {}) {
     setCallError('');
     setCallMessage('');
@@ -1102,31 +1097,59 @@ function App() {
 
   async function openDueCustomer(record, mode) {
     const customer = customers.find((entry) => entry.id === record.customerId);
-    if (!customer) {
-      setDueError('This customer is not available. Reload the list and try again.');
-      return;
-    }
     setDueError('');
     if (mode === 'call') {
+      if (!customer) {
+        setDueError('This customer is not available. Reload the list and try again.');
+        return;
+      }
       startCall(customer, record.vehicleId, {
         callSource: record.callSource || dueViews[activeView]?.callSource || 'SERVICE',
         milestoneId: record.milestoneId || '',
       });
-    } else await openCustomerProfile(customer);
+    } else await openCustomerProfile({ ...record, ...(customer || {}) });
     setTimeout(() => document.querySelector('.customer-action-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
   }
 
   async function openCustomerProfile(customer) {
-    setCustomerPanel({ customerId: customer.id, mode: 'profile' });
+    const hasCustomerId = Boolean(customer.customerId || (!Object.hasOwn(customer, 'customerId') && customer.id));
+    const customerId = customer.customerId || (!Object.hasOwn(customer, 'customerId') ? customer.id : null);
+    const profileId = customerId || customer.id || 'customer-profile-unlinked';
+    const fallback = {
+      ...customer,
+      id: profileId,
+      customerId,
+      fullName: customer.fullName || customer.name || customer.customerName || 'Customer',
+      mobileNumber: customer.mobileNumber || customer.mobile || '',
+      visits: customer.visits || customer.workshopVisits || [],
+    };
+    setCustomerProfile(fallback);
+    setCustomerProfileVehicleId(customer.vehicleId || '');
+    setCustomerPanel({ customerId: profileId, mode: 'profile' });
+    setCallError('');
     setCallLogsLoading(true);
-    try {
-      const response = await api.get('/call-logs');
-      setCallLogs(response.data.callLogs || []);
-    } catch (error) {
-      setCallError(error.response?.data?.message || 'Could not load call history.');
-    } finally {
-      setCallLogsLoading(false);
+    const customerRequest = hasCustomerId && !customers.some((entry) => entry.id === customerId)
+      ? api.get('/customers')
+      : Promise.resolve(null);
+    const callLogRequest = api.get(`/call-logs${customerId ? `?customerId=${encodeURIComponent(customerId)}` : ''}`);
+    const [customerResult, callLogResult] = await Promise.allSettled([customerRequest, callLogRequest]);
+    if (customerResult.status === 'fulfilled' && customerResult.value) {
+      const availableCustomers = customerResult.value.data.customers || [];
+      setCustomers(availableCustomers);
+      const matchedCustomer = availableCustomers.find((entry) => entry.id === customerId);
+      setCustomerProfile(matchedCustomer ? { ...matchedCustomer, customerId } : fallback);
+    } else if (customerResult.status === 'rejected') {
+      setCallError(customerResult.reason.response?.data?.message || 'Could not load imported customer and repair details.');
+    } else {
+      const matchedCustomer = customers.find((entry) => entry.id === customerId);
+      setCustomerProfile(matchedCustomer ? { ...matchedCustomer, customerId } : fallback);
     }
+    if (callLogResult.status === 'fulfilled') {
+      setCallLogs(callLogResult.value.data.callLogs || []);
+    } else {
+      setCallError(callLogResult.reason.response?.data?.message || 'Could not load call history.');
+    }
+    setCallLogsLoading(false);
   }
 
   function callFromFollowUp(followUp, vehicleId) {
@@ -1160,11 +1183,15 @@ function App() {
       setCallLogs((current) => [response.data.callLog, ...current]);
       if (activeView === 'Master list') {
         try {
-          const [recordsResponse, summaryResponse] = await Promise.all([
-            api.get('/call-list'),
+          const [, summaryResponse] = await Promise.all([
+            refreshMasterList({
+              search: masterListSearch,
+              creId: masterListCreFilter,
+              dueCategory: masterListDueFilter,
+              repairType: masterListRepairFilter,
+            }),
             api.get('/dashboard/summary'),
           ]);
-          setCalls(recordsResponse.data.records || []);
           setDashboardData(summaryResponse.data);
         } catch (error) {
           setCallError(`Call saved, but the list or dashboard could not refresh: ${error.response?.data?.message || 'Please reload to see the latest activity.'}`);
@@ -1909,7 +1936,6 @@ function App() {
     }, 250);
     return () => window.clearTimeout(timeout);
   }, [activeView, currentRole, masterListSearch, masterListCreFilter, masterListDueFilter, masterListRepairFilter, refreshMasterList]);
-  const selectedMasterRecord = calls.find((record) => record.id === selectedMasterRecordId);
   const masterRecords = masterListTeam ? calls.filter((record) => record.ccmId === masterListTeam) : calls;
   const wpCres = masterListCres.filter((cre) => !wpCcmId || cre.ccmId === wpCcmId);
   const wpMaxDaily = Math.max(1, ...(wpData?.daily || []).map((entry) => Math.max(entry.calls, entry.appointments)));
@@ -1929,9 +1955,126 @@ function App() {
           : navItems.filter((item) => item !== 'Reports')),
     ...(currentRole === 'ADMIN' ? ['User Management'] : []),
   ];
-  const panelCustomer = customers.find((customer) => customer.id === customerPanel.customerId);
+  const panelCustomer = customerProfile?.id === customerPanel.customerId
+    ? customerProfile
+    : customers.find((customer) => customer.id === customerPanel.customerId);
   const isTeamRole = currentRole === 'CRE' || currentRole === 'CCM';
   const isFreeServiceRole = currentRole === 'FREE_SERVICE_CRE';
+
+  function renderCustomerActionPanel() {
+    if (!panelCustomer) return null;
+    return (
+      <section className="panel customer-action-panel">
+        <div className="panel-header">
+          <h3>{panelCustomer.name || panelCustomer.fullName}</h3>
+          <button type="button" className="outline-btn compact-btn" onClick={() => setCustomerPanel({ customerId: null, mode: 'options' })}>Close</button>
+        </div>
+        {customerPanel.mode === 'options' && (
+          <div className="customer-options">
+            {currentRole === 'CRE' && <button type="button" className="primary-btn" onClick={() => startCall(panelCustomer)}><PhoneCall size={16} aria-hidden="true" /> Call customer</button>}
+            <button type="button" className="outline-btn" onClick={() => openCustomerProfile(panelCustomer)}>View profile</button>
+          </div>
+        )}
+        {customerPanel.mode === 'call' && (
+          <form className="customer-form" onSubmit={submitCall}>
+            <p className="call-number">
+              {panelCustomer.mobile || panelCustomer.mobileNumber
+                ? <a className="primary-btn" href={`tel:${panelCustomer.mobile || panelCustomer.mobileNumber}`}><PhoneCall size={16} aria-hidden="true" /> {panelCustomer.mobile || panelCustomer.mobileNumber}</a>
+                : <span className="empty-state">No mobile number on file</span>}
+            </p>
+            {callForm.callSource !== 'SERVICE' && (
+              <p className="performance-note">{callForm.callSource === 'WARRANTY' ? 'Warranty call: it is tracked separately and does not count toward your daily call targets.' : 'Free-service call: the follow-up you arrange will appear under Follow-ups · Free Service.'}</p>
+            )}
+            <div className="form-grid">
+              <label>Vehicle
+                <select value={callForm.vehicleId} onChange={(event) => setCallForm({ ...callForm, vehicleId: event.target.value })}>
+                  <option value="">No specific vehicle</option>
+                  {(panelCustomer.vehicles || []).map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{[vehicle.model, vehicle.registrationNumber, vehicle.vin].filter(Boolean).join(' / ')}</option>)}
+                </select>
+              </label>
+              <label>Call outcome
+                <select required value={callForm.outcome} onChange={(event) => setCallForm({ ...callForm, outcome: event.target.value })}>
+                  {['CONTACTED', 'NOT_INTERESTED', 'WRONG_NUMBER', 'NO_RESPONSE', 'OTHER'].map((outcome) => <option key={outcome} value={outcome}>{outcome.replaceAll('_', ' ')}</option>)}
+                </select>
+              </label>
+              <label className="full-width-field">Feedback<textarea required rows="3" maxLength="2000" value={callForm.notes} onChange={(event) => setCallForm({ ...callForm, notes: event.target.value })} placeholder="What did the customer say?" /></label>
+              <fieldset className="full-width-field next-action">
+                <legend>Next step</legend>
+                {[['none', 'No further action'], ['followup', 'Arrange follow-up'], ['appointment', 'Arrange appointment']].map(([value, label]) => (
+                  <label key={value} className="radio-option"><input type="radio" name="nextAction" value={value} checked={callForm.nextAction === value} onChange={() => setCallForm({ ...callForm, nextAction: value })} /> {label}</label>
+                ))}
+              </fieldset>
+              {callForm.nextAction !== 'none' && (
+                <label>{callForm.nextAction === 'followup' ? 'Follow-up date and time' : 'Appointment date and time'}
+                  <input required type="datetime-local" value={callForm.scheduledAt} onChange={(event) => setCallForm({ ...callForm, scheduledAt: event.target.value })} />
+                </label>
+              )}
+            </div>
+            <div className="form-actions">
+              <button type="button" className="outline-btn" onClick={() => setCustomerPanel({ customerId: panelCustomer.id, mode: 'options' })}>Back</button>
+              <button type="submit" className="primary-btn" disabled={callSaving}>{callSaving ? 'Saving…' : 'Save call'}</button>
+            </div>
+          </form>
+        )}
+        {customerPanel.mode === 'profile' && (
+          <div className="customer-profile">
+            {callLogsLoading && <p className="performance-note" role="status">Loading customer history…</p>}
+            <dl className="master-detail-grid">
+              <div><dt>Name</dt><dd>{panelCustomer.name || panelCustomer.fullName}</dd></div>
+              <div><dt>Mobile</dt><dd>{panelCustomer.mobile || panelCustomer.mobileNumber || '—'}</dd></div>
+              <div><dt>Email</dt><dd>{panelCustomer.email || '—'}</dd></div>
+            </dl>
+            <h4>Vehicles</h4>
+            <div className="table-scroll"><table><thead><tr><th>Model</th><th>Reg. no.</th><th>VIN</th></tr></thead><tbody>
+              {(panelCustomer.vehicles || []).map((vehicle) => <tr key={vehicle.id}><td>{vehicle.model || '—'}</td><td>{vehicle.registrationNumber || '—'}</td><td>{vehicle.vin || '—'}</td></tr>)}
+              {!panelCustomer.vehicles?.length && <tr><td colSpan="3" className="empty-state">No vehicle details available.</td></tr>}
+            </tbody></table></div>
+            <h4>Repair history</h4>
+            {(panelCustomer.visits || []).map((visit) => (
+              <div key={visit.repairOrderNo || visit.visitDate}>
+                <h4>Repair order {visit.repairOrderNo || '—'}{visit.visitDate ? ` · ${new Date(visit.visitDate).toLocaleDateString()}` : ''}</h4>
+                <dl className="master-detail-grid">
+                  <div><dt>Closing date</dt><dd>{visit.closingDate ? new Date(visit.closingDate).toLocaleDateString() : '—'}</dd></div>
+                  <div><dt>G.P. date</dt><dd>{visit.gpDate ? new Date(visit.gpDate).toLocaleDateString() : '—'}</dd></div>
+                  <div><dt>Repair total</dt><dd>{visit.totalAmount ?? '—'}</dd></div>
+                </dl>
+                <dl className="master-detail-grid">
+                  {Object.entries(visit.importedDetails || {}).map(([key, value]) => (
+                    <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{value == null || value === '' ? '—' : String(value)}</dd></div>
+                  ))}
+                </dl>
+              </div>
+            ))}
+            {!panelCustomer.visits?.length && !panelCustomer.importedDetails && <p className="empty-state">No repair history available.</p>}
+            {!panelCustomer.visits?.length && panelCustomer.importedDetails && (
+              <section className="master-visit-details">
+                <h4>Imported repair details</h4>
+                <dl className="master-detail-grid">
+                  {Object.entries(panelCustomer.importedDetails).map(([key, value]) => (
+                    <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{value == null || value === '' ? '—' : String(value)}</dd></div>
+                  ))}
+                </dl>
+              </section>
+            )}
+            <h4>Call history</h4>
+            <div className="table-scroll"><table><thead><tr><th>When</th><th>Outcome</th><th>CRE</th><th>Feedback</th></tr></thead><tbody>
+              {callLogs.filter((call) => call.customer?.id === panelCustomer.id || call.customerId === panelCustomer.id).map((call) => <tr key={call.id}><td>{new Date(call.createdAt).toLocaleString()}</td><td>{call.outcome.replaceAll('_', ' ')}</td><td>{call.assignee?.name || call.creator?.name || '—'}</td><td>{call.notes || '—'}</td></tr>)}
+              {!callLogsLoading && !callLogs.some((call) => call.customer?.id === panelCustomer.id || call.customerId === panelCustomer.id) && <tr><td colSpan="4" className="empty-state">No calls logged yet.</td></tr>}
+            </tbody></table></div>
+            <div className="form-actions">
+              {currentRole === 'CRE' && panelCustomer.customerId && (
+                <button type="button" className="primary-btn" onClick={() => startCall(
+                  panelCustomer,
+                  customerProfileVehicleId || panelCustomer.vehicles?.find((vehicle) => vehicle.allocations?.some((allocation) => allocation.creId === currentUser?.id))?.id,
+                )}><PhoneCall size={16} aria-hidden="true" /> Call customer</button>
+              )}
+              <button type="button" className="outline-btn" onClick={() => setCustomerPanel({ customerId: panelCustomer.id, mode: 'options' })}>Back</button>
+            </div>
+          </div>
+        )}
+      </section>
+    );
+  }
   // Sidebar entries that expand into sub-pages; the parent only toggles, the children navigate.
   const navAccordions = {
     ...(isFreeServiceRole ? {
@@ -2181,7 +2324,7 @@ function App() {
     );
   }
 
-  function renderMasterCallTable(records, loading, { assignable = false, showDetails = false, emptyMessage } = {}) {
+  function renderMasterCallTable(records, loading, { assignable = false, emptyMessage } = {}) {
     const showCallColumn = currentRole === 'CRE' && activeView === 'Master list' && !assignable;
     return (
       <div className="master-list-table-wrap">
@@ -2208,13 +2351,10 @@ function App() {
                 <tr key={record.id}>
                   <td>{renderMasterRepairTypeBadge(record.type)}</td>
                   <td className={record.dueDate && new Date(record.dueDate) < new Date() ? 'due-overdue' : undefined}>{record.dueDate ? new Date(record.dueDate).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}</td>
-                  <td>{showDetails ? (
-                    <button
-                      type="button"
-                      className="text-link"
-                      aria-expanded={selectedMasterRecordId === record.id}
-                      onClick={() => setSelectedMasterRecordId((selectedId) => selectedId === record.id ? null : record.id)}
-                    >{record.name || record.customerName || '—'}</button>
+                  <td>{['CCM', 'CRE'].includes(currentRole) ? (
+                    <button type="button" className="text-link" onClick={() => openCustomerProfile(record)}>
+                      {record.name || record.customerName || '—'}
+                    </button>
                   ) : record.name || record.customerName || '—'}</td>
                   <td>{record.mobile || '—'}</td>
                   <td>{record.model || '—'}</td>
@@ -2790,7 +2930,14 @@ function App() {
               <div className="panel-header"><h3>Recent call activity</h3><span>{performanceLoading ? 'Loading…' : 'Latest 6'}</span></div>
               <div className="table-scroll"><table><thead><tr><th>Customer</th><th>Vehicle</th><th>Outcome</th><th>When</th></tr></thead><tbody>
                 {(performance?.recentCalls || []).map((call) => <tr key={call.id}>
-                  <td>{call.customer?.fullName || 'Customer'}</td>
+                  <td>{call.customer?.id ? (
+                    <button type="button" className="text-link" onClick={() => openCustomerProfile({
+                      customerId: call.customer.id,
+                      vehicleId: call.vehicle?.id,
+                      name: call.customer.fullName,
+                      mobile: call.customer.mobileNumber,
+                    })}>{call.customer.fullName || 'Customer'}</button>
+                  ) : call.customer?.fullName || 'Customer'}</td>
                   <td>{call.vehicle?.model || call.vehicle?.registrationNumber || call.vehicle?.vin || '—'}</td>
                   <td><span className="badge badge-neutral">{call.outcome.replaceAll('_', ' ')}</span></td>
                   <td>{new Date(call.createdAt).toLocaleString()}</td>
@@ -2846,6 +2993,8 @@ function App() {
               </div>
               {renderMasterCallTable(visibleAllocationRecords, allocationsLoading, { assignable: currentRole === 'CCM' })}
             </section>
+            {callError && <p className="form-alert error" role="alert">{callError}</p>}
+            {renderCustomerActionPanel()}
           </section>
         ) : activeView === 'Reports' ? (
           <section className="customer-workspace">
@@ -3136,7 +3285,13 @@ function App() {
                   <tbody>
                     {dayAppointments.map((appointment) => (
                       <tr key={appointment.id}>
-                        <td>{appointment.customer}</td>
+                        <td>{appointment.customerId ? (
+                          <button type="button" className="text-link" onClick={() => openCustomerProfile({
+                            customerId: appointment.customerId,
+                            vehicleId: appointment.vehicleId,
+                            name: appointment.customer,
+                          })}>{appointment.customer}</button>
+                        ) : appointment.customer}</td>
                         <td>{appointment.vehicle}</td>
                         <td>{new Date(appointment.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
                         <td>{appointment.assigneeName || '—'}</td>
@@ -3151,6 +3306,8 @@ function App() {
                 </table>
               </div>
             </section>
+            {callError && <p className="form-alert error" role="alert">{callError}</p>}
+            {renderCustomerActionPanel()}
           </section>
         ) : activeView === 'Master list' ? (
           <section className="customer-workspace">
@@ -3270,56 +3427,12 @@ function App() {
                 </div>
               )}
               {renderMasterCallTable(masterRecords, masterListLoading, {
-                showDetails: true,
                 emptyMessage: 'No matching customers found. Try adjusting or clearing the active filters.',
               })}
             </section>
-            {selectedMasterRecord && (
-              <section className="panel master-record-details" aria-label={`Imported details for ${selectedMasterRecord.name || selectedMasterRecord.customerName}`}>
-                <div className="panel-header">
-                  <div>
-                    <h3>{selectedMasterRecord.name || selectedMasterRecord.customerName}</h3>
-                    <span>{selectedMasterRecord.vin}</span>
-                  </div>
-                  <button type="button" className="outline-btn compact-btn" onClick={() => setSelectedMasterRecordId(null)}>Close details</button>
-                </div>
-                {(selectedMasterRecord.workshopVisits || []).map((visit, index) => {
-                  const details = visit.importedDetails || (index === 0 ? selectedMasterRecord.importedDetails : null);
-                  return (
-                    <section className="master-visit-details" key={`${visit.repairOrderNo}-${index}`}>
-                      <h4>Repair order {visit.repairOrderNo || index + 1}</h4>
-                      {details && Object.entries(details).length > 0 ? (
-                        <dl className="master-detail-grid">
-                          {Object.entries(details).map(([key, value]) => (
-                            <div key={key}>
-                              <dt>{getMasterDetailLabel(key)}</dt>
-                              <dd>{value == null || value === '' ? '—' : String(value)}</dd>
-                            </div>
-                          ))}
-                        </dl>
-                      ) : (
-                        <dl className="master-detail-grid">
-                          <div><dt>Repair Order No</dt><dd>{visit.repairOrderNo || '—'}</dd></div>
-                          <div><dt>R/O Date</dt><dd>{visit.visitDate ? new Date(visit.visitDate).toLocaleDateString() : '—'}</dd></div>
-                          <div><dt>Closing Date</dt><dd>{visit.closingDate ? new Date(visit.closingDate).toLocaleDateString() : '—'}</dd></div>
-                          <div><dt>G.P Date</dt><dd>{visit.gpDate ? new Date(visit.gpDate).toLocaleDateString() : '—'}</dd></div>
-                          <div><dt>Labor Cost</dt><dd>{visit.totalLaborCost ?? '—'}</dd></div>
-                          <div><dt>Parts Cost</dt><dd>{visit.totalPartsCost ?? '—'}</dd></div>
-                          <div><dt>Total Amount</dt><dd>{visit.totalAmount ?? '—'}</dd></div>
-                        </dl>
-                      )}
-                    </section>
-                  );
-                })}
-                {!selectedMasterRecord.workshopVisits?.length && selectedMasterRecord.importedDetails && (
-                  <dl className="master-detail-grid">
-                    {Object.entries(selectedMasterRecord.importedDetails).map(([key, value]) => (
-                      <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{value == null || value === '' ? '—' : String(value)}</dd></div>
-                    ))}
-                  </dl>
-                )}
-              </section>
-            )}
+            {callError && <p className="form-alert error" role="alert">{callError}</p>}
+            {callMessage && <p className="form-alert success" role="status">{callMessage}</p>}
+            {renderCustomerActionPanel()}
           </section>
         ) : activeView === 'Customers' || activeView in followUpViews || activeView in dueViews ? (
           <section className="customer-workspace">
@@ -3452,7 +3565,7 @@ function App() {
                     <ul>{dueIssues.map((issue) => <li key={issue.vehicleId}>{issue.name} · {issue.registrationNumber || issue.vin}</li>)}</ul>
                   </details>
                 )}
-                {dueViews[activeView].kind !== 'due' ? renderServiceListTable(dueViews[activeView].kind) : currentRole === 'CCM' ? renderMasterCallTable(visibleDueRecords, dueLoading, { showDetails: true }) : (
+                {dueViews[activeView].kind !== 'due' ? renderServiceListTable(dueViews[activeView].kind) : currentRole === 'CCM' ? renderMasterCallTable(visibleDueRecords, dueLoading) : (
                 <>
                 {renderMasterRepairTypeLegend()}
                 <div className="table-scroll">
@@ -3511,7 +3624,7 @@ function App() {
                   <tbody>
                     {customers.map((customer) => (
                       <tr key={customer.id}>
-                        <td><button type="button" className="text-link" onClick={() => openCustomerPanel(customer)}>{customer.name || customer.customerName || customer.fullName}</button></td>
+                        <td><button type="button" className="text-link" onClick={() => openCustomerProfile(customer)}>{customer.name || customer.customerName || customer.fullName}</button></td>
                         <td>{customer.mobile || customer.mobileNumber || '—'}</td>
                         <td>{customer.email || '—'}</td>
                         <td>{customer.vehicleCount ?? customer.vehicles?.length ?? 0}</td>
@@ -3524,90 +3637,7 @@ function App() {
             </section>
             )}
 
-            {panelCustomer && (
-              <section className="panel customer-action-panel">
-                <div className="panel-header">
-                  <h3>{panelCustomer.name || panelCustomer.fullName}</h3>
-                  <button type="button" className="outline-btn compact-btn" onClick={() => setCustomerPanel({ customerId: null, mode: 'options' })}>Close</button>
-                </div>
-                {customerPanel.mode === 'options' && (
-                  <div className="customer-options">
-                    {currentRole === 'CRE' && <button type="button" className="primary-btn" onClick={() => startCall(panelCustomer)}><PhoneCall size={16} aria-hidden="true" /> Call customer</button>}
-                    <button type="button" className="outline-btn" onClick={() => openCustomerProfile(panelCustomer)}>View profile</button>
-                  </div>
-                )}
-                {customerPanel.mode === 'call' && (
-                  <form className="customer-form" onSubmit={submitCall}>
-                    <p className="call-number">
-                      {panelCustomer.mobile || panelCustomer.mobileNumber
-                        ? <a className="primary-btn" href={`tel:${panelCustomer.mobile || panelCustomer.mobileNumber}`}><PhoneCall size={16} aria-hidden="true" /> {panelCustomer.mobile || panelCustomer.mobileNumber}</a>
-                        : <span className="empty-state">No mobile number on file</span>}
-                    </p>
-                    {callForm.callSource !== 'SERVICE' && (
-                      <p className="performance-note">{callForm.callSource === 'WARRANTY' ? 'Warranty call: it is tracked separately and does not count toward your daily call targets.' : 'Free-service call: the follow-up you arrange will appear under Follow-ups · Free Service.'}</p>
-                    )}
-                    <div className="form-grid">
-                      <label>Vehicle
-                        <select value={callForm.vehicleId} onChange={(event) => setCallForm({ ...callForm, vehicleId: event.target.value })}>
-                          <option value="">No specific vehicle</option>
-                          {(panelCustomer.vehicles || []).map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{[vehicle.model, vehicle.registrationNumber, vehicle.vin].filter(Boolean).join(' / ')}</option>)}
-                        </select>
-                      </label>
-                      <label>Call outcome
-                        <select required value={callForm.outcome} onChange={(event) => setCallForm({ ...callForm, outcome: event.target.value })}>
-                          {['CONTACTED', 'NOT_INTERESTED', 'WRONG_NUMBER', 'NO_RESPONSE', 'OTHER'].map((outcome) => <option key={outcome} value={outcome}>{outcome.replaceAll('_', ' ')}</option>)}
-                        </select>
-                      </label>
-                      <label className="full-width-field">Feedback<textarea required rows="3" maxLength="2000" value={callForm.notes} onChange={(event) => setCallForm({ ...callForm, notes: event.target.value })} placeholder="What did the customer say?" /></label>
-                      <fieldset className="full-width-field next-action">
-                        <legend>Next step</legend>
-                        {[['none', 'No further action'], ['followup', 'Arrange follow-up'], ['appointment', 'Arrange appointment']].map(([value, label]) => (
-                          <label key={value} className="radio-option"><input type="radio" name="nextAction" value={value} checked={callForm.nextAction === value} onChange={() => setCallForm({ ...callForm, nextAction: value })} /> {label}</label>
-                        ))}
-                      </fieldset>
-                      {callForm.nextAction !== 'none' && (
-                        <label>{callForm.nextAction === 'followup' ? 'Follow-up date and time' : 'Appointment date and time'}
-                          <input required type="datetime-local" value={callForm.scheduledAt} onChange={(event) => setCallForm({ ...callForm, scheduledAt: event.target.value })} />
-                        </label>
-                      )}
-                    </div>
-                    <div className="form-actions">
-                      <button type="button" className="outline-btn" onClick={() => setCustomerPanel({ customerId: panelCustomer.id, mode: 'options' })}>Back</button>
-                      <button type="submit" className="primary-btn" disabled={callSaving}>{callSaving ? 'Saving…' : 'Save call'}</button>
-                    </div>
-                  </form>
-                )}
-                {customerPanel.mode === 'profile' && (
-                  <div className="customer-profile">
-                    <dl className="master-detail-grid">
-                      <div><dt>Name</dt><dd>{panelCustomer.name || panelCustomer.fullName}</dd></div>
-                      <div><dt>Mobile</dt><dd>{panelCustomer.mobile || panelCustomer.mobileNumber || '—'}</dd></div>
-                      <div><dt>Email</dt><dd>{panelCustomer.email || '—'}</dd></div>
-                    </dl>
-                    <h4>Vehicles</h4>
-                    <div className="table-scroll"><table><thead><tr><th>Model</th><th>Reg. no.</th><th>VIN</th></tr></thead><tbody>
-                      {(panelCustomer.vehicles || []).map((vehicle) => <tr key={vehicle.id}><td>{vehicle.model || '—'}</td><td>{vehicle.registrationNumber || '—'}</td><td>{vehicle.vin || '—'}</td></tr>)}
-                    </tbody></table></div>
-                    {(panelCustomer.visits || []).map((visit) => (
-                      <div key={visit.repairOrderNo || visit.visitDate}>
-                        <h4>Repair order {visit.repairOrderNo || ''}</h4>
-                        <dl className="master-detail-grid">
-                          {Object.entries(visit.importedDetails || {}).map(([key, value]) => (
-                            <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{value == null || value === '' ? '—' : String(value)}</dd></div>
-                          ))}
-                        </dl>
-                      </div>
-                    ))}
-                    <h4>Call history</h4>
-                    <div className="table-scroll"><table><thead><tr><th>When</th><th>Outcome</th><th>CRE</th><th>Feedback</th></tr></thead><tbody>
-                      {callLogs.filter((call) => call.customer?.id === panelCustomer.id || call.customerId === panelCustomer.id).map((call) => <tr key={call.id}><td>{new Date(call.createdAt).toLocaleString()}</td><td>{call.outcome.replaceAll('_', ' ')}</td><td>{call.assignee?.name || call.creator?.name || '—'}</td><td>{call.notes || '—'}</td></tr>)}
-                      {!callLogsLoading && !callLogs.some((call) => call.customer?.id === panelCustomer.id || call.customerId === panelCustomer.id) && <tr><td colSpan="4" className="empty-state">No calls logged yet.</td></tr>}
-                    </tbody></table></div>
-                    <div className="form-actions"><button type="button" className="outline-btn" onClick={() => setCustomerPanel({ customerId: panelCustomer.id, mode: 'options' })}>Back</button></div>
-                  </div>
-                )}
-              </section>
-            )}
+            {renderCustomerActionPanel()}
           </section>
         ) : (
           <>
@@ -3741,7 +3771,13 @@ function App() {
                           {(dashboardData?.cre?.urgentFollowUps || []).map((fu) => (
                             <tr key={fu.id}>
                               <td>
-                                <strong>{fu.customerName}</strong>
+                                <strong><button type="button" className="text-link" onClick={() => openCustomerProfile({
+                                  customerId: fu.customerId,
+                                  vehicleId: fu.vehicleId,
+                                  name: fu.customerName,
+                                  mobile: fu.mobileNumber,
+                                  model: fu.vehicleModel,
+                                })}>{fu.customerName}</button></strong>
                                 {fu.mobileNumber && <small style={{ display: 'block', color: '#718085' }}>{fu.mobileNumber}</small>}
                               </td>
                               <td>{fu.vehicleModel || '—'}</td>
@@ -3783,7 +3819,11 @@ function App() {
                       {(dashboardData?.cre?.todayAppointments || appointments).map((appointment) => (
                         <li key={appointment.id || appointment.customer || appointment.time}>
                           <div>
-                            <strong>{appointment.customer}</strong>
+                            <strong><button type="button" className="text-link" onClick={() => openCustomerProfile({
+                              customerId: appointment.customerId,
+                              vehicleId: appointment.vehicleId,
+                              name: appointment.customer,
+                            })}>{appointment.customer}</button></strong>
                             <small>{appointment.vehicle}</small>
                           </div>
                           <div className="meta-block" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -3810,6 +3850,8 @@ function App() {
                     </ul>
                   </article>
                 </section>
+                {callError && <p className="form-alert error" role="alert">{callError}</p>}
+                {renderCustomerActionPanel()}
               </section>
             ) : currentRole === 'CCM' ? (
               <section className="customer-workspace ccm-dashboard">
@@ -3938,7 +3980,11 @@ function App() {
                       {(dashboardData?.ccm?.todayAppointments || appointments).map((appointment) => (
                         <li key={appointment.id || appointment.customer || appointment.time}>
                           <div>
-                            <strong>{appointment.customer}</strong>
+                            <strong><button type="button" className="text-link" onClick={() => openCustomerProfile({
+                              customerId: appointment.customerId,
+                              vehicleId: appointment.vehicleId,
+                              name: appointment.customer,
+                            })}>{appointment.customer}</button></strong>
                             <small>{appointment.vehicle} {appointment.assigneeName ? `· ${appointment.assigneeName}` : ''}</small>
                           </div>
                           <div className="meta-block" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -3965,6 +4011,8 @@ function App() {
                     </ul>
                   </article>
                 </section>
+                {callError && <p className="form-alert error" role="alert">{callError}</p>}
+                {renderCustomerActionPanel()}
               </section>
             ) : currentRole === 'GM' ? (
               <section className="customer-workspace gm-dashboard">

@@ -652,6 +652,7 @@ th {
 .import-history-header h3 { margin-right: auto; }
 .import-history-filter { display: grid; min-width: min(calc(var(--crm-density-scale, 1) * 230px), 100%); gap: calc(var(--crm-density-scale, 1) * 4px); color: #566469; font-size: calc(var(--crm-density-scale, 1) * 0.72rem); font-weight: 700; }
 .import-history-filter select { width: 100%; min-height: calc(var(--crm-density-scale, 1) * 38px); }
+.import-history-load-more { display: flex; justify-content: center; margin-top: calc(var(--crm-density-scale, 1) * 16px); }
 .import-history-table { min-width: calc(var(--crm-density-scale, 1) * 1420px); }
 .import-history-table td { vertical-align: middle; }
 .import-batch-id { display: block; max-width: calc(var(--crm-density-scale, 1) * 150px); color: #59696e; font-size: calc(var(--crm-density-scale, 1) * 0.71rem); overflow-wrap: anywhere; }

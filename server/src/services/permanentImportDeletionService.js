@@ -4,6 +4,8 @@ import { importBatchMutationEvidenceIsComplete, importChangeLogIsComplete, impor
 import { normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
 
 const DELETION_MARKER = 'permanently_deleted';
+const PERMANENT_DELETION_TRANSACTION_TIMEOUT_MS = 60_000;
+const RECORD_QUERY_CHUNK_SIZE = 500;
 const entityConfig = {
   Customer: { delegate: 'customer', table: 'customers', label: 'Customer' },
   Vehicle: { delegate: 'vehicle', table: 'vehicles', label: 'Vehicle' },
@@ -547,6 +549,24 @@ async function loadDeletionPlan(transaction, importBatchId) {
     grouped.get(key).changes.push(change);
   }
 
+  const recordIdsByType = new Map(entityTypes.map((type) => [type, new Set()]));
+  for (const { entityType, entityId } of grouped.values()) {
+    recordIdsByType.get(entityType)?.add(entityId);
+  }
+  const currentRecordEntries = await Promise.all(entityTypes.flatMap((entityType) => {
+    const ids = [...recordIdsByType.get(entityType)];
+    const delegate = entityConfig[entityType].delegate;
+    const chunks = [];
+    for (let index = 0; index < ids.length; index += RECORD_QUERY_CHUNK_SIZE) {
+      chunks.push(ids.slice(index, index + RECORD_QUERY_CHUNK_SIZE));
+    }
+    return chunks.map(async (chunk) => (
+      (await transaction[delegate].findMany({ where: { id: { in: chunk } } }))
+        .map((record) => [`${entityType}:${record.id}`, record])
+    ));
+  }));
+  const currentRecordByEntity = new Map(currentRecordEntries.flat());
+
   const deletionRecords = [];
   const restoreRecords = [];
   const rebasedChanges = new Map();
@@ -567,8 +587,7 @@ async function loadDeletionPlan(transaction, importBatchId) {
       });
       continue;
     }
-    const delegate = entityConfig[entityType].delegate;
-    const record = await transaction[delegate].findUnique({ where: { id: entityId } });
+    const record = currentRecordByEntity.get(`${entityType}:${entityId}`);
     if (!record) {
       addBlocker(blockers, {
         code: 'target-entity-missing',
@@ -1146,5 +1165,8 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
       alreadyDeleted: false,
       summary: plan.summary,
     };
-  }, { isolationLevel: 'Serializable' });
+  }, {
+    isolationLevel: 'Serializable',
+    timeout: PERMANENT_DELETION_TRANSACTION_TIMEOUT_MS,
+  });
 }

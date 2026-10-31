@@ -125,18 +125,28 @@ function createDatabase({
   Object.assign(targetBatch, targetBatchRollback);
   Object.assign(laterBatch, laterBatchRollback);
   const rowProgress = [];
+  const targetChangesByRow = new Map();
+  for (const changeLog of targetChanges) {
+    const rowId = changeLog.rowProgressId || `${targetId}-row`;
+    const rowChanges = targetChangesByRow.get(rowId) || [];
+    rowChanges.push(changeLog);
+    targetChangesByRow.set(rowId, rowChanges);
+  }
   if (emptyImport) {
     targetBatch.totalRows = 0;
-  } else if (targetChanges.length) {
-    rowProgress.push({
-      id: `${targetId}-row`,
-      importBatchId: targetId,
-      rowNumber: 2,
-      status: 'completed',
-      outcome: 'created',
-      mutationState: 'complete',
-      loggedChangeCount: targetChanges.length,
-    });
+  } else if (targetChangesByRow.size) {
+    targetBatch.totalRows = targetChangesByRow.size;
+    for (const [index, [rowId, rowChanges]] of [...targetChangesByRow].entries()) {
+      rowProgress.push({
+        id: rowId,
+        importBatchId: targetId,
+        rowNumber: index + 2,
+        status: 'completed',
+        outcome: 'created',
+        mutationState: 'complete',
+        loggedChangeCount: rowChanges.length,
+      });
+    }
   } else {
     rowProgress.push({
       id: `${targetId}-row`,
@@ -200,7 +210,9 @@ function createDatabase({
     changeLogs: changes,
     auditLogs: [],
     deletionOrder: [],
+    recordFindUniqueCalls: [],
   };
+  const transactionOptions = [];
 
   function matchesWhere(row, where = {}) {
     return Object.entries(where).every(([field, expected]) => {
@@ -274,7 +286,10 @@ function createDatabase({
     for (const [tableName, rows] of Object.entries(draft.tables)) {
       tx[tableName] = {
         findMany: async ({ where = {} } = {}) => rows.filter((row) => matchesWhere(row, where)).map((row) => structuredClone(row)),
-        findUnique: async ({ where }) => structuredClone(rows.find(({ id }) => id === where.id) || null),
+        findUnique: async ({ where }) => {
+          draft.recordFindUniqueCalls.push(tableName);
+          return structuredClone(rows.find(({ id }) => id === where.id) || null);
+        },
         update: async ({ where, data }) => {
           const row = rows.find(({ id }) => id === where.id);
           Object.assign(row, structuredClone(data));
@@ -324,14 +339,15 @@ function createDatabase({
   }
 
   const database = {
-    $transaction: async (callback) => {
+    $transaction: async (callback, options) => {
+      transactionOptions.push(options);
       const draft = structuredClone(state);
       const result = await callback(createTransaction(draft));
       Object.assign(state, draft);
       return result;
     },
   };
-  return { database, state, targetBatch, laterBatch };
+  return { database, state, targetBatch, laterBatch, transactionOptions };
 }
 
 function makeCreate(type, entity, sequence, batchId = targetId) {
@@ -351,7 +367,7 @@ test('deletes only target-created customer, vehicle, and service history while r
     makeCreate('Vehicle', vehicle, 2),
     makeCreate('WorkshopVisit', visit, 3),
   ];
-  const { database, state, targetBatch } = createDatabase({
+  const { database, state, targetBatch, transactionOptions } = createDatabase({
     targetChanges: changes,
     targetRecords: { Customer: [customer], Vehicle: [vehicle], WorkshopVisit: [visit] },
   });
@@ -373,6 +389,35 @@ test('deletes only target-created customer, vehicle, and service history while r
   assert.equal(state.changeLogs.length, 3);
   assert.ok(state.changeLogs.every(({ rollbackStatus }) => rollbackStatus === 'pending'));
   assert.equal(state.auditLogs.length, 1);
+  assert.deepEqual(transactionOptions.at(-1), {
+    isolationLevel: 'Serializable',
+    timeout: 60_000,
+  });
+});
+
+test('permanent deletion batches current-record reads for large imports', async () => {
+  const visits = Array.from({ length: 501 }, (_, index) => (
+    record('WorkshopVisit', `visit-target-${index}`)
+  ));
+  const changes = visits.map((visit, index) => change(
+    targetId,
+    index + 1,
+    'WorkshopVisit',
+    visit.id,
+    'CREATE',
+    {},
+    visit,
+    `${targetId}-row-${index}`,
+  ));
+  const { database, state } = createDatabase({
+    targetChanges: changes,
+    targetRecords: { WorkshopVisit: visits },
+  });
+  const preview = await previewPermanentImportDeletion(targetId, database);
+
+  assert.equal(preview.willDelete.length, 501);
+  assert.equal(preview.blockers.length, 0);
+  assert.deepEqual(state.recordFindUniqueCalls, []);
 });
 
 test('preserves empty-import confirmation behavior and is idempotent without rewriting change logs', async () => {

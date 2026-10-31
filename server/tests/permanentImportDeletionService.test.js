@@ -416,7 +416,7 @@ test('deletes only target-created customer, vehicle, and service history while r
   assert.deepEqual(state.deletionOrder, ['workshopVisit', 'vehicle', 'customer']);
   assert.deepEqual(transactionOptions.at(-1), {
     isolationLevel: 'Serializable',
-    timeout: 60_000,
+    timeout: 90_000,
   });
 });
 

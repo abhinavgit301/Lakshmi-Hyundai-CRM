@@ -4,7 +4,7 @@ import { importBatchMutationEvidenceIsComplete, importChangeLogIsComplete, impor
 import { normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
 
 const DELETION_MARKER = 'permanently_deleted';
-const PERMANENT_DELETION_TRANSACTION_TIMEOUT_MS = 60_000;
+const PERMANENT_DELETION_TRANSACTION_TIMEOUT_MS = 90_000;
 const RECORD_QUERY_CHUNK_SIZE = 500;
 const deletionEntityOrder = [
   'WorkshopVisit',

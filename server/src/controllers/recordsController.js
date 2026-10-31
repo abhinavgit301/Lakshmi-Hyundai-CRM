@@ -43,6 +43,22 @@ function splitIntoChunks(values, chunkSize) {
   return chunks;
 }
 
+function importedMobileNumber(visits = []) {
+  for (const visit of visits) {
+    const details = visit.importedDetails || {};
+    for (const key of ['mobileNumber', 'mobile', 'mobileNo', 'phoneNumber', 'phone']) {
+      const value = usableMobileNumber(details[key]);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+function usableMobileNumber(value) {
+  const mobile = String(value ?? '').trim();
+  return mobile && mobile !== '-' && mobile !== '—' ? mobile : null;
+}
+
 export function getVisibilityWhere(user) {
   const role = normalizeRole(user?.role);
 
@@ -720,7 +736,8 @@ export async function loadCallListRecords(where, now = new Date(), user = null) 
       name: row.customerName,
       customerName: row.customerName,
       vin: row.vin,
-      mobile: row.mobileNumber,
+      mobile: usableMobileNumber(row.mobileNumber)
+        || importedMobileNumber(row.vehicle?.physicalVehicle?.workshopVisits),
       model: row.vehicle?.model || null,
       vehicleAgeMonths: getAgeInMonths(
         row.vehicle?.saleDate
@@ -1336,7 +1353,7 @@ export async function getCustomers(req, res) {
         id: customer.id,
         name: customer.fullName,
         customerName: customer.fullName,
-        mobile: customer.mobileNumber,
+        mobile: usableMobileNumber(customer.mobileNumber) || importedMobileNumber(visits),
         ccmId: customer.ccmId,
         email: customer.email,
         vehicleCount: customer.vehicles?.length || 0,

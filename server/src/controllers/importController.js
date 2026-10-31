@@ -556,6 +556,18 @@ export async function importRepairOrders(req, res) {
                 ccmId,
               },
             }), rowChanges);
+          } else if (!['-', '—'].includes(mobileNumber)
+            && ['-', ''].includes(String(customer.mobileNumber || '').trim())) {
+            customer = await updateTrackedRecord(transaction, rowProgressId, {
+              entityType: 'Customer',
+              entityId: customer.id,
+              ccmId,
+              before: { mobileNumber: customer.mobileNumber, updatedAt: customer.updatedAt },
+              after: { mobileNumber },
+            }, () => transaction.customer.update({
+              where: { id: customer.id },
+              data: { mobileNumber },
+            }), rowChanges);
           }
 
           if (!vehicle) {

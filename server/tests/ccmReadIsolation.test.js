@@ -116,6 +116,43 @@ test('Master Call List loader reads large histories in stable bounded chunks and
   }
 });
 
+test('Master Call List mobile falls back to the imported service-history value', async () => {
+  const originalMasterFindMany = prisma.masterCallList.findMany;
+  const originalUserFindMany = prisma.user.findMany;
+  prisma.masterCallList.findMany = async () => [{
+    id: 'mcl-mobile',
+    createdAt: new Date('2026-01-15T12:00:00Z'),
+    ccmId: 'ccm-a',
+    ownerUserId: null,
+    customerName: 'Imported Customer',
+    mobileNumber: '-',
+    vin: 'VIN-MOBILE',
+    status: 'pending',
+    vehicle: {
+      physicalVehicle: {
+        workshopVisits: [{
+          id: 'visit-mobile',
+          ccmId: 'ccm-a',
+          importedDetails: { mobileNumber: '5550100' },
+        }],
+      },
+      monthlyDataEntries: [],
+      allocations: [],
+      appointments: [],
+      customer: { appointments: [] },
+    },
+  }];
+  prisma.user.findMany = async () => [];
+
+  try {
+    const records = await loadCallListRecords({}, new Date('2026-01-15T12:00:00Z'), { role: 'ADMIN' });
+    assert.equal(records[0].mobile, '5550100');
+  } finally {
+    prisma.masterCallList.findMany = originalMasterFindMany;
+    prisma.user.findMany = originalUserFindMany;
+  }
+});
+
 async function captureCustomerQuery(user) {
   const original = prisma.customer.findMany;
   let captured;
@@ -151,6 +188,7 @@ test('Customer endpoint scopes nested vehicles and related records by role', asy
       { vehicles: { some: { ccmId: 'ccm-a' } } },
     ],
   });
+
   assert.deepEqual(ccm.query.include.vehicles.where, { ccmId: 'ccm-a' });
   assert.deepEqual(ccm.query.include.visits.where, {
     physicalVehicle: { is: { vehicles: { some: { ccmId: 'ccm-a' } } } },
@@ -191,6 +229,43 @@ test('Customer endpoint scopes nested vehicles and related records by role', asy
   const creWithoutCcmId = await captureCustomerQuery({ role: 'CRE', id: 'cre-a1' });
   assert.equal(creWithoutCcmId.query.include.vehicles.where.OR[0].allocations.some.ccmId, 'no-access');
   assert.equal(creWithoutCcmId.query.include.vehicles.include.allocations.where.ccmId, 'no-access');
+});
+
+test('customer profile mobile falls back to the latest imported service-history value', async () => {
+  const originalCustomerFindMany = prisma.customer.findMany;
+  const originalUserFindMany = prisma.user.findMany;
+  prisma.customer.findMany = async () => [{
+    id: 'customer-mobile',
+    fullName: 'Imported Customer',
+    mobileNumber: null,
+    ccmId: 'ccm-a',
+    email: null,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    vehicles: [],
+    visits: [{
+      id: 'visit-mobile',
+      vehicleId: null,
+      repairOrderNo: 'RO-MOBILE',
+      ccmId: 'ccm-a',
+      visitDate: new Date('2026-01-15T00:00:00Z'),
+      createdAt: new Date('2026-01-15T00:00:00Z'),
+      importedDetails: { mobileNumber: '5550100' },
+    }],
+  }];
+  prisma.user.findMany = async () => [];
+  const res = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  };
+
+  try {
+    await getCustomers({ user: { role: 'ADMIN' } }, res);
+    assert.equal(res.body.customers[0].mobile, '5550100');
+  } finally {
+    prisma.customer.findMany = originalCustomerFindMany;
+    prisma.user.findMany = originalUserFindMany;
+  }
 });
 
 test('CCM and CRE operational dashboard scopes exclude cross-CCM and null-owned workflow records', () => {

@@ -53,7 +53,7 @@ export default function ImportsPanel(props) {
               </section>
             )}
             {canImport ? (
-              <form className="panel import-form" onSubmit={submitImport}>
+              <form className="panel import-form" onSubmit={submitImport} aria-busy={importUploading}>
                 <div className="panel-header"><h3>Upload repair orders</h3><span>CSV file, up to 1.8 MB</span></div>
                 <p className="import-columns">Each row must include Repair Order No, Vehicle VIN, and Registration No. Other fields are optional; missing values are shown as “-”.</p>
                 {currentRole !== 'CCM' && (
@@ -76,6 +76,14 @@ export default function ImportsPanel(props) {
                   }} /></label>
                   <button type="submit" className="primary-btn" disabled={!importFile || importUploading}>{importUploading ? 'Importing…' : 'Import file'}</button>
                 </div>
+                {importUploading && (
+                  <div className="import-progress" role="status" aria-live="polite">
+                    <span>Importing and saving records. Please keep this page open.</span>
+                    <div className="import-progress-track" role="progressbar" aria-label="Import in progress">
+                      <span />
+                    </div>
+                  </div>
+                )}
               </form>
             ) : <p className="form-alert error">Import access is limited to Admin, GM, and CCM accounts.</p>}
             <section className="panel customer-list-panel">

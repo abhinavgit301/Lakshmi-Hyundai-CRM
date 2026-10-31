@@ -578,6 +578,38 @@ th {
   justify-content: center;
 }
 
+.import-progress {
+  display: grid;
+  gap: calc(var(--crm-density-scale, 1) * 8px);
+  color: var(--slate-600);
+  font-size: calc(var(--crm-density-scale, 1) * 0.82rem);
+}
+
+.import-progress-track {
+  height: calc(var(--crm-density-scale, 1) * 8px);
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--blue-100);
+}
+
+.import-progress-track span {
+  display: block;
+  width: 40%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #145a62, #60a5fa);
+  animation: import-progress-indeterminate 1.4s ease-in-out infinite;
+}
+
+@keyframes import-progress-indeterminate {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(260%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .import-progress-track span { animation-duration: 3s; }
+}
+
 .file-picker {
   position: relative;
   display: flex;

@@ -125,15 +125,22 @@ export async function allocateUnassignedMasterCallListEntries(
       ccmId,
       status: 'assigned',
       assignmentNeedsReview: false,
-      creId: { in: activeCreIds },
       vehicle: { is: { vin: { in: vins } } },
     },
     select: { id: true, vehicleId: true, creId: true, updatedAt: true, vehicle: { select: { vin: true } } },
     orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
   });
+  const activeCreIdSet = new Set(activeCreIds);
   const allocationOwnerByVin = new Map();
+  const allocationsByVin = new Map();
   for (const allocation of existingAllocations) {
-    if (!allocationOwnerByVin.has(allocation.vehicle.vin)) allocationOwnerByVin.set(allocation.vehicle.vin, allocation);
+    const vin = allocation.vehicle.vin;
+    const allocationsForVin = allocationsByVin.get(vin) || [];
+    allocationsForVin.push(allocation);
+    allocationsByVin.set(vin, allocationsForVin);
+    if (activeCreIdSet.has(allocation.creId) && !allocationOwnerByVin.has(vin)) {
+      allocationOwnerByVin.set(vin, allocation);
+    }
   }
 
   for (const entry of unassigned) {
@@ -182,24 +189,18 @@ export async function allocateUnassignedMasterCallListEntries(
       before: { ownerUserId: null, updatedAt: entry.updatedAt },
       after: { ownerUserId: creId },
     }, () => transaction.masterCallList.update({ where: { id: entry.id }, data: { ownerUserId: creId } }));
-    const allocations = await transaction.allocation.findMany({
-      where: {
-        ccmId,
-        status: 'assigned',
-        assignmentNeedsReview: false,
-        vehicle: { is: { vin: entry.vin } },
-      },
-      select: { id: true, vehicleId: true, creId: true, updatedAt: true },
-    });
+    const allocations = allocationsByVin.get(entry.vin) || [];
     for (const allocation of allocations) {
       if (allocation.creId !== creId) {
-        await applyMutation({
+        const updatedAllocation = await applyMutation({
           entityType: 'Allocation',
           entityId: allocation.id,
           ccmId,
           before: { creId: allocation.creId, updatedAt: allocation.updatedAt },
           after: { creId },
         }, () => transaction.allocation.update({ where: { id: allocation.id }, data: { creId } }));
+        allocation.creId = updatedAllocation?.creId ?? creId;
+        allocation.updatedAt = updatedAllocation?.updatedAt ?? allocation.updatedAt;
         await recordCreAssignmentEvent(transaction, {
           vehicleId: allocation.vehicleId,
           allocationId: allocation.id,

@@ -144,6 +144,58 @@ test('import mutation hook receives exact before and persisted after assignment 
   }]);
 });
 
+test('import allocation preloads VIN allocations once and reuses their updated state', async () => {
+  const entries = [
+    { id: 'call-1', vin: 'VIN-1', vehicle: { id: 'vehicle-1' }, updatedAt: new Date('2025-01-01T00:00:00.000Z') },
+    { id: 'call-2', vin: 'VIN-1', vehicle: { id: 'vehicle-1' }, updatedAt: new Date('2025-01-02T00:00:00.000Z') },
+  ];
+  const allocation = {
+    id: 'allocation-1',
+    vehicleId: 'vehicle-1',
+    creId: 'inactive-cre',
+    updatedAt: new Date('2025-01-01T00:00:00.000Z'),
+    vehicle: { vin: 'VIN-1' },
+  };
+  const allocationReads = [];
+  const allocationUpdates = [];
+  const masterUpdates = [];
+  const transaction = {
+    $queryRaw: async () => [],
+    user: {
+      findMany: async () => [{ id: 'cre-1' }],
+    },
+    masterCallList: {
+      findMany: async ({ where }) => (
+        where.ownerUserId === null && where.assignmentNeedsReview === false ? entries : []
+      ),
+      update: async ({ where, data }) => {
+        masterUpdates.push({ id: where.id, ...data });
+        return { ...entries.find(({ id }) => id === where.id), ...data };
+      },
+    },
+    allocation: {
+      findMany: async ({ where }) => {
+        allocationReads.push(where);
+        return where.vehicle?.is?.vin?.in ? [allocation] : [];
+      },
+      update: async ({ where, data }) => {
+        allocationUpdates.push({ id: where.id, ...data });
+        Object.assign(allocation, data);
+        return allocation;
+      },
+    },
+    auditLog: { create: async () => ({}) },
+    creAssignmentHistory: { create: async () => ({}) },
+  };
+
+  const assignedCount = await allocateUnassignedMasterCallListEntries(transaction, 'ccm-1', 'admin-1');
+
+  assert.equal(assignedCount, 2);
+  assert.equal(allocationReads.filter(({ vehicle }) => vehicle?.is?.vin?.in).length, 1);
+  assert.deepEqual(masterUpdates.map(({ ownerUserId }) => ownerUserId), ['cre-1', 'cre-1']);
+  assert.deepEqual(allocationUpdates, [{ id: 'allocation-1', creId: 'cre-1' }]);
+});
+
 test('deactivation moves call-list and allocation assignments to a review queue without redistribution', async () => {
   const history = [];
   const updates = [];

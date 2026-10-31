@@ -32,6 +32,8 @@ import {
   importRollbackCompleteness,
 } from '../utils/importBatchStats.js';
 
+const IMPORT_FINALIZATION_TRANSACTION_TIMEOUT_MS = 30_000;
+
 function roleName(role) {
   return String(role || '').toUpperCase();
 }
@@ -736,7 +738,7 @@ export async function importRepairOrders(req, res) {
         },
       });
       return completedBatch;
-    });
+    }, { timeout: IMPORT_FINALIZATION_TRANSACTION_TIMEOUT_MS });
     return res.status(201).json({ batch: sanitizeImportBatch(updatedBatch), errors });
   } catch (error) {
     await prisma.$transaction(async (transaction) => {

@@ -227,6 +227,7 @@ function createDatabase({
     deleteBatchSizes: [],
     lockQuerySizes: [],
     recordFindUniqueCalls: [],
+    batchFindUniqueCalls: [],
   };
   const transactionOptions = [];
 
@@ -252,6 +253,7 @@ function createDatabase({
       },
       importBatch: {
         findUnique: async ({ where, include, select }) => {
+          draft.batchFindUniqueCalls.push({ include: Boolean(include), select: Boolean(select) });
           const found = draft.batches.find(({ id }) => id === where.id);
           if (!found) return null;
           if (select) return Object.fromEntries(Object.keys(select).map((field) => [field, found[field]]));
@@ -441,6 +443,75 @@ test('permanent deletion batches current-record reads for large imports', async 
   assert.equal(preview.willDelete.length, 501);
   assert.equal(preview.blockers.length, 0);
   assert.deepEqual(state.recordFindUniqueCalls, []);
+});
+
+test('permanent deletion verifies the locked plan without rebuilding it between lock phases', async () => {
+  const { database, state } = createDatabase();
+  const preview = await previewPermanentImportDeletion(targetId, database);
+  state.batchFindUniqueCalls.length = 0;
+
+  await permanentlyDeleteImportBatch(targetId, 'admin-1', preview.confirmationToken, database);
+
+  assert.equal(state.batchFindUniqueCalls.length, 4);
+});
+
+test('permanent deletion resolves large vehicle and repair-order dependency sets with stable parent links', async () => {
+  const vehicles = Array.from({ length: 501 }, (_, index) => record(
+    'Vehicle',
+    `vehicle-target-${String(index).padStart(4, '0')}`,
+    { vin: `VIN-${index}`, physicalVehicleId: `physical-${index}` },
+  ));
+  const visits = vehicles.map((vehicle, index) => record(
+    'WorkshopVisit',
+    `visit-target-${String(index).padStart(4, '0')}`,
+    {
+      repairOrderNo: `RO-${index}`,
+      normalizedRepairOrderNo: `RO-${index}`,
+      physicalVehicleId: `physical-${index}`,
+      vehicleId: vehicle.id,
+    },
+  ));
+  const callListEntries = vehicles.map((vehicle, index) => record(
+    'MasterCallList',
+    `call-target-${String(index).padStart(4, '0')}`,
+    { vin: vehicle.vin, vehicleId: vehicle.id },
+  ));
+  const changes = vehicles.flatMap((vehicle, index) => {
+    const rowProgressId = `${targetId}-row-${index}`;
+    return [
+      change(targetId, index * 3 + 1, 'Vehicle', vehicle.id, 'CREATE', {}, vehicle, rowProgressId),
+      change(targetId, index * 3 + 2, 'WorkshopVisit', visits[index].id, 'CREATE', {}, visits[index], rowProgressId),
+      change(targetId, index * 3 + 3, 'MasterCallList', callListEntries[index].id, 'CREATE', {}, callListEntries[index], rowProgressId),
+    ];
+  });
+  const milestones = visits.map((visit, index) => ({
+    id: `milestone-${index}`,
+    physicalVehicleId: `physical-${index}`,
+    completedByRepairOrderNo: visit.repairOrderNo,
+    completedByWorkshopVisitId: null,
+  }));
+  const { database } = createDatabase({
+    targetChanges: changes,
+    targetRecords: { Vehicle: vehicles, WorkshopVisit: visits, MasterCallList: callListEntries },
+    workflows: { freeServiceMilestone: milestones },
+  });
+
+  const preview = await previewPermanentImportDeletion(targetId, database);
+  const callListDependencies = preview.dependencies.filter(({ childType }) => childType === 'MasterCallList');
+  const milestoneDependencies = preview.dependencies.filter(({ childType }) => childType === 'FreeServiceMilestone');
+  const vehicleByVin = new Map(vehicles.map(({ id, vin }) => [vin, id]));
+  const callListById = new Map(callListEntries.map((entry) => [entry.id, entry]));
+  const visitById = new Map(visits.map(({ id }) => [id, id]));
+
+  assert.equal(callListDependencies.length, vehicles.length);
+  assert.ok(callListDependencies.every(({ parentId, childId }) => (
+    parentId === vehicleByVin.get(callListById.get(childId)?.vin)
+  )));
+  assert.equal(milestoneDependencies.length, visits.length);
+  assert.ok(milestoneDependencies.every(({ parentId, childId }) => (
+    childId.startsWith('milestone-')
+      && parentId === visitById.get(`visit-target-${childId.slice('milestone-'.length).padStart(4, '0')}`)
+  )));
 });
 
 test('permanent deletion locks and deletes large call-list imports in bounded batches', async () => {

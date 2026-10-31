@@ -288,6 +288,16 @@ async function findDependencies(transaction, targetBatch, targetCreatedRecords, 
   const vehicleScopes = vehicles
     .filter(({ record }) => record?.vin && record?.ccmId)
     .map(({ entityId, record }) => ({ entityId, vin: record.vin, ccmId: record.ccmId }));
+  const vehicleScopeById = new Map(vehicleScopes.map((scope) => [scope.entityId, scope]));
+  const vehicleScopeByVinAndCcm = new Map();
+  const firstVehicleScopeByVin = new Map();
+  for (const scope of vehicleScopes) {
+    const vinAndCcmKey = `${scope.vin}\u0000${scope.ccmId}`;
+    if (!vehicleScopeByVinAndCcm.has(vinAndCcmKey)) {
+      vehicleScopeByVinAndCcm.set(vinAndCcmKey, scope);
+    }
+    if (!firstVehicleScopeByVin.has(scope.vin)) firstVehicleScopeByVin.set(scope.vin, scope);
+  }
   if (vehicleScopes.length) {
     const [callListRows, reviewRows] = await Promise.all([
       transaction.masterCallList.findMany({
@@ -311,11 +321,10 @@ async function findDependencies(transaction, targetBatch, targetCreatedRecords, 
     ]);
     for (const [childType, records] of [['MasterCallList', callListRows], ['VINConflictReview', reviewRows]]) {
       for (const record of records) {
-        const parent = vehicleScopes.find(({ entityId, vin, ccmId }) => (
-          childType === 'MasterCallList'
-            ? record.vehicleId === entityId || (record.vin === vin && record.ccmId === ccmId)
-            : record.vin === vin
-        ));
+        const parent = childType === 'MasterCallList'
+          ? vehicleScopeById.get(record.vehicleId)
+            || vehicleScopeByVinAndCcm.get(`${record.vin}\u0000${record.ccmId}`)
+          : firstVehicleScopeByVin.get(record.vin);
         const finding = {
           parentType: 'Vehicle',
           parentId: parent?.entityId || null,
@@ -336,6 +345,15 @@ async function findDependencies(transaction, targetBatch, targetCreatedRecords, 
     })
     : [];
   const physicalVehicleIdByVisit = new Map(visitIdentityRows.map(({ id, physicalVehicleId }) => [id, physicalVehicleId]));
+  const visitRecordsById = new Map(visitRecords.map((visit) => [visit.entityId, visit]));
+  const visitRecordsByPhysicalVehicleAndRo = new Map();
+  for (const visit of visitRecords) {
+    const physicalVehicleId = physicalVehicleIdByVisit.get(visit.entityId);
+    const key = `${physicalVehicleId}\u0000${normalizeRepairOrderNo(visit.record.repairOrderNo)}`;
+    const matches = visitRecordsByPhysicalVehicleAndRo.get(key) || [];
+    matches.push(visit);
+    visitRecordsByPhysicalVehicleAndRo.set(key, matches);
+  }
   const physicalVehicleIdsForVisits = [...new Set(visitIdentityRows.map(({ physicalVehicleId }) => physicalVehicleId))];
   if (physicalVehicleIdsForVisits.length) {
     const milestones = await transaction.freeServiceMilestone.findMany({
@@ -351,12 +369,11 @@ async function findDependencies(transaction, targetBatch, targetCreatedRecords, 
     for (const milestone of milestones.filter(({ completedByWorkshopVisitId, completedByRepairOrderNo }) => (
       completedByWorkshopVisitId != null || completedByRepairOrderNo != null
     ))) {
-      const linkedVisits = visitRecords.filter(({ entityId, record }) => (
-        milestone.completedByWorkshopVisitId === entityId
-        || (milestone.completedByWorkshopVisitId == null
-          && physicalVehicleIdByVisit.get(entityId) === milestone.physicalVehicleId
-          && normalizeRepairOrderNo(record.repairOrderNo) === normalizeRepairOrderNo(milestone.completedByRepairOrderNo))
-      ));
+      const linkedVisits = milestone.completedByWorkshopVisitId != null
+        ? [visitRecordsById.get(milestone.completedByWorkshopVisitId)].filter(Boolean)
+        : visitRecordsByPhysicalVehicleAndRo.get(
+          `${milestone.physicalVehicleId}\u0000${normalizeRepairOrderNo(milestone.completedByRepairOrderNo)}`,
+        ) || [];
       for (const visit of linkedVisits) {
         findings.push({
           parentType: 'WorkshopVisit',
@@ -580,6 +597,7 @@ async function loadDeletionPlan(transaction, importBatchId) {
   const restoreRecords = [];
   const rebasedChanges = new Map();
   const currentRecords = [];
+  const currentRecordSnapshotByEntity = new Map();
   const targetCreatedRecords = [];
   const scheduledDeletes = new Map(entityTypes.map((type) => [type, new Set()]));
   const existingUpdateGroups = [];
@@ -606,7 +624,9 @@ async function loadDeletionPlan(transaction, importBatchId) {
       });
       continue;
     }
-    currentRecords.push({ entityType, entityId, record: stableValue(record) });
+    const currentRecord = { entityType, entityId, record: stableValue(record) };
+    currentRecords.push(currentRecord);
+    currentRecordSnapshotByEntity.set(`${entityType}:${entityId}`, currentRecord.record);
 
     if (creates.length) {
       const createChange = creates[0];
@@ -739,9 +759,14 @@ async function loadDeletionPlan(transaction, importBatchId) {
 
   for (const group of existingUpdateGroups) {
     const { entityType, entityId, changes } = group;
-    const record = currentRecords.find((entry) => entry.entityType === entityType && entry.entityId === entityId)?.record;
+    const record = currentRecordSnapshotByEntity.get(`${entityType}:${entityId}`);
     if (!record) continue;
-    const targetFields = new Set(changes.flatMap(changedBusinessFields));
+    const orderedTargetChanges = sortedChanges(changes);
+    const targetFieldsByChange = new Map(orderedTargetChanges.map((change) => [
+      change,
+      changedBusinessFields(change),
+    ]));
+    const targetFields = new Set([...targetFieldsByChange.values()].flat());
     const logs = (importByEntity.get(`${entityType}:${entityId}`) || [])
       .filter(({ importBatchId }) => importBatchId !== batch.id);
     const activeLaterLogs = logs.filter((change) => (
@@ -753,8 +778,17 @@ async function loadDeletionPlan(transaction, importBatchId) {
       || left.sequence - right.sequence
       || left.id.localeCompare(right.id)
     ));
+    const laterFieldsByChange = new Map();
+    const firstLaterChangeByField = new Map();
+    for (const change of orderedLaterLogs) {
+      const fields = changedBusinessFields(change);
+      laterFieldsByChange.set(change, fields);
+      for (const field of fields) {
+        if (!firstLaterChangeByField.has(field)) firstLaterChangeByField.set(field, change);
+      }
+    }
     let historyConsistent = true;
-    let expectedUpdatedAt = sortedChanges(changes).at(-1)?.after?.updatedAt;
+    let expectedUpdatedAt = orderedTargetChanges.at(-1)?.after?.updatedAt;
     for (const change of orderedLaterLogs) {
       if (change.operation !== 'UPDATE' || !importChangeLogIsComplete(change)) {
         addBlocker(blockers, {
@@ -786,12 +820,11 @@ async function loadDeletionPlan(transaction, importBatchId) {
 
     const expectedCurrent = new Map();
     const originalValues = new Map();
-    const orderedTargetChanges = sortedChanges(changes);
     for (const [index, change] of orderedTargetChanges.entries()) {
       if (index && !sameValue(orderedTargetChanges[index - 1].after.updatedAt, change.before.updatedAt)) {
         historyConsistent = false;
       }
-      for (const field of changedBusinessFields(change)) {
+      for (const field of targetFieldsByChange.get(change)) {
         if (expectedCurrent.has(field) && !sameValue(expectedCurrent.get(field), change.before[field])) {
           historyConsistent = false;
         }
@@ -800,8 +833,7 @@ async function loadDeletionPlan(transaction, importBatchId) {
       }
     }
     for (const field of targetFields) {
-      if (!activeLaterLogs.some((change) => changedBusinessFields(change).includes(field))) continue;
-      const firstLaterChange = orderedLaterLogs.find((change) => changedBusinessFields(change).includes(field));
+      const firstLaterChange = firstLaterChangeByField.get(field);
       if (!firstLaterChange || !originalValues.has(field)) continue;
       const rebased = rebasedChanges.get(firstLaterChange.id) || {
         id: firstLaterChange.id,
@@ -828,7 +860,7 @@ async function loadDeletionPlan(transaction, importBatchId) {
     const laterExpected = new Map(expectedCurrent);
     for (const change of orderedLaterLogs) {
       if (!importChangeLogIsComplete(change)) continue;
-      for (const field of changedBusinessFields(change)) {
+      for (const field of laterFieldsByChange.get(change)) {
         if (laterExpected.has(field) && !sameValue(laterExpected.get(field), change.before[field])) {
           historyConsistent = false;
         }
@@ -856,7 +888,7 @@ async function loadDeletionPlan(transaction, importBatchId) {
         });
       }
     }
-    const finalTargetUpdate = sortedChanges(changes).at(-1);
+    const finalTargetUpdate = orderedTargetChanges.at(-1);
     const targetUpdatedAt = finalTargetUpdate?.after?.updatedAt;
     if (targetUpdatedAt && latestActiveLog?.after?.updatedAt) {
       if (!sameValue(record.updatedAt, latestActiveLog.after.updatedAt)) {
@@ -1078,11 +1110,6 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
     }
 
     await lockPlanBatches(transaction, plan);
-    plan = await loadDeletionPlan(transaction, importBatchId);
-    if (plan.blockers.length) {
-      throw new PermanentImportDeletionConflict('Permanent deletion is blocked because the data changed or a dependency was found.', publicBlockers(plan.blockers));
-    }
-
     await lockPlanRecords(transaction, plan);
     plan = await loadDeletionPlan(transaction, importBatchId);
     if (plan.blockers.length) {

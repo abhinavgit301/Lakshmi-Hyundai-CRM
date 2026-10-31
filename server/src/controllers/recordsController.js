@@ -18,14 +18,14 @@ import { getCreCallCounts } from '../utils/callMetrics.js';
 import { findMissedWarrantyCases } from '../utils/serviceLists.js';
 import { lockCcmAllocationTeam } from '../utils/customerAllocation.js';
 import { recordCreAssignmentEvent, validateAssignmentReason } from '../utils/creAssignmentHistory.js';
-import { consolidateMasterCallListEntries, findCanonicalMasterCallListEntry, includeUnassignedAllocationQueue } from '../utils/masterCallList.js';
+import { addCanonicalMasterCallListEntry, findCanonicalMasterCallListEntry, includeUnassignedAllocationQueue } from '../utils/masterCallList.js';
 import { allowedServiceSources, canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { classifyMasterRepairType } from '../utils/repairTypes.js';
 import { filterMasterCallListRecords, validateMasterCallListFilters } from '../utils/masterCallListFilters.js';
 import { filterServiceListRecords, paginateRecords, parsePagination } from '../utils/pagination.js';
 import { buildRepairOrderKey, normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
 import { latestWorkshopVisitOrderBy } from '../utils/workshopVisitOrdering.js';
-import { addOriginatingDealerCodes } from '../utils/serviceHistoryDealerCodes.js';
+import { addOriginatingDealerCodes, getOriginatingDealerCodeMap } from '../utils/serviceHistoryDealerCodes.js';
 import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
 
 const CALL_LIST_QUERY_CHUNK_SIZE = 100;
@@ -41,6 +41,55 @@ function splitIntoChunks(values, chunkSize) {
     chunks.push(values.slice(offset, offset + chunkSize));
   }
   return chunks;
+}
+
+function callListMemorySnapshot() {
+  const usage = process.memoryUsage();
+  return {
+    rss: usage.rss,
+    heapUsed: usage.heapUsed,
+    heapTotal: usage.heapTotal,
+    external: usage.external,
+    arrayBuffers: usage.arrayBuffers,
+  };
+}
+
+function updateCallListMemoryPeak(peak, sample) {
+  for (const key of Object.keys(peak)) peak[key] = Math.max(peak[key], sample[key] || 0);
+}
+
+function createCallListMemoryTracker() {
+  const memory = callListMemorySnapshot();
+  return {
+    peak: { ...memory },
+    metrics: {
+      rows: 0,
+      canonicalRecords: 0,
+      matchingRecords: 0,
+      visits: 0,
+      memory,
+    },
+  };
+}
+
+function memoryInMegabytes(bytes) {
+  return Math.round((bytes / (1024 * 1024)) * 10) / 10;
+}
+
+function logCallListMemory(phase, metrics, peak = metrics) {
+  console.info('[call-list-memory]', JSON.stringify({
+    phase,
+    rows: metrics.rows,
+    canonicalRecords: metrics.canonicalRecords,
+    matchingRecords: metrics.matchingRecords,
+    visits: metrics.visits,
+    memoryMb: Object.fromEntries(
+      Object.entries(metrics.memory).map(([key, value]) => [key, memoryInMegabytes(value)]),
+    ),
+    peakMemoryMb: Object.fromEntries(
+      Object.entries(peak).map(([key, value]) => [key, memoryInMegabytes(value)]),
+    ),
+  }));
 }
 
 function importedMobileNumber(visits = []) {
@@ -606,7 +655,12 @@ function getAgeInMonths(saleDate, now) {
   return Math.max(0, months);
 }
 
-export async function loadCallListRecords(where, now = new Date(), user = null) {
+export async function loadCallListRecords(
+  where,
+  now = new Date(),
+  user = null,
+  { trackMemory = false, memoryTracker: providedMemoryTracker = null } = {},
+) {
   const role = normalizeRole(user?.role);
   const ccmId = user?.ccmId || 'no-access';
   const allocationWhere = role === 'ADMIN' || role === 'GM'
@@ -627,67 +681,90 @@ export async function loadCallListRecords(where, now = new Date(), user = null) 
     scheduledAt: { gte: now },
     status: { in: ['PENDING', 'CONFIRMED', 'RESCHEDULED'] },
   };
-  const include = {
-      vehicle: {
-        include: {
-          physicalVehicle: {
-            include: {
-              workshopVisits: {
-                where: visitWhere,
-                orderBy: latestWorkshopVisitOrderBy,
-                select: {
-                  id: true,
-                  repairOrderNo: true,
-                  ccmId: true,
-                  visitDate: true,
-                  closingDate: true,
-                  gpDate: true,
-                  totalLaborCost: true,
-                  totalPartsCost: true,
-                  totalAmount: true,
-                  importedDetails: true,
-                },
-              },
-            },
-          },
-          allocations: {
-            where: allocationWhere,
-            orderBy: { createdAt: 'desc' },
-            take: 1,
-            select: { serviceType: true },
-          },
-          monthlyDataEntries: {
-            where: {
-              ...monthlyEntryWhere,
-              OR: [
-                { serviceType: { not: null } },
-                { nextServiceDueDate: { not: null } },
-              ],
-            },
-            orderBy: { createdAt: 'desc' },
-            take: 1,
-            select: { serviceType: true, nextServiceDueDate: true },
-          },
-          appointments: {
-            where: { ...upcomingAppointmentWhere, ...appointmentWhere },
-            orderBy: { scheduledAt: 'asc' },
-            take: 1,
-            select: { id: true, scheduledAt: true, status: true },
-          },
-          customer: {
-            include: {
-              appointments: {
-                where: { ...upcomingAppointmentWhere, ...appointmentWhere, vehicleId: null },
-                orderBy: { scheduledAt: 'asc' },
-                take: 1,
-                select: { id: true, scheduledAt: true, status: true },
+  const select = {
+    id: true,
+    createdAt: true,
+    ccmId: true,
+    ownerUserId: true,
+    customerName: true,
+    mobileNumber: true,
+    vin: true,
+    status: true,
+    registrationNumber: true,
+    vehicle: {
+      select: {
+        id: true,
+        customerId: true,
+        model: true,
+        saleDate: true,
+        registrationNumber: true,
+        physicalVehicleId: true,
+        physicalVehicle: {
+          select: {
+            workshopVisits: {
+              where: visitWhere,
+              orderBy: latestWorkshopVisitOrderBy,
+              select: {
+                id: true,
+                repairOrderNo: true,
+                ccmId: true,
+                visitDate: true,
+                closingDate: true,
+                gpDate: true,
+                totalLaborCost: true,
+                totalPartsCost: true,
+                totalAmount: true,
+                importedDetails: true,
               },
             },
           },
         },
+        allocations: {
+          where: allocationWhere,
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: { serviceType: true },
+        },
+        monthlyDataEntries: {
+          where: {
+            ...monthlyEntryWhere,
+            OR: [
+              { serviceType: { not: null } },
+              { nextServiceDueDate: { not: null } },
+            ],
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: { serviceType: true, nextServiceDueDate: true },
+        },
+        appointments: {
+          where: { ...upcomingAppointmentWhere, ...appointmentWhere },
+          orderBy: { scheduledAt: 'asc' },
+          take: 1,
+          select: { id: true, scheduledAt: true, status: true },
+        },
+        customer: {
+          select: {
+            appointments: {
+              where: { ...upcomingAppointmentWhere, ...appointmentWhere, vehicleId: null },
+              orderBy: { scheduledAt: 'asc' },
+              take: 1,
+              select: { id: true, scheduledAt: true, status: true },
+            },
+          },
+        },
       },
-    };
-  const rows = [];
+    },
+  };
+  const canonicalRecords = new Map();
+  const ownerIds = new Set();
+  const ownerNames = new Map();
+  const dealerCodeByCcmId = new Map();
+  const memoryTracker = providedMemoryTracker || (trackMemory ? createCallListMemoryTracker() : null);
+  if (memoryTracker) logCallListMemory('start', memoryTracker.metrics, memoryTracker.peak);
+  let processedRows = 0;
+  let processedVisits = 0;
+  let loggedFirstChunk = false;
   let cursor = null;
   while (true) {
     const pageWhere = cursor
@@ -707,72 +784,124 @@ export async function loadCallListRecords(where, now = new Date(), user = null) 
       where: pageWhere,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: CALL_LIST_QUERY_CHUNK_SIZE,
-      include,
+      select,
     });
-    rows.push(...page);
-    if (page.length < CALL_LIST_QUERY_CHUNK_SIZE) break;
+    if (!page.length) break;
+    if (memoryTracker) {
+      const sample = callListMemorySnapshot();
+      updateCallListMemoryPeak(memoryTracker.peak, sample);
+      memoryTracker.metrics.memory = sample;
+    }
     const lastRow = page.at(-1);
-    cursor = { createdAt: lastRow.createdAt, id: lastRow.id };
+    const hasMoreRows = page.length === CALL_LIST_QUERY_CHUNK_SIZE;
+    if (hasMoreRows) cursor = { createdAt: lastRow.createdAt, id: lastRow.id };
+
+    const visitCcmIds = new Set();
+    for (const row of page) {
+      if (row.ownerUserId) {
+        ownerIds.add(row.ownerUserId);
+      }
+      for (const visit of row.vehicle?.physicalVehicle?.workshopVisits || []) {
+        if (memoryTracker) processedVisits += 1;
+        if (visit.ccmId) visitCcmIds.add(visit.ccmId);
+      }
+    }
+
+    const uncachedVisitCcmIds = [...visitCcmIds].filter((visitCcmId) => !dealerCodeByCcmId.has(visitCcmId));
+    const pageDealerCodes = await getOriginatingDealerCodeMap(uncachedVisitCcmIds);
+    for (const visitCcmId of uncachedVisitCcmIds) {
+      dealerCodeByCcmId.set(visitCcmId, pageDealerCodes.get(visitCcmId) || null);
+    }
+    const previousRows = processedRows;
+    for (const row of page) {
+      const visits = row.vehicle?.physicalVehicle?.workshopVisits || [];
+      const record = {
+        id: row.id,
+        createdAt: row.createdAt,
+        customerId: row.vehicle?.customerId || null,
+        vehicleId: row.vehicle?.id || null,
+        name: row.customerName,
+        customerName: row.customerName,
+        vin: row.vin,
+        mobile: usableMobileNumber(row.mobileNumber) || importedMobileNumber(visits),
+        model: row.vehicle?.model || null,
+        vehicleAgeMonths: getAgeInMonths(
+          row.vehicle?.saleDate
+            || visits.map((visit) => parseStoredDate(visit.importedDetails?.saleDate)).find(Boolean),
+          now,
+        ),
+        registrationNumber: row.registrationNumber || row.vehicle?.registrationNumber || null,
+        saleDate: row.vehicle?.saleDate || null,
+        type: classifyMasterRepairType(visits[0]?.importedDetails?.workType
+          || row.vehicle?.monthlyDataEntries[0]?.serviceType
+          || row.vehicle?.allocations[0]?.serviceType),
+        dueCategory: classifyServiceDue(getLatestServiceDate(visits, now), now),
+        dueDate: getYearlyDueDate(visits)
+          || row.vehicle?.monthlyDataEntries[0]?.nextServiceDueDate
+          || null,
+        scheduledAppointment: [
+          ...(row.vehicle?.appointments || []),
+          ...(row.vehicle?.customer?.appointments || []),
+        ].sort((left, right) => left.scheduledAt - right.scheduledAt)[0] || null,
+        ccm: row.ccmId || 'Unassigned',
+        status: row.status,
+        assigneeId: row.ownerUserId,
+        assigneeName: null,
+        ccmId: row.ccmId,
+        importedDetails: visits[0]?.importedDetails || null,
+        physicalVehicleId: row.vehicle?.physicalVehicleId || null,
+        workshopVisits: visits.map((visit) => ({
+          ...visit,
+          dealerCode: dealerCodeByCcmId.get(visit.ccmId) || null,
+        })),
+      };
+      addCanonicalMasterCallListEntry(canonicalRecords, record);
+      if (memoryTracker) processedRows += 1;
+    }
+
+    page.length = 0;
+    visitCcmIds.clear();
+    pageDealerCodes.clear();
+    uncachedVisitCcmIds.length = 0;
+    if (memoryTracker) {
+      const sample = callListMemorySnapshot();
+      updateCallListMemoryPeak(memoryTracker.peak, sample);
+      memoryTracker.metrics.rows = processedRows;
+      memoryTracker.metrics.canonicalRecords = canonicalRecords.size;
+      memoryTracker.metrics.visits = processedVisits;
+      memoryTracker.metrics.memory = sample;
+      if (!loggedFirstChunk || Math.floor(processedRows / 1000) > Math.floor(previousRows / 1000)) {
+        logCallListMemory('processing', memoryTracker.metrics, memoryTracker.peak);
+        loggedFirstChunk = true;
+      }
+    }
+    if (!hasMoreRows) break;
   }
-  const visitsWithDealerCodes = await addOriginatingDealerCodes(
-    rows.flatMap((row) => row.vehicle?.physicalVehicle?.workshopVisits || []),
-  );
-  const dealerCodeByVisitId = new Map(visitsWithDealerCodes.map((visit) => [visit.id, visit]));
-  const ownerIds = [...new Set(rows.map((row) => row.ownerUserId).filter(Boolean))];
-  const owners = [];
-  for (const chunk of splitIntoChunks(ownerIds, RELATED_ID_QUERY_CHUNK_SIZE)) {
-    owners.push(...await prisma.user.findMany({
+
+  for (const chunk of splitIntoChunks([...ownerIds], RELATED_ID_QUERY_CHUNK_SIZE)) {
+    const owners = await prisma.user.findMany({
       where: { id: { in: chunk } },
       select: { id: true, name: true },
-    }));
+    });
+    for (const owner of owners) ownerNames.set(owner.id, owner.name);
   }
-  const ownerNames = new Map(owners.map((owner) => [owner.id, owner.name]));
+  const records = [...canonicalRecords.values()];
+  for (const record of records) record.assigneeName = ownerNames.get(record.assigneeId) || null;
 
-  const records = rows.map((row) => ({
-      id: row.id,
-      createdAt: row.createdAt,
-      customerId: row.vehicle?.customerId || null,
-      vehicleId: row.vehicle?.id || null,
-      name: row.customerName,
-      customerName: row.customerName,
-      vin: row.vin,
-      mobile: usableMobileNumber(row.mobileNumber)
-        || importedMobileNumber(row.vehicle?.physicalVehicle?.workshopVisits),
-      model: row.vehicle?.model || null,
-      vehicleAgeMonths: getAgeInMonths(
-        row.vehicle?.saleDate
-          || (row.vehicle?.physicalVehicle?.workshopVisits || [])
-            .map((visit) => parseStoredDate(visit.importedDetails?.saleDate))
-            .find(Boolean),
-        now,
-      ),
-      registrationNumber: row.registrationNumber || row.vehicle?.registrationNumber || null,
-      saleDate: row.vehicle?.saleDate || null,
-      type: classifyMasterRepairType(row.vehicle?.physicalVehicle?.workshopVisits[0]?.importedDetails?.workType
-        || row.vehicle?.monthlyDataEntries[0]?.serviceType
-        || row.vehicle?.allocations[0]?.serviceType),
-      dueCategory: classifyServiceDue(
-        getLatestServiceDate(row.vehicle?.physicalVehicle?.workshopVisits || [], now),
-        now,
-      ),
-      dueDate: getYearlyDueDate(row.vehicle?.physicalVehicle?.workshopVisits || [])
-        || row.vehicle?.monthlyDataEntries[0]?.nextServiceDueDate
-        || null,
-      scheduledAppointment: [
-        ...(row.vehicle?.appointments || []),
-        ...(row.vehicle?.customer?.appointments || []),
-      ].sort((left, right) => left.scheduledAt - right.scheduledAt)[0] || null,
-      ccm: row.ccmId || 'Unassigned',
-      status: row.status,
-      assigneeId: row.ownerUserId,
-      assigneeName: ownerNames.get(row.ownerUserId) || null,
-      ccmId: row.ccmId,
-      importedDetails: row.vehicle?.physicalVehicle?.workshopVisits[0]?.importedDetails || null,
-      physicalVehicleId: row.vehicle?.physicalVehicleId || null,
-      workshopVisits: (row.vehicle?.physicalVehicle?.workshopVisits || [])
-        .map((visit) => dealerCodeByVisitId.get(visit.id) || { ...visit, dealerCode: null }),
-    }));
-  return consolidateMasterCallListEntries(records);
+  ownerIds.clear();
+  ownerNames.clear();
+  dealerCodeByCcmId.clear();
+  canonicalRecords.clear();
+  if (memoryTracker) {
+    const finalSample = callListMemorySnapshot();
+    updateCallListMemoryPeak(memoryTracker.peak, finalSample);
+    memoryTracker.metrics.rows = processedRows;
+    memoryTracker.metrics.canonicalRecords = records.length;
+    memoryTracker.metrics.visits = processedVisits;
+    memoryTracker.metrics.memory = finalSample;
+    logCallListMemory('complete', memoryTracker.metrics, memoryTracker.peak);
+  }
+  return records;
 }
 
 export async function getCallList(req, res) {
@@ -783,7 +912,13 @@ export async function getCallList(req, res) {
   if (validated.error) return res.status(400).json({ message: validated.error });
   const paginationResult = parsePagination(req.query);
   if (paginationResult.error) return res.status(400).json({ message: paginationResult.error });
-  let records = await loadCallListRecords(getVisibilityWhere(req.user), new Date(), req.user);
+  const memoryTracker = createCallListMemoryTracker();
+  let records = await loadCallListRecords(
+    getVisibilityWhere(req.user),
+    new Date(),
+    req.user,
+    { memoryTracker },
+  );
   if (normalizeRole(req.user?.role) === 'CCM') {
     const ccmId = req.user?.ccmId || 'no-access';
     const unassignedAllocations = await prisma.allocation.findMany({
@@ -806,11 +941,23 @@ export async function getCallList(req, res) {
     });
     records = includeUnassignedAllocationQueue(records, unassignedAllocations, ccmId);
   }
-  const filtered = filterMasterCallListRecords(records, validated.filters, req.user?.role)
+  let filtered = filterMasterCallListRecords(records, validated.filters, req.user?.role)
     .sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)
       || String(left.id).localeCompare(String(right.id)));
+  memoryTracker.metrics.matchingRecords = filtered.length;
+  let sample = callListMemorySnapshot();
+  updateCallListMemoryPeak(memoryTracker.peak, sample);
+  memoryTracker.metrics.memory = sample;
+  logCallListMemory('filtered', memoryTracker.metrics, memoryTracker.peak);
   if (!paginationResult.hasPagination) return res.json({ records: filtered });
-  return res.json(paginateRecords(filtered, paginationResult));
+  const response = paginateRecords(filtered, paginationResult);
+  records.length = 0;
+  filtered.length = 0;
+  sample = callListMemorySnapshot();
+  updateCallListMemoryPeak(memoryTracker.peak, sample);
+  memoryTracker.metrics.memory = sample;
+  logCallListMemory('response-ready', memoryTracker.metrics, memoryTracker.peak);
+  return res.json(response);
 }
 
 // The MasterCallList scope for one CRE's own due-list and performance figures: vehicles they

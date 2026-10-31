@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prisma } from '../src/config/prisma.js';
-import { getCustomers, getDashboardSummary, getVisibilityWhere, loadCallListRecords, operationalReadScope } from '../src/controllers/recordsController.js';
+import { getCallList, getCustomers, getDashboardSummary, getVisibilityWhere, loadCallListRecords, operationalReadScope } from '../src/controllers/recordsController.js';
 import { getCrePerformanceSummary } from '../src/controllers/callWorkflowController.js';
 import { getCreCallCounts } from '../src/utils/callMetrics.js';
 import { workshopDayRange } from '../src/utils/workshopTime.js';
@@ -28,16 +28,19 @@ test('Master Call List loader scopes nested workshop history by role and preserv
     assert.deepEqual(query.where, {});
     assert.deepEqual(query.orderBy, [{ createdAt: 'desc' }, { id: 'desc' }]);
     assert.equal(query.take, 100);
-    const visits = query.include.vehicle.include.physicalVehicle.include.workshopVisits;
+    const visits = query.select.vehicle.select.physicalVehicle.select.workshopVisits;
     assert.deepEqual(visits.where, {});
     assert.deepEqual(visits.orderBy, latestWorkshopVisitOrderBy);
     assert.equal(visits.take, undefined);
+    assert.deepEqual(Object.keys(query.select.vehicle.select.customer.select), ['appointments']);
+    assert.equal(query.select.vehicle.select.customer.select.appointments.take, 1);
+    assert.equal(query.include, undefined);
   }
 
   const ccmQuery = await captureCallListQuery({ role: 'CCM', ccmId: 'ccm-a' });
   assert.deepEqual(ccmQuery.where, { ccmId: 'ccm-a' });
   assert.equal(ccmQuery.take, 100);
-  const ccmVisits = ccmQuery.include.vehicle.include.physicalVehicle.include.workshopVisits;
+  const ccmVisits = ccmQuery.select.vehicle.select.physicalVehicle.select.workshopVisits;
   assert.deepEqual(ccmVisits.where, {
     physicalVehicle: { is: { vehicles: { some: { ccmId: 'ccm-a' } } } },
   });
@@ -48,20 +51,20 @@ test('Master Call List loader scopes nested workshop history by role and preserv
   ]);
   assert.equal(ccmVisits.take, undefined);
   assert.deepEqual(
-    ccmQuery.include.vehicle.include.monthlyDataEntries.where.dataset.is,
+    ccmQuery.select.vehicle.select.monthlyDataEntries.where.dataset.is,
     { ccmId: 'ccm-a' },
   );
 
   const creQuery = await captureCallListQuery({ role: 'CRE', id: 'cre-a1', ccmId: 'ccm-a' });
   assert.deepEqual(creQuery.where, { ccmId: 'ccm-a', ownerUserId: 'cre-a1' });
   assert.equal(creQuery.take, 100);
-  const creVisits = creQuery.include.vehicle.include.physicalVehicle.include.workshopVisits;
+  const creVisits = creQuery.select.vehicle.select.physicalVehicle.select.workshopVisits;
   assert.deepEqual(creVisits.orderBy, latestWorkshopVisitOrderBy);
   assert.deepEqual(creVisits.where.physicalVehicle.is.vehicles.some.OR[0], {
     allocations: { some: { creId: 'cre-a1', ccmId: 'ccm-a', status: 'assigned' } },
   });
   assert.deepEqual(
-    creQuery.include.vehicle.include.monthlyDataEntries.where.dataset.is,
+    creQuery.select.vehicle.select.monthlyDataEntries.where.dataset.is,
     { ccmId: 'ccm-a' },
   );
 });
@@ -110,6 +113,87 @@ test('Master Call List loader reads large histories in stable bounded chunks and
     assert.deepEqual(callListQueries[1].where.AND[1].OR[0].createdAt.lt, rows[99].createdAt);
     assert.equal(ownerQueries.length, 2);
     assert.deepEqual(ownerQueries.map(({ where }) => where.id.in.length), [500, 1]);
+  } finally {
+    prisma.masterCallList.findMany = originalMasterFindMany;
+    prisma.user.findMany = originalUserFindMany;
+  }
+});
+
+test('Master Call List loader consolidates duplicate VINs across chunks before returning canonical rows', async () => {
+  const rows = Array.from({ length: 101 }, (_, index) => ({
+    id: `mcl-${index}`,
+    createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 100 - index)),
+    ccmId: 'ccm-a',
+    ownerUserId: index === 100 ? 'assigned-cre' : index === 0 ? null : `owner-${index}`,
+    customerName: `Customer ${index}`,
+    mobileNumber: '',
+    vin: index === 0 || index === 100 ? 'SHARED-VIN' : `VIN-${index}`,
+    status: 'pending',
+    vehicle: null,
+  }));
+  const originalMasterFindMany = prisma.masterCallList.findMany;
+  const originalUserFindMany = prisma.user.findMany;
+  prisma.masterCallList.findMany = async (args) => {
+    let remainingRows = rows;
+    const cursorClause = args.where?.AND?.[1];
+    if (cursorClause) {
+      const [olderThan, sameDate] = cursorClause.OR;
+      const dateCursor = olderThan.createdAt.lt;
+      const idCursor = sameDate.id.lt;
+      remainingRows = rows.filter((row) => row.createdAt < dateCursor
+        || (row.createdAt.getTime() === sameDate.createdAt.getTime() && row.id < idCursor));
+    }
+    return remainingRows.slice(0, args.take);
+  };
+  prisma.user.findMany = async ({ where }) => where.id.in.includes('assigned-cre')
+    ? [{ id: 'assigned-cre', name: 'Assigned CRE' }]
+    : [];
+
+  try {
+    const records = await loadCallListRecords({}, new Date('2026-01-15T12:00:00Z'), { role: 'ADMIN' });
+    const sharedVinRows = records.filter(({ vin }) => vin === 'SHARED-VIN');
+
+    assert.equal(sharedVinRows.length, 1);
+    assert.equal(sharedVinRows[0].id, 'mcl-100');
+    assert.equal(sharedVinRows[0].assigneeName, 'Assigned CRE');
+    assert.equal(records.length, 100);
+  } finally {
+    prisma.masterCallList.findMany = originalMasterFindMany;
+    prisma.user.findMany = originalUserFindMany;
+  }
+});
+
+test('paginated Master Call List response retains exact page metadata and ordering', async () => {
+  const rows = Array.from({ length: 3 }, (_, index) => ({
+    id: `mcl-${index}`,
+    createdAt: new Date(Date.UTC(2026, 0, 3 - index)),
+    ccmId: 'ccm-a',
+    ownerUserId: null,
+    customerName: `Customer ${index}`,
+    mobileNumber: '',
+    vin: `VIN-${index}`,
+    status: 'pending',
+    vehicle: null,
+  }));
+  const originalMasterFindMany = prisma.masterCallList.findMany;
+  const originalUserFindMany = prisma.user.findMany;
+  prisma.masterCallList.findMany = async ({ take }) => rows.slice(0, take);
+  prisma.user.findMany = async () => [];
+  const res = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  };
+
+  try {
+    await getCallList({ user: { role: 'ADMIN' }, query: { limit: '1', offset: '1' } }, res);
+
+    assert.equal(res.body.records.length, 1);
+    assert.equal(res.body.total, 3);
+    assert.equal(res.body.limit, 1);
+    assert.equal(res.body.offset, 1);
+    assert.equal(res.body.hasMore, true);
+    assert.equal(res.body.records[0].id, 'mcl-1');
   } finally {
     prisma.masterCallList.findMany = originalMasterFindMany;
     prisma.user.findMany = originalUserFindMany;

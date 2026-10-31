@@ -12,13 +12,24 @@ export async function findCanonicalMasterCallListEntry(transaction, vin, ccmId, 
 export function consolidateMasterCallListEntries(entries) {
   const canonicalByScopeAndVin = new Map();
   for (const entry of entries) {
-    const key = `${entry.ccmId}\u0000${entry.vin}`;
-    const canonical = canonicalByScopeAndVin.get(key);
-    if (!canonical || compareCanonicalEntries(entry, canonical) < 0) canonicalByScopeAndVin.set(key, entry);
+    addCanonicalMasterCallListEntry(canonicalByScopeAndVin, entry);
   }
   return entries.filter((entry) => (
-    canonicalByScopeAndVin.get(`${entry.ccmId}\u0000${entry.vin}`) === entry
+    canonicalByScopeAndVin.get(masterCallListEntryKey(entry)) === entry
   ));
+}
+
+export function addCanonicalMasterCallListEntry(canonicalByScopeAndVin, entry) {
+  const key = masterCallListEntryKey(entry);
+  const canonical = canonicalByScopeAndVin.get(key);
+  if (!canonical || compareCanonicalEntries(entry, canonical) < 0) {
+    if (canonical) canonicalByScopeAndVin.delete(key);
+    canonicalByScopeAndVin.set(key, entry);
+  }
+}
+
+function masterCallListEntryKey(entry) {
+  return `${entry.ccmId}\u0000${entry.vin}`;
 }
 
 function compareCanonicalEntries(left, right, ownerField = 'assigneeId') {

@@ -16,21 +16,32 @@ export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmI
   const monthEnd = new Date(Date.UTC(year, month, 1) + tzOffset * 60000);
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
 
-  const users = await database.user.findMany({
+  const [users, archivedUsers] = await Promise.all([
+    database.user.findMany({
     where: { role: { in: ['CCM', 'CRE'] }, ccmId: { not: null } },
     select: { id: true, name: true, role: true, ccmId: true },
     orderBy: { name: 'asc' },
-  });
+    }),
+    database.deletedUserIdentity.findMany({
+      where: { role: 'CRE', ccmId: { not: null } },
+      select: { id: true, name: true, role: true, ccmId: true },
+      orderBy: { name: 'asc' },
+    }),
+  ]);
+  const reportUsers = [
+    ...users,
+    ...archivedUsers.map((user) => ({ ...user, archived: true })),
+  ];
 
-  let scopeUsers = users;
+  let scopeUsers = reportUsers;
   let scope = { type: 'all', id: null, name: 'All teams' };
   if (creId) {
-    const cre = users.find((user) => user.id === creId && user.role === 'CRE' && (!ccmId || user.ccmId === ccmId));
+    const cre = reportUsers.find((user) => user.id === creId && user.role === 'CRE' && (!ccmId || user.ccmId === ccmId));
     if (!cre) return { error: ccmId ? 'CRE is not assigned to the selected CCM.' : 'CRE not found.' };
     scopeUsers = [cre];
     scope = { type: 'cre', id: cre.id, name: cre.name };
   } else if (ccmId) {
-    scopeUsers = users.filter((user) => user.ccmId === ccmId);
+    scopeUsers = reportUsers.filter((user) => user.ccmId === ccmId);
     if (!scopeUsers.length) return { error: 'Team not found.' };
     const ccm = scopeUsers.find((user) => user.role === 'CCM');
     scope = { type: 'ccm', id: ccmId, name: ccm?.name || 'Team' };
@@ -39,12 +50,18 @@ export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmI
   const userIds = scopeUsers.map((user) => user.id);
   const [calls, appointments, assigned] = await Promise.all([
     database.callLog.findMany({
-      where: { createdById: { in: userIds }, createdAt: { gte: monthStart, lt: monthEnd } },
-      select: { createdById: true, customerId: true, outcome: true, createdAt: true },
+      where: {
+        OR: [{ createdById: { in: userIds } }, { createdByIdSnapshot: { in: userIds } }],
+        createdAt: { gte: monthStart, lt: monthEnd },
+      },
+      select: { createdById: true, createdByIdSnapshot: true, customerId: true, outcome: true, createdAt: true },
     }),
     database.appointment.findMany({
-      where: { createdById: { in: userIds }, createdAt: { gte: monthStart, lt: monthEnd } },
-      select: { createdById: true, createdAt: true },
+      where: {
+        OR: [{ createdById: { in: userIds } }, { createdByIdSnapshot: { in: userIds } }],
+        createdAt: { gte: monthStart, lt: monthEnd },
+      },
+      select: { createdById: true, createdByIdSnapshot: true, createdAt: true },
     }),
     database.masterCallList.groupBy({
       by: ['ownerUserId'],
@@ -70,14 +87,14 @@ export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmI
 
   function summarize(members) {
     const ids = new Set(members.map((member) => member.id));
-    const memberCalls = calls.filter((call) => ids.has(call.createdById));
+    const memberCalls = calls.filter((call) => ids.has(call.createdById || call.createdByIdSnapshot));
     const reached = new Set(memberCalls.map((call) => call.customerId)).size;
     const assignedCount = members.reduce((sum, member) => sum + (assignedByUser.get(member.id) || 0), 0);
     return {
       calls: memberCalls.length,
       customersReached: reached,
       appointmentsSet: memberCalls.filter((call) => call.outcome === 'APPOINTMENT_SET').length,
-      appointmentsBooked: appointments.filter((appointment) => ids.has(appointment.createdById)).length,
+      appointmentsBooked: appointments.filter((appointment) => ids.has(appointment.createdById || appointment.createdByIdSnapshot)).length,
       assignedRecords: assignedCount,
       reachPercent: percent(reached, assignedCount),
     };

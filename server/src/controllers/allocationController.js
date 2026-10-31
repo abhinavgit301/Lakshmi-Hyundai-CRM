@@ -1,7 +1,11 @@
 import { prisma } from '../config/prisma.js';
 import { validateAllocationPayload, validateAllocationUpdate } from '../utils/allocationRules.js';
 import { clearStaleMasterCallListOwner } from '../utils/allocationAccess.js';
-import { lockCcmAllocationTeam } from '../utils/customerAllocation.js';
+import {
+  allocatePendingCreRedistribution,
+  getPendingCreRedistribution,
+  lockCcmAllocationTeam,
+} from '../utils/customerAllocation.js';
 import { recordCreAssignmentEvent, validateAssignmentReason } from '../utils/creAssignmentHistory.js';
 import { findCanonicalMasterCallListEntry } from '../utils/masterCallList.js';
 
@@ -96,6 +100,31 @@ export async function listAllocations(req, res) {
   });
 
   return res.json({ allocations });
+}
+
+export async function getPendingRedistribution(req, res) {
+  if (roleName(req.user?.role) !== 'CCM' || !req.user.ccmId) {
+    return res.status(403).json({ message: 'Only a CCM can view its pending customer allocation queue.' });
+  }
+  const pending = await getPendingCreRedistribution(prisma, req.user.ccmId);
+  return res.json(pending);
+}
+
+export async function allocatePendingRedistribution(req, res) {
+  if (roleName(req.user?.role) !== 'CCM' || !req.user.ccmId) {
+    return res.status(403).json({ message: 'Only a CCM can allocate its pending customer queue.' });
+  }
+  const result = await prisma.$transaction((transaction) => allocatePendingCreRedistribution(transaction, {
+    ccmId: req.user.ccmId,
+    actorId: req.user.id,
+  }));
+  if (!result.activeCreCount && result.pendingCustomers) {
+    return res.status(409).json({
+      message: 'Add an active CRE to this CCM before allocating the pending customers.',
+      ...result,
+    });
+  }
+  return res.json(result);
 }
 
 export async function createAllocation(req, res) {
@@ -241,7 +270,7 @@ export async function updateAllocation(req, res) {
       ? null
       : await transaction.allocation.update({
         where: { id: existing.id },
-        data: update,
+        data: { ...update, ...(update.creId ? { assignmentNeedsReview: false } : {}) },
         include: {
           cre: { select: { id: true, name: true } },
           vehicle: { include: { customer: { select: { id: true, fullName: true, mobileNumber: true } } } },
@@ -259,7 +288,7 @@ export async function updateAllocation(req, res) {
         const previousCreId = assignedAllocation.creId;
         await transaction.allocation.update({
           where: { id: assignedAllocation.id },
-          data: { creId: update.creId },
+          data: { creId: update.creId, assignmentNeedsReview: false },
         });
         await recordCreAssignmentEvent(transaction, {
           vehicleId: current.vehicleId,

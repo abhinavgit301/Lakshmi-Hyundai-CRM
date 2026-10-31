@@ -31,6 +31,7 @@ const createSnapshotOptionalFields = {
   MasterCallList: ['assignmentNeedsReview', 'vehicleId'],
   Vehicle: ['physicalVehicleId'],
   WorkshopVisit: ['normalizedRepairOrderNo', 'physicalVehicleId'],
+  MonthlyCustomerDataEntry: ['createdByIdSnapshot', 'createdByNameSnapshot', 'createdByUsernameSnapshot'],
 };
 
 const updateSnapshotFields = {

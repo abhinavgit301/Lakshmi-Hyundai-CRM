@@ -254,6 +254,10 @@ function App() {
   const [allocationSaving, setAllocationSaving] = useState(false);
   const [allocationError, setAllocationError] = useState('');
   const [allocationMessage, setAllocationMessage] = useState('');
+  const [pendingRedistribution, setPendingRedistribution] = useState({
+    pendingCustomers: 0,
+    activeCreCount: 0,
+  });
   const [allocationForm, setAllocationForm] = useState({ vehicleId: '', creId: '', serviceType: '', category: '' });
   const [customers, setCustomers] = useState([]);
   const [customersLoading, setCustomersLoading] = useState(false);
@@ -864,11 +868,17 @@ function App() {
       const response = editingUserId
         ? await api.patch(`/users/${editingUserId}`, payload)
         : await api.post('/users', payload);
+      const previousUser = managedUsers.find(({ id }) => id === editingUserId);
       setManagedUsers((current) => editingUserId
         ? current.map((user) => user.id === editingUserId ? response.data.user : user)
         : [response.data.user, ...current]);
       closeUserForm({ force: true });
-      setManagedUsersMessage(editingUserId ? 'Account updated.' : 'Account created.');
+      const transferredCre = previousUser
+        && ['CRE', 'FREE_SERVICE_CRE'].includes(previousUser.role)
+        && previousUser.ccmId !== response.data.user.ccmId;
+      setManagedUsersMessage(transferredCre
+        ? `CRE transferred to ${response.data.user.ccmId}. ${response.data.pendingCustomers || 0} customer${response.data.pendingCustomers === 1 ? '' : 's'} remain in ${previousUser.ccmId}'s pending allocation pool; no customer or operational data was transferred.`
+        : editingUserId ? 'Account updated.' : 'Account created.');
       await refreshDashboardSummary();
     } catch (error) {
       setManagedUsersError(error.response?.data?.message || 'Could not save user account.');
@@ -884,6 +894,11 @@ function App() {
     try {
       const response = await api.patch(`/users/${user.id}/status`, { status });
       setManagedUsers((current) => current.map((entry) => entry.id === user.id ? response.data.user : entry));
+      setManagedUsersMessage(status === 'inactive'
+        ? ['CRE', 'FREE_SERVICE_CRE'].includes(user.role)
+          ? `CRE deactivated. ${response.data.pendingCustomers || 0} customer${response.data.pendingCustomers === 1 ? '' : 's'} are now in the CCM's pending allocation pool.`
+          : 'Account deactivated.'
+        : 'Account activated. Existing CRE-removal customers remain pending until the CCM explicitly allocates them.');
       await refreshDashboardSummary();
     } catch (error) {
       setManagedUsersError(error.response?.data?.message || 'Could not update account status.');
@@ -892,7 +907,7 @@ function App() {
 
   async function deleteManagedAccount(user) {
     const confirmation = ['CRE', 'FREE_SERVICE_CRE'].includes(user.role)
-      ? `Permanently delete ${user.username} (${user.role === 'CRE' ? 'CRE' : 'Free-Service CRE'})? Their assigned customers will be redistributed to active CREs, or left unassigned if none are available. Repair and call history will be retained.`
+      ? `Permanently delete ${user.username} (${user.role === 'CRE' ? 'CRE' : 'Free-Service CRE'})? Their assigned customers will remain in this CCM's pending allocation pool for the CCM to allocate manually. Customer, vehicle, repair and call history will be retained.`
       : `Delete ${user.username} (${user.role})? This cannot be undone.`;
     if (!window.confirm(confirmation)) return;
     setManagedUsersError('');
@@ -904,9 +919,15 @@ function App() {
         setManagedUsersMessage('Account deactivated and any customer assignments redistributed. Historical records are retained.');
       } else {
         setManagedUsers((current) => current.filter((entry) => entry.id !== user.id));
-        setManagedUsersMessage(['CRE', 'FREE_SERVICE_CRE'].includes(user.role)
-          ? 'Account permanently deleted. Assigned customers were redistributed where possible; repair, call, and appointment records are retained.'
-          : 'Account deleted. Historical customer and monthly records are retained.');
+        if (['CRE', 'FREE_SERVICE_CRE'].includes(user.role)) {
+          const outcome = response.data.redistribution;
+          const assignmentResult = outcome?.pendingCustomers
+              ? `${outcome.pendingCustomers} customer${outcome.pendingCustomers === 1 ? '' : 's'} moved to the CCM's pending allocation pool.`
+              : 'No assigned customer records required reassignment.';
+          setManagedUsersMessage(`Account permanently deleted. ${assignmentResult} Repair, call, appointment, assignment, and report history is retained.`);
+        } else {
+          setManagedUsersMessage('Account deleted. Historical customer and monthly records are retained.');
+        }
       }
       await refreshDashboardSummary();
     } catch (error) {
@@ -1705,15 +1726,42 @@ function App() {
     try {
       const requests = [api.get('/call-list'), api.get('/customers')];
       if (['ADMIN', 'GM', 'CCM'].includes(String(currentUser?.role || '').toUpperCase())) requests.push(api.get('/teams'));
-      const [recordsResponse, customerResponse, teamResponse] = await Promise.all(requests);
+      if (currentRole === 'CCM') requests.push(api.get('/allocations/pending-redistribution'));
+      const [recordsResponse, customerResponse, teamResponse, pendingResponse] = await Promise.all(requests);
       setCalls(recordsResponse.data.records || []);
       setCustomers(customerResponse.data.customers || []);
       setAllocationCres(teamResponse?.data?.cres || []);
       setMasterListCcms(teamResponse?.data?.ccms || []);
+      setPendingRedistribution(pendingResponse?.data || { pendingCustomers: 0, activeCreCount: 0 });
     } catch (error) {
       setAllocationError(error.response?.data?.message || 'Could not load allocations. Sign in and try again.');
     } finally {
       setAllocationsLoading(false);
+    }
+  }
+
+  async function allocatePendingCustomers() {
+    setAllocationSaving(true);
+    setAllocationError('');
+    setAllocationMessage('');
+    try {
+      const response = await api.post('/allocations/pending-redistribution/allocate');
+      const [recordsResponse, pendingResponse] = await Promise.all([
+        api.get('/call-list'),
+        api.get('/allocations/pending-redistribution'),
+      ]);
+      setCalls(recordsResponse.data.records || []);
+      setPendingRedistribution(pendingResponse.data || { pendingCustomers: 0, activeCreCount: 0 });
+      setAllocationMessage(response.data.assignedCustomers
+        ? `${response.data.assignedCustomers} pending customer${response.data.assignedCustomers === 1 ? '' : 's'} allocated among your active CREs.`
+        : 'There are no pending customers to allocate.');
+    } catch (error) {
+      setAllocationError(error.response?.data?.message || 'Could not allocate pending customers. The pending queue was retained; try again.');
+      if (error.response?.data?.pendingCustomers !== undefined) {
+        setPendingRedistribution((current) => ({ ...current, ...error.response.data }));
+      }
+    } finally {
+      setAllocationSaving(false);
     }
   }
 
@@ -2998,6 +3046,7 @@ function App() {
               allocationForm={allocationForm}
               allocationFormOpen={allocationFormOpen}
               allocationMessage={allocationMessage}
+              pendingRedistribution={pendingRedistribution}
               allocationSaving={allocationSaving}
               allocationSearch={allocationSearch}
               allocationTeamId={allocationTeamId}
@@ -3018,6 +3067,7 @@ function App() {
               setAllocationSearch={setAllocationSearch}
               setMasterListTeam={setMasterListTeam}
               submitAllocation={submitAllocation}
+              allocatePendingCustomers={allocatePendingCustomers}
               visibleAllocationRecords={visibleAllocationRecords}
             />
           </Suspense>

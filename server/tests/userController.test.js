@@ -77,6 +77,7 @@ function setupUserStore(t) {
   });
   replaceMethod(t, prisma, '$transaction', async (callback) => callback({
     user: {
+      findUnique: async ({ where }) => users.find((user) => user.id === where.id) || null,
       findMany: async () => [],
       update: async ({ where, data }) => {
         const index = users.findIndex((user) => user.id === where.id);
@@ -101,10 +102,19 @@ function setupUserStore(t) {
         return user;
       },
     },
-    auditLog: { create: async () => ({}) },
+    deletedUserIdentity: { create: async ({ data }) => data },
+    auditLog: { create: async () => ({}), updateMany: async () => ({ count: 0 }) },
     $queryRaw: async () => [],
-    masterCallList: { findMany: async () => [] },
-    allocation: { findMany: async () => [] },
+    masterCallList: { findMany: async () => [], findFirst: async () => null },
+    allocation: { findMany: async () => [], findFirst: async () => null, updateMany: async () => ({ count: 0 }) },
+    callLog: { updateMany: async () => ({ count: 0 }) },
+    appointment: { updateMany: async () => ({ count: 0 }) },
+    followUp: { updateMany: async () => ({ count: 0 }) },
+    creAssignmentHistory: { updateMany: async () => ({ count: 0 }) },
+    monthlyCustomerDataEntry: { updateMany: async () => ({ count: 0 }) },
+    monthlyCustomerDataImport: { updateMany: async () => ({ count: 0 }) },
+    monthlyCustomerDataset: { updateMany: async () => ({ count: 0 }) },
+    cRETarget: { updateMany: async () => ({ count: 0 }) },
   }));
   return users;
 }
@@ -350,7 +360,7 @@ test('Admin can deactivate and delete a different account', async (t) => {
   assert.equal(users.some(({ id }) => id === 'other-gm'), false);
 });
 
-test('deactivating a CRE unassigns active work for CCM review and CRE deletion is rejected', async (t) => {
+test('deactivating a CRE unassigns active work, and permanent deletion archives the CRE identity', async (t) => {
   const users = setupUserStore(t);
   users.push({
     id: 'cre-to-deactivate',
@@ -364,27 +374,43 @@ test('deactivating a CRE unassigns active work for CCM review and CRE deletion i
   });
   const history = [];
   const changes = [];
+  let deletionStarted = false;
   replaceMethod(t, prisma, '$transaction', async (callback) => callback({
     user: {
+      findUnique: async ({ where }) => users.find(({ id }) => id === where.id) || null,
+      findMany: async () => [],
+      count: async () => 0,
       update: async ({ where, data }) => {
         const user = users.find(({ id }) => id === where.id);
         Object.assign(user, data);
         return user;
       },
+      delete: async ({ where }) => users.splice(users.findIndex(({ id }) => id === where.id), 1)[0],
     },
+    deletedUserIdentity: { create: async ({ data }) => data },
     $queryRaw: async () => [],
     masterCallList: {
-      findMany: async () => [{ id: 'call-1', ccmId: 'ccm-1', vehicle: { id: 'vehicle-1' } }],
+      findMany: async () => deletionStarted ? [] : [{ id: 'call-1', ccmId: 'ccm-1', vin: 'VIN-1', vehicle: { id: 'vehicle-1' } }],
+      findFirst: async () => null,
       update: async ({ data }) => { changes.push(data); return {}; },
     },
     allocation: {
-      findMany: async () => [{ id: 'allocation-1', ccmId: 'ccm-1', vehicleId: 'vehicle-1' }],
+      findMany: async () => deletionStarted ? [] : [{ id: 'allocation-1', ccmId: 'ccm-1', vehicleId: 'vehicle-1', vehicle: { vin: 'VIN-1' } }],
+      findFirst: async () => null,
       update: async ({ data }) => { changes.push(data); return {}; },
+      updateMany: async () => ({ count: 0 }),
     },
     creAssignmentHistory: {
       create: async ({ data }) => { history.push(data); return data; },
     },
-    auditLog: { create: async () => ({}) },
+    auditLog: { create: async () => ({}), updateMany: async () => ({ count: 0 }) },
+    callLog: { updateMany: async () => ({ count: 0 }) },
+    appointment: { updateMany: async () => ({ count: 0 }) },
+    followUp: { updateMany: async () => ({ count: 0 }) },
+    monthlyCustomerDataEntry: { updateMany: async () => ({ count: 0 }) },
+    monthlyCustomerDataImport: { updateMany: async () => ({ count: 0 }) },
+    monthlyCustomerDataset: { updateMany: async () => ({ count: 0 }) },
+    cRETarget: { updateMany: async () => ({ count: 0 }) },
   }));
 
   const deactivateResponse = responseRecorder();
@@ -397,7 +423,7 @@ test('deactivating a CRE unassigns active work for CCM review and CRE deletion i
   assert.equal(deactivateResponse.body.user.status, 'inactive');
   assert.deepEqual(changes, [
     { ownerUserId: null, status: 'pending', assignmentNeedsReview: true },
-    { creId: null },
+    { creId: null, assignmentNeedsReview: true },
   ]);
   assert.equal(history.length, 2);
   assert.ok(history.every((event) => event.previousCreId === 'cre-to-deactivate'
@@ -405,13 +431,22 @@ test('deactivating a CRE unassigns active work for CCM review and CRE deletion i
     && event.actorUserId === 'existing-admin'
     && event.reason === 'Role ended'));
 
+  deletionStarted = true;
   const deleteResponse = responseRecorder();
   await deleteManagedUser({
     user: { id: 'existing-admin', role: 'Admin' },
     params: { id: 'cre-to-deactivate' },
   }, deleteResponse);
-  assert.equal(deleteResponse.statusCode, 409);
-  assert.equal(users.some(({ id }) => id === 'cre-to-deactivate'), true);
+  assert.equal(deleteResponse.statusCode, 200);
+  assert.equal(deleteResponse.body.deleted, true);
+  assert.deepEqual(deleteResponse.body.redistribution, {
+    affectedCustomers: 0,
+    redistributedCustomers: 0,
+    unassignedCustomers: 0,
+    pendingCustomers: 0,
+    remainingCreCount: 0,
+  });
+  assert.equal(users.some(({ id }) => id === 'cre-to-deactivate'), false);
 
   const token = jwt.sign({ sub: 'cre-to-deactivate' }, process.env.JWT_SECRET);
   let continued = false;

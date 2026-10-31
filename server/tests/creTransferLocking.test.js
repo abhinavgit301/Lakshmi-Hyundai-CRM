@@ -64,6 +64,18 @@ function createScenario(initialCcmId = 'ccm-old') {
       });
       if (validation.error) return validation.error;
       await beforeCommit();
+      if (state.cre.ccmId !== targetCcmId) {
+        state.allocations = state.allocations.map((allocation) => (
+          allocation.creId === state.cre.id && allocation.ccmId === state.cre.ccmId
+            ? { ...allocation, creId: null, assignmentNeedsReview: true }
+            : allocation
+        ));
+        state.callListEntries = state.callListEntries.map((entry) => (
+          entry.ownerUserId === state.cre.id
+            ? { ...entry, ownerUserId: null, assignmentNeedsReview: true }
+            : entry
+        ));
+      }
       state.cre.ccmId = targetCcmId;
       return 'committed';
     });
@@ -105,7 +117,7 @@ test('a transfer that locks first prevents a later allocation under the old CCM'
   assert.equal(scenario.state.allocations.length, 0);
 });
 
-test('an allocation that locks first causes a later transfer to reject without moving the CRE', async () => {
+test('an allocation that locks first is placed in the source pending queue before transfer commits', async () => {
   const scenario = createScenario();
   const entered = deferred();
   const continueAllocation = deferred();
@@ -118,8 +130,14 @@ test('an allocation that locks first causes a later transfer to reject without m
   continueAllocation.resolve();
 
   assert.equal(await allocation, 'committed');
-  assert.equal(await transfer, 'active-assignments');
-  assert.equal(scenario.state.cre.ccmId, 'ccm-old');
+  assert.equal(await transfer, 'committed');
+  assert.equal(scenario.state.cre.ccmId, 'ccm-new');
+  assert.deepEqual(scenario.state.allocations, [{
+    creId: null,
+    ccmId: 'ccm-old',
+    status: 'assigned',
+    assignmentNeedsReview: true,
+  }]);
 });
 
 test('concurrent transfer and allocation serialize on the same CCM allocation lock', async () => {
@@ -129,11 +147,12 @@ test('concurrent transfer and allocation serialize on the same CCM allocation lo
     scenario.allocate('ccm-old'),
   ]);
 
-  assert.equal(results.filter((result) => result === 'committed').length, 1);
-  assert.ok(['cre-not-in-team', 'active-assignments'].includes(results.find((result) => result !== 'committed')));
+  assert.ok(results.every((result) => ['committed', 'cre-not-in-team'].includes(result)));
+  assert.equal(results[0], 'committed');
   assert.equal(
     scenario.state.cre.ccmId === 'ccm-old' && scenario.state.allocations.length === 1
-      || scenario.state.cre.ccmId === 'ccm-new' && scenario.state.allocations.length === 0,
+      || scenario.state.cre.ccmId === 'ccm-new'
+        && scenario.state.allocations.every(({ creId, assignmentNeedsReview }) => creId === null && assignmentNeedsReview),
     true,
   );
 });
@@ -150,14 +169,18 @@ test('two simultaneous CCM transfers allow only one stale-source transfer to com
   assert.ok(['ccm-target-a', 'ccm-target-b'].includes(scenario.state.cre.ccmId));
 });
 
-test('transfer validation failure leaves the transaction state unchanged', async () => {
+test('transfer moves assigned call-list work into the pending source queue', async () => {
   const scenario = createScenario();
   scenario.state.callListEntries.push({ ownerUserId: 'cre-1' });
   const result = await scenario.transfer('ccm-new');
 
-  assert.equal(result, 'active-assignments');
-  assert.equal(scenario.state.cre.ccmId, 'ccm-old');
+  assert.equal(result, 'committed');
+  assert.equal(scenario.state.cre.ccmId, 'ccm-new');
   assert.equal(scenario.state.allocations.length, 0);
+  assert.deepEqual(scenario.state.callListEntries, [{
+    ownerUserId: null,
+    assignmentNeedsReview: true,
+  }]);
 });
 
 test('a same-CCM assignment is a no-op even when the CRE already has work', async () => {

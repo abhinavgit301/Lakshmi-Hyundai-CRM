@@ -38,7 +38,7 @@ export async function lockAndValidateCreCcmTransfer(transaction, {
     select: { id: true, role: true, ccmId: true, status: true },
   });
   if (!cre || !['CRE', 'FREE_SERVICE_CRE'].includes(cre.role)
-    || cre.ccmId !== expectedOldCcmId || cre.status !== 'active') {
+    || cre.ccmId !== expectedOldCcmId) {
     return { error: 'cre-changed' };
   }
   const targetCcm = await transaction.user.findFirst({
@@ -48,17 +48,6 @@ export async function lockAndValidateCreCcmTransfer(transaction, {
   if (!targetCcm) return { error: 'ccm-inactive' };
   if (expectedOldCcmId === newCcmId) return { cre };
 
-  const [activeAllocation, assignedCustomer] = await Promise.all([
-    transaction.allocation.findFirst({
-      where: { creId, status: 'assigned' },
-      select: { id: true },
-    }),
-    transaction.masterCallList.findFirst({
-      where: { ownerUserId: creId },
-      select: { id: true },
-    }),
-  ]);
-  if (activeAllocation || assignedCustomer) return { error: 'active-assignments' };
   return { cre };
 }
 
@@ -110,11 +99,24 @@ export async function allocateUnassignedMasterCallListEntries(
   if (!activeCres.length) return 0;
   const activeCreIds = activeCres.map(({ id }) => id);
 
-  const unassigned = await transaction.masterCallList.findMany({
-    where: { ccmId, ownerUserId: null, assignmentNeedsReview: false, vehicle: { isNot: null } },
-    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    select: { id: true, vin: true, updatedAt: true, vehicle: { select: { id: true } } },
-  });
+  const [unassignedCandidates, pendingEntries, pendingAllocations] = await Promise.all([
+    transaction.masterCallList.findMany({
+      where: { ccmId, ownerUserId: null, assignmentNeedsReview: false, vehicle: { isNot: null } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: { id: true, vin: true, updatedAt: true, vehicle: { select: { id: true } } },
+    }),
+    transaction.masterCallList.findMany({
+      where: { ccmId, assignmentNeedsReview: true },
+      select: { vin: true },
+    }),
+    transaction.allocation.findMany({
+      where: { ccmId, status: 'assigned', assignmentNeedsReview: true },
+      select: { vehicle: { select: { vin: true } } },
+    }),
+  ]);
+  const pendingVins = new Set(pendingEntries.map(({ vin }) => vin));
+  for (const allocation of pendingAllocations) pendingVins.add(allocation.vehicle.vin);
+  const unassigned = unassignedCandidates.filter(({ vin }) => !pendingVins.has(vin));
   if (!unassigned.length) return 0;
 
   const vins = [...new Set(unassigned.map(({ vin }) => vin))];
@@ -122,6 +124,7 @@ export async function allocateUnassignedMasterCallListEntries(
     where: {
       ccmId,
       status: 'assigned',
+      assignmentNeedsReview: false,
       creId: { in: activeCreIds },
       vehicle: { is: { vin: { in: vins } } },
     },
@@ -180,7 +183,12 @@ export async function allocateUnassignedMasterCallListEntries(
       after: { ownerUserId: creId },
     }, () => transaction.masterCallList.update({ where: { id: entry.id }, data: { ownerUserId: creId } }));
     const allocations = await transaction.allocation.findMany({
-      where: { ccmId, status: 'assigned', vehicle: { is: { vin: entry.vin } } },
+      where: {
+        ccmId,
+        status: 'assigned',
+        assignmentNeedsReview: false,
+        vehicle: { is: { vin: entry.vin } },
+      },
       select: { id: true, vehicleId: true, creId: true, updatedAt: true },
     });
     for (const allocation of allocations) {
@@ -227,131 +235,158 @@ export async function allocateUnassignedMasterCallListEntries(
   return assignedCount;
 }
 
-export async function redistributeCreAssignments(transaction, { ccmId, departingCreId, actorId = null }) {
+export async function getPendingCreRedistribution(transaction, ccmId) {
+  const [entries, allocations, activeCreCount] = await Promise.all([
+    transaction.masterCallList.findMany({
+      where: { ccmId, ownerUserId: null, assignmentNeedsReview: true, vehicle: { isNot: null } },
+      select: { vin: true },
+    }),
+    transaction.allocation.findMany({
+      where: { ccmId, creId: null, status: 'assigned', assignmentNeedsReview: true },
+      select: { vehicle: { select: { vin: true } } },
+    }),
+    transaction.user.count({ where: { role: 'CRE', status: 'active', ccmId } }),
+  ]);
+  const vins = new Set(entries.map(({ vin }) => vin));
+  for (const allocation of allocations) vins.add(allocation.vehicle.vin);
+  return {
+    pendingCustomers: vins.size,
+    pendingMasterCallListEntries: entries.length,
+    pendingAllocationRecords: allocations.length,
+    activeCreCount,
+  };
+}
+
+export async function allocatePendingCreRedistribution(transaction, { ccmId, actorId = null }) {
   await lockCcmAllocationTeam(transaction, ccmId);
+  const pending = await getPendingCreRedistribution(transaction, ccmId);
   const activeCres = await transaction.user.findMany({
-    where: { role: 'CRE', status: 'active', ccmId, id: { not: departingCreId } },
+    where: { role: 'CRE', status: 'active', ccmId },
     select: { id: true },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
   });
+  if (!activeCres.length || !pending.pendingCustomers) {
+    return { assignedCustomers: 0, ...pending, activeCreCount: activeCres.length };
+  }
   const activeCreIds = activeCres.map(({ id }) => id);
   const entries = await transaction.masterCallList.findMany({
-    where: { ccmId, ownerUserId: departingCreId },
-    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    where: { ccmId, ownerUserId: null, assignmentNeedsReview: true, vehicle: { isNot: null } },
     select: { id: true, vin: true, vehicle: { select: { id: true } } },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
   });
-  const allocationRows = await transaction.allocation.findMany({
-    where: { ccmId, creId: departingCreId, status: 'assigned' },
+  const queuedEntries = await transaction.masterCallList.findMany({
+    where: { ccmId, ownerUserId: null, assignmentNeedsReview: true, vehicle: { isNot: null } },
+    select: { id: true, vin: true, vehicle: { select: { id: true } } },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  const queueVins = new Set(queuedEntries.map(({ vin }) => vin));
+  const queuedAllocations = await transaction.allocation.findMany({
+    where: { ccmId, creId: null, status: 'assigned', assignmentNeedsReview: true },
     select: { id: true, vehicleId: true, vehicle: { select: { vin: true } } },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
   });
-  const masterVins = new Set(entries.map(({ vin }) => vin));
-  const allocationOnly = [];
-  const seenVehicleIds = new Set();
-  for (const allocation of allocationRows) {
-    if (masterVins.has(allocation.vehicle.vin) || seenVehicleIds.has(allocation.vehicleId)) continue;
-    seenVehicleIds.add(allocation.vehicleId);
-    allocationOnly.push(allocation);
-  }
-
+  for (const allocation of queuedAllocations) queueVins.add(allocation.vehicle.vin);
+  const allocations = queueVins.size
+    ? await transaction.allocation.findMany({
+      where: {
+        ccmId,
+        status: 'assigned',
+        assignmentNeedsReview: true,
+        vehicle: { is: { vin: { in: [...queueVins] } } },
+      },
+      select: { id: true, vehicleId: true, creId: true, assignmentNeedsReview: true, vehicle: { select: { vin: true } } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    })
+    : [];
+  const workloads = await loadWorkloads(transaction, ccmId, activeCreIds);
+  const assignmentByVin = new Map();
   const changes = [];
-  if (!activeCreIds.length) {
-    for (const entry of entries) {
+  for (const entry of queuedEntries) {
+    if (assignmentByVin.has(entry.vin)) {
+      const ownerUserId = assignmentByVin.get(entry.vin);
       await transaction.masterCallList.update({
         where: { id: entry.id },
-        data: { ownerUserId: null, status: 'pending', assignmentNeedsReview: true },
+        data: { ownerUserId, assignmentNeedsReview: false },
       });
       await recordCreAssignmentEvent(transaction, {
         vehicleId: entry.vehicle.id,
         masterCallListId: entry.id,
         ccmId,
-        previousCreId: departingCreId,
+        newCreId: ownerUserId,
         actorUserId: actorId,
+        eventType: 'MANUAL_REDISTRIBUTION',
       });
-      changes.push({ masterCallListId: entry.id, vin: entry.vin, from: departingCreId, to: null });
+      continue;
     }
-    for (const allocation of allocationRows) {
+    const creId = selectLeastLoadedCre(activeCreIds, workloads);
+    assignmentByVin.set(entry.vin, creId);
+    await transaction.masterCallList.update({
+      where: { id: entry.id },
+      data: { ownerUserId: creId, assignmentNeedsReview: false },
+    });
+    await recordCreAssignmentEvent(transaction, {
+      vehicleId: entry.vehicle.id,
+      masterCallListId: entry.id,
+      ccmId,
+      newCreId: creId,
+      actorUserId: actorId,
+      eventType: 'MANUAL_REDISTRIBUTION',
+    });
+    changes.push({ vin: entry.vin, creId });
+    workloads.set(creId, (workloads.get(creId) || 0) + 1);
+  }
+  for (const vin of queueVins) {
+    if (assignmentByVin.has(vin)) continue;
+    const creId = selectLeastLoadedCre(activeCreIds, workloads);
+    assignmentByVin.set(vin, creId);
+    workloads.set(creId, (workloads.get(creId) || 0) + 1);
+    changes.push({ vin, creId });
+  }
+  for (const allocation of allocations) {
+    if (!allocation.assignmentNeedsReview) continue;
+    const vin = allocation.vehicle.vin;
+    const creId = assignmentByVin.get(vin);
+    if (allocation.creId !== creId) {
       await transaction.allocation.update({
         where: { id: allocation.id },
-        data: { creId: null },
+        data: { creId, assignmentNeedsReview: false },
       });
       await recordCreAssignmentEvent(transaction, {
         vehicleId: allocation.vehicleId,
         allocationId: allocation.id,
         ccmId,
-        previousCreId: departingCreId,
-        actorUserId: actorId,
-      });
-      changes.push({ allocationId: allocation.id, vin: allocation.vehicle.vin, from: departingCreId, to: null });
-    }
-  } else {
-    const workloads = await loadWorkloads(transaction, ccmId, activeCreIds);
-    for (const entry of entries) {
-      const creId = selectLeastLoadedCre(activeCreIds, workloads);
-      if (!creId) break;
-      await transaction.masterCallList.update({ where: { id: entry.id }, data: { ownerUserId: creId } });
-      await recordCreAssignmentEvent(transaction, {
-        vehicleId: entry.vehicle.id,
-        masterCallListId: entry.id,
-        ccmId,
-        previousCreId: departingCreId,
+        previousCreId: allocation.creId,
         newCreId: creId,
         actorUserId: actorId,
+        eventType: 'MANUAL_REDISTRIBUTION',
       });
-      const linkedAllocations = allocationRows.filter(({ vehicle }) => vehicle.vin === entry.vin);
-      for (const allocation of linkedAllocations) {
-        await transaction.allocation.update({
-          where: { id: allocation.id },
-          data: { creId },
-        });
-        await recordCreAssignmentEvent(transaction, {
-          vehicleId: allocation.vehicleId,
-          allocationId: allocation.id,
-          ccmId,
-          previousCreId: departingCreId,
-          newCreId: creId,
-          actorUserId: actorId,
-        });
-      }
-      changes.push({ masterCallListId: entry.id, vin: entry.vin, from: departingCreId, to: creId });
-      workloads.set(creId, (workloads.get(creId) || 0) + 1);
-    }
-    for (const allocation of allocationOnly) {
-      const creId = selectLeastLoadedCre(activeCreIds, workloads);
-      if (!creId) break;
-      await transaction.allocation.update({ where: { id: allocation.id }, data: { creId } });
-      await recordCreAssignmentEvent(transaction, {
-        vehicleId: allocation.vehicleId,
-        allocationId: allocation.id,
-        ccmId,
-        previousCreId: departingCreId,
-        newCreId: creId,
-        actorUserId: actorId,
-      });
-      changes.push({ allocationId: allocation.id, vin: allocation.vehicle.vin, from: departingCreId, to: creId });
-      workloads.set(creId, (workloads.get(creId) || 0) + 1);
     }
   }
-
   await transaction.auditLog.create({
     data: {
       userId: actorId,
-      entityType: 'User',
-      entityId: departingCreId,
-      action: activeCreIds.length ? 'CRE_CUSTOMERS_REDISTRIBUTED' : 'CRE_CUSTOMERS_UNASSIGNED',
-      details: JSON.stringify({
-        ccmId,
-        masterCallListEntries: entries.length,
-        allocationOnlyVehicles: allocationOnly.length,
-        reassignedTo: activeCreIds,
-        changes,
-      }),
+      entityType: 'Allocation',
+      entityId: ccmId,
+      action: 'CRE_PENDING_ASSIGNMENTS_ALLOCATED',
+      details: JSON.stringify({ ccmId, assignedCustomers: assignmentByVin.size, changes }),
     },
   });
-  return entries.length + allocationOnly.length;
+  return {
+    assignedCustomers: assignmentByVin.size,
+    pendingCustomers: 0,
+    pendingMasterCallListEntries: 0,
+    pendingAllocationRecords: 0,
+    activeCreCount: activeCreIds.length,
+  };
 }
 
-export async function unassignCreAssignments(transaction, { ccmId, departingCreId, actorId = null, reason = null }) {
+export async function unassignCreAssignments(transaction, {
+  ccmId,
+  departingCreId,
+  actorId = null,
+  reason = null,
+  eventType = 'DEACTIVATED',
+}) {
   if (!ccmId) {
     const [entryTeams, allocationTeams] = await Promise.all([
       transaction.masterCallList.findMany({
@@ -375,6 +410,7 @@ export async function unassignCreAssignments(transaction, { ccmId, departingCreI
         departingCreId,
         actorId,
         reason,
+        eventType,
       });
     }
     return unassignedCount;
@@ -384,11 +420,11 @@ export async function unassignCreAssignments(transaction, { ccmId, departingCreI
   const [entries, allocations] = await Promise.all([
     transaction.masterCallList.findMany({
       where: { ccmId, ownerUserId: departingCreId },
-      select: { id: true, vehicle: { select: { id: true } } },
+      select: { id: true, vin: true, vehicle: { select: { id: true } } },
     }),
     transaction.allocation.findMany({
       where: { ccmId, creId: departingCreId, status: 'assigned' },
-      select: { id: true, vehicleId: true },
+      select: { id: true, vehicleId: true, vehicle: { select: { vin: true } } },
     }),
   ]);
   for (const entry of entries) {
@@ -403,13 +439,13 @@ export async function unassignCreAssignments(transaction, { ccmId, departingCreI
       previousCreId: departingCreId,
       actorUserId: actorId,
       reason,
-      eventType: 'DEACTIVATED',
+      eventType,
     });
   }
   for (const allocation of allocations) {
     await transaction.allocation.update({
       where: { id: allocation.id },
-      data: { creId: null },
+      data: { creId: null, assignmentNeedsReview: true },
     });
     await recordCreAssignmentEvent(transaction, {
       vehicleId: allocation.vehicleId,
@@ -418,7 +454,7 @@ export async function unassignCreAssignments(transaction, { ccmId, departingCreI
       previousCreId: departingCreId,
       actorUserId: actorId,
       reason,
-      eventType: 'DEACTIVATED',
+      eventType,
     });
   }
   await transaction.auditLog.create({
@@ -426,11 +462,20 @@ export async function unassignCreAssignments(transaction, { ccmId, departingCreI
       userId: actorId,
       entityType: 'User',
       entityId: departingCreId,
-      action: 'CRE_ASSIGNMENTS_UNASSIGNED',
-      details: JSON.stringify({ ccmId, masterCallListEntries: entries.length, allocations: allocations.length }),
+      action: 'CRE_ASSIGNMENTS_PENDING_REDISTRIBUTION',
+      details: JSON.stringify({
+        ccmId,
+        masterCallListEntries: entries.length,
+        allocations: allocations.length,
+        eventType,
+        reason,
+      }),
     },
   });
-  return entries.length + allocations.length;
+  return new Set([
+    ...entries.map(({ vin }) => vin),
+    ...allocations.map(({ vehicle }) => vehicle.vin),
+  ]).size;
 }
 
 export async function repairFreeServiceCreAssignments(transaction, actorId = null) {
@@ -454,10 +499,12 @@ export async function repairFreeServiceCreAssignments(transaction, actorId = nul
     ]);
     const teams = new Set([...masterTeams, ...allocationTeams].map((row) => row.ccmId).filter(Boolean));
     for (const ccmId of teams) {
-      repaired += await redistributeCreAssignments(transaction, {
+      repaired += await unassignCreAssignments(transaction, {
         ccmId,
         departingCreId: user.id,
         actorId,
+        reason: 'CRE assignment moved to CCM pending redistribution pool',
+        eventType: 'PENDING_REDISTRIBUTION',
       });
     }
   }

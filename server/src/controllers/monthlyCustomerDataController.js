@@ -589,5 +589,16 @@ export async function getMonthlyCustomerImportHistory(req, res) {
     },
     orderBy: { createdAt: 'desc' },
   });
-  return res.json({ imports });
+  return res.json({
+    imports: imports.map((monthlyImport) => ({
+      ...monthlyImport,
+      importedBy: monthlyImport.importedBy || (monthlyImport.importedByIdSnapshot
+        ? {
+          id: monthlyImport.importedByIdSnapshot,
+          name: monthlyImport.importedByNameSnapshot,
+          username: monthlyImport.importedByUsernameSnapshot,
+        }
+        : null),
+    })),
+  });
 }

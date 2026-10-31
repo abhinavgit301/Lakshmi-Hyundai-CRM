@@ -7,16 +7,25 @@ function createReportDatabase({ users, calls = [], appointments = [], assigned =
     user: {
       findMany: async () => users,
     },
+    deletedUserIdentity: {
+      findMany: async () => [],
+    },
     callLog: {
       findMany: async ({ where }) => calls.filter((call) => (
-        where.createdById.in.includes(call.createdById)
+        where.OR.some((condition) => (
+          condition.createdById?.in.includes(call.createdById || call.createdByIdSnapshot)
+          || condition.createdByIdSnapshot?.in.includes(call.createdById || call.createdByIdSnapshot)
+        ))
         && call.createdAt >= where.createdAt.gte
         && call.createdAt < where.createdAt.lt
       )),
     },
     appointment: {
       findMany: async ({ where }) => appointments.filter((appointment) => (
-        where.createdById.in.includes(appointment.createdById)
+        where.OR.some((condition) => (
+          condition.createdById?.in.includes(appointment.createdById || appointment.createdByIdSnapshot)
+          || condition.createdByIdSnapshot?.in.includes(appointment.createdById || appointment.createdByIdSnapshot)
+        ))
         && appointment.createdAt >= where.createdAt.gte
         && appointment.createdAt < where.createdAt.lt
       )),
@@ -123,4 +132,31 @@ test('whole-team report remains available when a CCM has no assigned CREs', asyn
   assert.equal(report.totals.calls, 1);
   assert.equal(report.totals.appointmentsBooked, 1);
   assert.deepEqual(report.breakdown.map(({ id }) => id), ['ccm-1-user']);
+});
+
+test('whole-team report retains historical activity for an archived CRE identity', async () => {
+  const archivedCre = { id: 'deleted-cre', name: 'Former CRE', role: 'CRE', ccmId: 'ccm-1' };
+  const database = createReportDatabase({
+    users: [reportUsers[0]],
+    calls: [{
+      createdById: null,
+      createdByIdSnapshot: archivedCre.id,
+      customerId: 'customer-archived',
+      outcome: 'APPOINTMENT_SET',
+      createdAt: new Date('2026-01-03T10:00:00Z'),
+    }],
+    appointments: [{
+      createdById: null,
+      createdByIdSnapshot: archivedCre.id,
+      createdAt: new Date('2026-01-03T10:00:00Z'),
+    }],
+    assigned: [],
+  });
+  database.deletedUserIdentity.findMany = async () => [archivedCre];
+
+  const report = await queryWorkshopReportsData(queryOptions({ ccmId: 'ccm-1' }), database);
+
+  assert.equal(report.totals.calls, 1);
+  assert.equal(report.totals.appointmentsBooked, 1);
+  assert.ok(report.breakdown.some(({ id, name }) => id === archivedCre.id && name === archivedCre.name));
 });

@@ -51,6 +51,7 @@ function setupTransfer(t, { assignment = null, activeTarget = true, initialTarge
   };
   const locks = [];
   let updated = null;
+  const pendingUpdates = [];
   replaceMethod(t, prisma.user, 'findUnique', async () => ({ ...existing }));
   replaceMethod(t, prisma.user, 'findFirst', async ({ where }) => (
     where.role === 'CCM' && where.status === 'active' && initialTarget && where.ccmId === 'ccm-new'
@@ -73,12 +74,22 @@ function setupTransfer(t, { assignment = null, activeTarget = true, initialTarge
     },
     allocation: {
       findFirst: async () => assignment?.kind === 'allocation' ? { id: 'allocation-1' } : null,
+      findMany: async () => assignment?.kind === 'allocation'
+        ? [{ id: 'allocation-1', vehicleId: 'vehicle-1', vehicle: { vin: 'VIN-1' } }]
+        : [],
+      update: async ({ where, data }) => { pendingUpdates.push({ model: 'allocation', where, data }); },
     },
     masterCallList: {
       findFirst: async () => assignment?.kind === 'mcl' ? { id: 'mcl-1' } : null,
+      findMany: async () => assignment?.kind === 'mcl'
+        ? [{ id: 'mcl-1', vin: 'VIN-1', vehicle: { id: 'vehicle-1' } }]
+        : [],
+      update: async ({ where, data }) => { pendingUpdates.push({ model: 'masterCallList', where, data }); },
     },
+    creAssignmentHistory: { create: async () => ({}) },
+    auditLog: { create: async () => ({}) },
   }));
-  return { locks, getUpdated: () => updated };
+  return { locks, getUpdated: () => updated, pendingUpdates };
 }
 
 test('managed-user CRE transfer locks both CCM scopes in deterministic order and revalidates in transaction', async (t) => {
@@ -93,7 +104,8 @@ test('managed-user CRE transfer locks both CCM scopes in deterministic order and
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.user.ccmId, 'ccm-new');
-  assert.deepEqual(state.locks, ['customer-allocation:ccm-new', 'customer-allocation:ccm-old']);
+  assert.equal(response.body.pendingCustomers, 0);
+  assert.deepEqual(state.locks, ['customer-allocation:ccm-new', 'customer-allocation:ccm-old', 'customer-allocation:ccm-old']);
   assert.equal(state.getUpdated().ccmId, 'ccm-new');
 });
 
@@ -104,14 +116,16 @@ test('direct CRE-to-CCM assignment uses the same locking and validation transact
   await assignUserToCcm({
     params: { id: 'cre-1' },
     body: { ccmId: 'ccm-new' },
+    user: { id: 'admin-1' },
   }, response);
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.user.ccmId, 'ccm-new');
-  assert.deepEqual(state.locks, ['customer-allocation:ccm-new', 'customer-allocation:ccm-old']);
+  assert.equal(response.body.pendingCustomers, 0);
+  assert.deepEqual(state.locks, ['customer-allocation:ccm-new', 'customer-allocation:ccm-old', 'customer-allocation:ccm-old']);
 });
 
-test('transfer validation failure leaves the user unchanged and returns conflict', async (t) => {
+test('CRE transfer unassigns its source work to the pending queue without redistributing', async (t) => {
   const state = setupTransfer(t, { assignment: { kind: 'allocation' } });
   const response = responseRecorder();
 
@@ -121,8 +135,14 @@ test('transfer validation failure leaves the user unchanged and returns conflict
     user: { id: 'admin-1' },
   }, response);
 
-  assert.equal(response.statusCode, 409);
-  assert.equal(state.getUpdated(), null);
+  assert.equal(response.statusCode, 200);
+  assert.equal(state.getUpdated().ccmId, 'ccm-new');
+  assert.equal(response.body.pendingCustomers, 1);
+  assert.deepEqual(state.pendingUpdates, [{
+    model: 'allocation',
+    where: { id: 'allocation-1' },
+    data: { creId: null, assignmentNeedsReview: true },
+  }]);
 });
 
 test('transfer rejects a CCM that became inactive before transactional validation', async (t) => {

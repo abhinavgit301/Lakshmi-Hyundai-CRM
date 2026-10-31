@@ -884,7 +884,7 @@ export async function updateCallListAssignee(req, res) {
       const previousCreId = allocation.creId;
       await transaction.allocation.update({
         where: { id: allocation.id },
-        data: { creId: assignee.id },
+        data: { creId: assignee.id, assignmentNeedsReview: false },
       });
       await recordCreAssignmentEvent(transaction, {
         vehicleId: allocation.vehicleId,
@@ -1346,7 +1346,7 @@ export async function getAppointments(req, res) {
       confirmationCall: appointment.confirmationCall,
       ccmId: appointment.ccmId,
       assigneeId: appointment.assigneeId,
-      assigneeName: appointment.assignee?.name || null,
+      assigneeName: appointment.assignee?.name || appointment.assigneeNameSnapshot || null,
     })),
   });
 }

@@ -27,7 +27,13 @@ import {
   previewPermanentDeletion,
   recoverImport,
 } from '../controllers/importController.js';
-import { createAllocation, listAllocations, updateAllocation } from '../controllers/allocationController.js';
+import {
+  allocatePendingRedistribution,
+  createAllocation,
+  getPendingRedistribution,
+  listAllocations,
+  updateAllocation,
+} from '../controllers/allocationController.js';
 import {
   createMonthlyCustomerEntry,
   getCcmProfile,
@@ -84,6 +90,8 @@ router.post('/ccms/:ccmId/monthly-customer-data/import', authMiddleware, require
 router.get('/ccms/:ccmId/monthly-customer-data/history', authMiddleware, requireRole('Admin', 'CCM', 'CRE'), getMonthlyCustomerImportHistory);
 router.get('/teams', authMiddleware, requireRole('Admin', 'GM', 'CCM'), listTeams);
 router.get('/allocations', authMiddleware, listAllocations);
+router.get('/allocations/pending-redistribution', authMiddleware, requireRole('CCM'), getPendingRedistribution);
+router.post('/allocations/pending-redistribution/allocate', authMiddleware, requireRole('CCM'), allocatePendingRedistribution);
 router.post('/allocations', authMiddleware, requireRole('Admin', 'GM'), createAllocation);
 router.patch('/allocations/:id', authMiddleware, requireRole('Admin', 'GM', 'CCM'), updateAllocation);
 router.patch('/allocations/master-call-list/:id/assignee', authMiddleware, requireRole('CCM'), updateCallListAssignee);

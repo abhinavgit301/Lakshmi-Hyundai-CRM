@@ -152,6 +152,7 @@ test('deactivation moves call-list and allocation assignments to a review queue 
     masterCallList: {
       findMany: async () => [{
         id: 'call-1',
+        vin: 'VIN-1',
         vehicle: { id: 'vehicle-1' },
       }],
       update: async ({ where, data }) => {
@@ -160,7 +161,7 @@ test('deactivation moves call-list and allocation assignments to a review queue 
       },
     },
     allocation: {
-      findMany: async () => [{ id: 'allocation-1', vehicleId: 'vehicle-1' }],
+      findMany: async () => [{ id: 'allocation-1', vehicleId: 'vehicle-1', vehicle: { vin: 'VIN-1' } }],
       update: async ({ where, data }) => {
         updates.push({ model: 'allocation', where, data });
         return {};
@@ -188,7 +189,7 @@ test('deactivation moves call-list and allocation assignments to a review queue 
     {
       model: 'allocation',
       where: { id: 'allocation-1' },
-      data: { creId: null },
+      data: { creId: null, assignmentNeedsReview: true },
     },
   ]);
   assert.deepEqual(history.map(({ previousCreId, newCreId, eventType }) => ({
@@ -215,6 +216,7 @@ test('deactivation preserves an allocation-only vehicle as an unassigned allocat
       findMany: async () => [{
         id: 'allocation-only',
         vehicleId: 'vehicle-only',
+        vehicle: { vin: 'VIN-ONLY' },
       }],
       update: async ({ data }) => {
         allocationCreId = data.creId;

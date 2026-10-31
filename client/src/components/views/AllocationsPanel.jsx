@@ -5,6 +5,7 @@ export default function AllocationsPanel(props) {
     allocationForm,
     allocationFormOpen,
     allocationMessage,
+    pendingRedistribution,
     allocationSaving,
     allocationSearch,
     allocationTeamId,
@@ -25,6 +26,7 @@ export default function AllocationsPanel(props) {
     setAllocationSearch,
     setMasterListTeam,
     submitAllocation,
+    allocatePendingCustomers,
     visibleAllocationRecords,
   } = props;
   return (
@@ -32,6 +34,25 @@ export default function AllocationsPanel(props) {
           <section className="customer-workspace">
             {allocationError && <p className="form-alert error" role="alert">{allocationError}</p>}
             {allocationMessage && <p className="form-alert success" role="status">{allocationMessage}</p>}
+            {currentRole === 'CCM' && pendingRedistribution?.pendingCustomers > 0 && (
+              <div className="panel" role="status">
+                <div className="panel-header">
+                  <div>
+                    <h3>Customers awaiting allocation</h3>
+                    <span>{pendingRedistribution.pendingCustomers} customer{pendingRedistribution.pendingCustomers === 1 ? '' : 's'} are pending after CRE removal or transfer.</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    onClick={allocatePendingCustomers}
+                    disabled={allocationSaving || !pendingRedistribution.activeCreCount}
+                  >
+                    {allocationSaving ? 'Allocating…' : `Allocate Customers (${pendingRedistribution.pendingCustomers})`}
+                  </button>
+                </div>
+                {!pendingRedistribution.activeCreCount && <p>No active CREs are available. Add a CRE, then allocate this pending customer pool.</p>}
+              </div>
+            )}
             {allocationFormOpen && ['ADMIN', 'GM'].includes(currentRole) && (
               <form className="panel customer-form" onSubmit={submitAllocation}>
                 <div className="panel-header"><h3>Assign vehicle to CRE</h3><span>Assignments are limited to the vehicle&apos;s CCM team</span></div>

@@ -21,12 +21,13 @@ if (!databaseUrl) {
 
   process.env.DATABASE_URL = databaseUrl;
 
-const [{ prisma }, { Client: PgClient }, allocationController, userController, recordsController, masterCallList, rollbackService, deletionService] = await Promise.all([
+const [{ prisma }, { Client: PgClient }, allocationController, userController, recordsController, callWorkflowController, masterCallList, rollbackService, deletionService] = await Promise.all([
   import('../../src/config/prisma.js'),
   import('pg'),
   import('../../src/controllers/allocationController.js'),
   import('../../src/controllers/userController.js'),
   import('../../src/controllers/recordsController.js'),
+  import('../../src/controllers/callWorkflowController.js'),
   import('../../src/utils/masterCallList.js'),
   import('../../src/services/importRollbackService.js'),
   import('../../src/services/permanentImportDeletionService.js'),
@@ -270,6 +271,13 @@ async function createAllocation(vehicle, cre, actor, serviceType) {
   return runController(allocationController.createAllocation, {
     user: actor,
     body: { vehicleId: vehicle.id, creId: cre.id, serviceType },
+  });
+}
+
+async function deleteCre(cre, actor) {
+  return runController(userController.deleteManagedUser, {
+    params: { id: cre.id },
+    user: actor,
   });
 }
 
@@ -1362,6 +1370,7 @@ test('deactivation exposes MCL-backed and allocation-only work to its CCM and bo
     body: { status: 'inactive', reason: 'integration test' },
   });
   assert.equal(deactivated.statusCode, 200);
+  assert.equal(deactivated.body.pendingCustomers, 2);
   assert.equal((await prisma.allocation.findUnique({ where: { id: backedAllocation.id } })).creId, null);
   assert.equal((await prisma.allocation.findUnique({ where: { id: allocationOnly.id } })).creId, null);
   assert.equal((await prisma.masterCallList.findUnique({ where: { id: backedEntry.id } })).ownerUserId, null);
@@ -1401,20 +1410,15 @@ test('CRE transfer and allocation transactions serialize without assigning under
   ]);
   const currentCre = await prisma.user.findUniqueOrThrow({ where: { id: cre.id } });
   const committedAllocations = await prisma.allocation.findMany({ where: { vehicleId: vehicle.id, status: 'assigned' } });
-  if (currentCre.ccmId === newTeam) {
-    assert.equal(transfer.statusCode, 200);
-    assert.notEqual(allocation.statusCode, 201);
-    assert.equal(committedAllocations.length, 0);
-  } else {
-    assert.equal(currentCre.ccmId, oldTeam);
-    assert.equal(allocation.statusCode, 201);
-    assert.equal(committedAllocations.length, 1);
-    assert.equal(committedAllocations[0].ccmId, oldTeam);
-    assert.equal(transfer.statusCode, 409, JSON.stringify({ transfer: transfer.body, allocation: allocation.body }));
-  }
+  assert.equal(transfer.statusCode, 200);
+  assert.equal(currentCre.ccmId, newTeam);
+  assert.equal(committedAllocations.length, allocation.statusCode === 201 ? 1 : 0);
+  assert.ok(committedAllocations.every(({ ccmId, creId, assignmentNeedsReview }) => (
+    ccmId === oldTeam && creId === null && assignmentNeedsReview
+  )));
 });
 
-test('a CRE transfer completed before allocation rejects the old-team allocation', async () => {
+test('a CRE transfer completed before allocation blocks allocation under the old CCM', async () => {
   const oldTeam = id('transfer-first-old');
   const newTeam = id('transfer-first-new');
   const actor = await createUser('transfer-first-admin', 'ADMIN');
@@ -1432,7 +1436,7 @@ test('a CRE transfer completed before allocation rejects the old-team allocation
   assert.equal(await prisma.allocation.count({ where: { vehicleId: vehicle.id } }), 0);
 });
 
-test('an allocation completed before transfer prevents CCM transfer', async () => {
+test('a transfer after allocation leaves the vehicle in the source CCM pending queue', async () => {
   const oldTeam = id('allocation-first-old');
   const newTeam = id('allocation-first-new');
   const actor = await createUser('allocation-first-admin', 'ADMIN');
@@ -1445,9 +1449,343 @@ test('an allocation completed before transfer prevents CCM transfer', async () =
   const allocated = await createAllocation(vehicle, cre, actor, 'allocation-first-service');
   const transferred = await transferCre(cre, actor, newTeam);
   assert.equal(allocated.statusCode, 201);
-  assert.equal(transferred.statusCode, 409);
-  assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: cre.id } })).ccmId, oldTeam);
-  assert.equal(await prisma.allocation.count({ where: { vehicleId: vehicle.id, ccmId: oldTeam, creId: cre.id } }), 1);
+  assert.equal(transferred.statusCode, 200);
+  assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: cre.id } })).ccmId, newTeam);
+  assert.equal(await prisma.allocation.count({
+    where: { vehicleId: vehicle.id, ccmId: oldTeam, creId: null, assignmentNeedsReview: true },
+  }), 1);
+  assert.equal(await prisma.vehicle.count({ where: { id: vehicle.id, ccmId: newTeam } }), 0);
+});
+
+test('multiple CRE transfers leave all source customers pending until the CCM explicitly allocates them', async () => {
+  const sourceTeam = id('manual-transfer-source');
+  const destinationTeam = id('manual-transfer-destination');
+  const actor = await createUser('manual-transfer-admin', 'ADMIN');
+  const sourceCcm = await createUser('manual-transfer-source-ccm', 'CCM', sourceTeam);
+  await createUser('manual-transfer-destination-ccm', 'CCM', destinationTeam);
+  const departingCres = [
+    await createUser('manual-transfer-departing-a', 'CRE', sourceTeam),
+    await createUser('manual-transfer-departing-b', 'CRE', sourceTeam),
+    await createUser('manual-transfer-departing-c', 'CRE', sourceTeam),
+  ];
+  const remainingCres = [
+    await createUser('manual-transfer-remaining-a', 'CRE', sourceTeam),
+    await createUser('manual-transfer-remaining-b', 'CRE', sourceTeam),
+  ];
+  const fixtures = [];
+  for (const [creIndex, cre] of departingCres.entries()) {
+    for (let vehicleIndex = 0; vehicleIndex < 2; vehicleIndex += 1) {
+      const customer = await createCustomer(`manual-transfer-customer-${creIndex}-${vehicleIndex}`, sourceTeam);
+      const vehicle = await createVehicle(`manual-transfer-vehicle-${creIndex}-${vehicleIndex}`, customer, sourceTeam);
+      const entry = await prisma.masterCallList.create({
+        data: {
+          customerName: customer.fullName,
+          mobileNumber: `555${creIndex}0${vehicleIndex}`,
+          vin: vehicle.vin,
+          vehicleId: vehicle.id,
+          ccmId: sourceTeam,
+          ownerUserId: cre.id,
+        },
+      });
+      const allocation = await prisma.allocation.create({
+        data: { vehicleId: vehicle.id, creId: cre.id, ccmId: sourceTeam, serviceType: 'transfer-test' },
+      });
+      fixtures.push({ customer, vehicle, entry, allocation });
+    }
+  }
+
+  for (const cre of departingCres) {
+    const transferred = await transferCre(cre, actor, destinationTeam);
+    assert.equal(transferred.statusCode, 200);
+    assert.equal(transferred.body.user.ccmId, destinationTeam);
+    assert.equal(transferred.body.pendingCustomers, 2);
+  }
+
+  const sourceEntries = await prisma.masterCallList.findMany({
+    where: { ccmId: sourceTeam, id: { in: fixtures.map(({ entry }) => entry.id) } },
+  });
+  assert.ok(sourceEntries.every(({ ownerUserId, assignmentNeedsReview }) => ownerUserId === null && assignmentNeedsReview));
+  const sourceAllocations = await prisma.allocation.findMany({
+    where: { ccmId: sourceTeam, id: { in: fixtures.map(({ allocation }) => allocation.id) } },
+  });
+  assert.ok(sourceAllocations.every(({ creId, assignmentNeedsReview }) => creId === null && assignmentNeedsReview));
+  assert.equal(await prisma.customer.count({ where: { ccmId: destinationTeam } }), 0);
+  assert.equal(await prisma.vehicle.count({ where: { ccmId: destinationTeam } }), 0);
+  assert.equal(await prisma.masterCallList.count({ where: { ccmId: destinationTeam } }), 0);
+  assert.equal(await prisma.allocation.count({ where: { ccmId: destinationTeam } }), 0);
+  const transferredCreCallList = await runController(recordsController.getCallList, {
+    user: { id: departingCres[0].id, role: 'CRE', ccmId: destinationTeam },
+    query: {},
+  });
+  assert.ok(transferredCreCallList.body.records.every(({ ccmId }) => ccmId === destinationTeam));
+  assert.equal(transferredCreCallList.body.records.some(({ vin }) => fixtures.some(({ vehicle }) => vehicle.vin === vin)), false);
+
+  const pending = await runController(allocationController.getPendingRedistribution, { user: sourceCcm });
+  assert.equal(pending.body.pendingCustomers, 6);
+  assert.equal(pending.body.activeCreCount, 2);
+  const simultaneousAllocations = await Promise.all([
+    runController(allocationController.allocatePendingRedistribution, { user: sourceCcm }),
+    runController(allocationController.allocatePendingRedistribution, { user: sourceCcm }),
+  ]);
+  assert.ok(simultaneousAllocations.every(({ statusCode }) => statusCode === 200));
+  assert.equal(simultaneousAllocations.reduce((total, { body }) => total + body.assignedCustomers, 0), 6);
+  const finalEntries = await prisma.masterCallList.findMany({
+    where: { ccmId: sourceTeam, id: { in: fixtures.map(({ entry }) => entry.id) } },
+  });
+  const finalOwners = finalEntries.map(({ ownerUserId }) => ownerUserId);
+  assert.ok(finalOwners.every((ownerId) => remainingCres.some(({ id: creId }) => creId === ownerId)));
+  assert.deepEqual([...new Set(finalOwners)].map((ownerId) => finalOwners.filter((id) => id === ownerId).length).sort(), [3, 3]);
+  assert.ok(finalEntries.every(({ assignmentNeedsReview }) => !assignmentNeedsReview));
+  assert.ok((await prisma.allocation.findMany({
+    where: { ccmId: sourceTeam, id: { in: fixtures.map(({ allocation }) => allocation.id) } },
+  })).every(({ creId, assignmentNeedsReview }) => remainingCres.some(({ id: remainingId }) => creId === remainingId) && !assignmentNeedsReview));
+  assert.equal(await prisma.creAssignmentHistory.count({
+    where: { ccmId: sourceTeam, previousCreId: { in: departingCres.map(({ id: creId }) => creId) }, newCreId: null, eventType: 'TRANSFERRED_PENDING_REDISTRIBUTION' },
+  }), 12);
+  assert.equal(await prisma.creAssignmentHistory.count({
+    where: { ccmId: sourceTeam, eventType: 'MANUAL_REDISTRIBUTION', newCreId: { in: remainingCres.map(({ id: creId }) => creId) } },
+  }), 12);
+  const clearedQueue = await runController(allocationController.getPendingRedistribution, { user: sourceCcm });
+  assert.equal(clearedQueue.body.pendingCustomers, 0);
+  const repeatedAllocation = await runController(allocationController.allocatePendingRedistribution, { user: sourceCcm });
+  assert.equal(repeatedAllocation.statusCode, 200);
+  assert.equal(repeatedAllocation.body.assignedCustomers, 0);
+});
+
+test('manual allocation preserves non-pending allocations sharing queued VINs and processes pending allocations', async () => {
+  const team = id('manual-shared-vin-team');
+  const ccm = await createUser('manual-shared-vin-ccm', 'CCM', team);
+  const creA = await createUser('manual-shared-vin-cre-a', 'CRE', team);
+  const creB = await createUser('manual-shared-vin-cre-b', 'CRE', team);
+
+  const sharedCustomer = await createCustomer('manual-shared-vin-customer', team);
+  const sharedVehicle = await createVehicle('manual-shared-vin-vehicle', sharedCustomer, team);
+  const sharedAllocation = await prisma.allocation.create({
+    data: {
+      vehicleId: sharedVehicle.id,
+      creId: creA.id,
+      ccmId: team,
+      serviceType: 'existing-assignment',
+      assignmentNeedsReview: false,
+    },
+  });
+  const pendingEntry = await prisma.masterCallList.create({
+    data: {
+      customerName: sharedCustomer.fullName,
+      mobileNumber: '5551080',
+      vin: sharedVehicle.vin,
+      vehicleId: sharedVehicle.id,
+      ccmId: team,
+      ownerUserId: null,
+      assignmentNeedsReview: true,
+    },
+  });
+
+  const pendingAllocationCustomer = await createCustomer('manual-pending-allocation-customer', team);
+  const pendingAllocationVehicle = await createVehicle('manual-pending-allocation-vehicle', pendingAllocationCustomer, team);
+  const pendingAllocation = await prisma.allocation.create({
+    data: {
+      vehicleId: pendingAllocationVehicle.id,
+      creId: null,
+      ccmId: team,
+      serviceType: 'pending-assignment',
+      assignmentNeedsReview: true,
+    },
+  });
+
+  const unrelatedFixtures = [];
+  for (const [label, owner] of [['a', creA], ['b', creB]]) {
+    const customer = await createCustomer(`manual-unrelated-${label}-customer`, team);
+    const vehicle = await createVehicle(`manual-unrelated-${label}-vehicle`, customer, team);
+    const allocation = await prisma.allocation.create({
+      data: {
+        vehicleId: vehicle.id,
+        creId: owner.id,
+        ccmId: team,
+        serviceType: 'unrelated-existing-assignment',
+        assignmentNeedsReview: false,
+      },
+    });
+    unrelatedFixtures.push({ allocation, creId: owner.id });
+  }
+
+  const result = await runController(allocationController.allocatePendingRedistribution, { user: ccm });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.assignedCustomers, 2);
+  const assignedEntry = await prisma.masterCallList.findUniqueOrThrow({ where: { id: pendingEntry.id } });
+  assert.equal(assignedEntry.ownerUserId, creB.id);
+  assert.equal(assignedEntry.assignmentNeedsReview, false);
+
+  const retainedSharedAllocation = await prisma.allocation.findUniqueOrThrow({ where: { id: sharedAllocation.id } });
+  assert.equal(retainedSharedAllocation.creId, creA.id);
+  assert.equal(retainedSharedAllocation.assignmentNeedsReview, false);
+
+  const assignedPendingAllocation = await prisma.allocation.findUniqueOrThrow({ where: { id: pendingAllocation.id } });
+  assert.equal(assignedPendingAllocation.creId, creA.id);
+  assert.equal(assignedPendingAllocation.assignmentNeedsReview, false);
+
+  for (const { allocation, creId } of unrelatedFixtures) {
+    const unchanged = await prisma.allocation.findUniqueOrThrow({ where: { id: allocation.id } });
+    assert.equal(unchanged.creId, creId);
+    assert.equal(unchanged.assignmentNeedsReview, false);
+  }
+});
+
+test('CRE transfer leaves pending work when no source CRE remains and new CRE creation does not allocate it', async () => {
+  const sourceTeam = id('manual-last-source');
+  const destinationTeam = id('manual-last-destination');
+  const actor = await createUser('manual-last-admin', 'ADMIN');
+  const sourceCcm = await createUser('manual-last-source-ccm', 'CCM', sourceTeam);
+  await createUser('manual-last-destination-ccm', 'CCM', destinationTeam);
+  const departingCre = await createUser('manual-last-cre', 'CRE', sourceTeam);
+  const customer = await createCustomer('manual-last-customer', sourceTeam);
+  const vehicle = await createVehicle('manual-last-vehicle', customer, sourceTeam);
+  const entry = await prisma.masterCallList.create({
+    data: {
+      customerName: customer.fullName,
+      mobileNumber: '5551050',
+      vin: vehicle.vin,
+      vehicleId: vehicle.id,
+      ccmId: sourceTeam,
+      ownerUserId: departingCre.id,
+    },
+  });
+  await transferCre(departingCre, actor, destinationTeam);
+
+  const noCrewQueue = await runController(allocationController.getPendingRedistribution, { user: sourceCcm });
+  assert.equal(noCrewQueue.body.pendingCustomers, 1);
+  assert.equal(noCrewQueue.body.activeCreCount, 0);
+  const blocked = await runController(allocationController.allocatePendingRedistribution, { user: sourceCcm });
+  assert.equal(blocked.statusCode, 409);
+
+  const created = await runController(userController.createUser, {
+    user: actor,
+    body: {
+      name: 'Manual Queue Replacement',
+      username: `${suffix.slice(0, 12)}-replacement`,
+      password: 'integration-password',
+      role: 'CRE',
+      ccmId: sourceTeam,
+    },
+  });
+  assert.equal(created.statusCode, 201);
+  assert.equal((await prisma.masterCallList.findUniqueOrThrow({ where: { id: entry.id } })).ownerUserId, null);
+  assert.equal((await prisma.masterCallList.findUniqueOrThrow({ where: { id: entry.id } })).assignmentNeedsReview, true);
+
+  const allocated = await runController(allocationController.allocatePendingRedistribution, { user: sourceCcm });
+  assert.equal(allocated.statusCode, 200);
+  assert.equal(allocated.body.assignedCustomers, 1);
+  assert.equal((await prisma.masterCallList.findUniqueOrThrow({ where: { id: entry.id } })).ownerUserId, created.body.user.id);
+});
+
+test('monthly import allocation remains automatic and does not consume CRE-transfer pending work', async () => {
+  const sourceTeam = id('monthly-pending-source');
+  const destinationTeam = id('monthly-pending-destination');
+  const admin = await createUser('monthly-pending-admin', 'ADMIN');
+  await createUser('monthly-pending-source-ccm', 'CCM', sourceTeam);
+  await createUser('monthly-pending-destination-ccm', 'CCM', destinationTeam);
+  const departingCre = await createUser('monthly-pending-departing', 'CRE', sourceTeam);
+  const remainingCre = await createUser('monthly-pending-survivor', 'CRE', sourceTeam);
+  const pendingCustomer = await createCustomer('monthly-pending-customer', sourceTeam);
+  const pendingVehicle = await createVehicle('monthly-pending-vehicle', pendingCustomer, sourceTeam);
+  const pendingEntry = await prisma.masterCallList.create({
+    data: {
+      customerName: pendingCustomer.fullName,
+      mobileNumber: '5551060',
+      vin: pendingVehicle.vin,
+      vehicleId: pendingVehicle.id,
+      ccmId: sourceTeam,
+      ownerUserId: departingCre.id,
+    },
+  });
+  const pendingAllocation = await prisma.allocation.create({
+    data: { vehicleId: pendingVehicle.id, creId: departingCre.id, ccmId: sourceTeam, serviceType: 'pending-service' },
+  });
+  await transferCre(departingCre, admin, destinationTeam);
+
+  const monthlyVin = `1HG${randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase()}`;
+  const imported = await importMonthlyCsv([
+    'Customer Name,Mobile,VIN,Registration Number,Make,Model',
+    `Monthly Import Customer,5551061,${monthlyVin},${id('monthly-pending-registration')},Hyundai,Test`,
+  ].join('\n'), admin, sourceTeam, 2026, 10);
+  assert.equal(imported.statusCode, 201, JSON.stringify(imported.body));
+  const importedEntry = await prisma.masterCallList.findFirstOrThrow({ where: { vin: monthlyVin, ccmId: sourceTeam } });
+  assert.equal(importedEntry.ownerUserId, remainingCre.id);
+  assert.equal(importedEntry.assignmentNeedsReview, false);
+  const stillPendingEntry = await prisma.masterCallList.findUniqueOrThrow({ where: { id: pendingEntry.id } });
+  const stillPendingAllocation = await prisma.allocation.findUniqueOrThrow({ where: { id: pendingAllocation.id } });
+  assert.equal(stillPendingEntry.ownerUserId, null);
+  assert.equal(stillPendingEntry.assignmentNeedsReview, true);
+  assert.equal(stillPendingAllocation.creId, null);
+  assert.equal(stillPendingAllocation.assignmentNeedsReview, true);
+  assert.equal((await prisma.vehicle.findUniqueOrThrow({ where: { id: pendingVehicle.id } })).ccmId, sourceTeam);
+  assert.equal(await prisma.customer.count({ where: { ccmId: destinationTeam } }), 0);
+});
+
+test('failed pending allocation rolls back completely and the CCM can retry', async () => {
+  const sourceTeam = id('manual-retry-source');
+  const destinationTeam = id('manual-retry-destination');
+  const actor = await createUser('manual-retry-admin', 'ADMIN');
+  const sourceCcm = await createUser('manual-retry-source-ccm', 'CCM', sourceTeam);
+  await createUser('manual-retry-destination-ccm', 'CCM', destinationTeam);
+  const departingCre = await createUser('manual-retry-departing', 'CRE', sourceTeam);
+  const survivor = await createUser('manual-retry-survivor', 'CRE', sourceTeam);
+  const customer = await createCustomer('manual-retry-customer', sourceTeam);
+  const vehicle = await createVehicle('manual-retry-vehicle', customer, sourceTeam);
+  const entry = await prisma.masterCallList.create({
+    data: {
+      customerName: customer.fullName,
+      mobileNumber: '5551070',
+      vin: vehicle.vin,
+      vehicleId: vehicle.id,
+      ccmId: sourceTeam,
+      ownerUserId: departingCre.id,
+    },
+  });
+  const allocation = await prisma.allocation.create({
+    data: { vehicleId: vehicle.id, creId: departingCre.id, ccmId: sourceTeam, serviceType: 'retry-service' },
+  });
+  await transferCre(departingCre, actor, destinationTeam);
+  const triggerName = `fail_manual_redistribution_${suffix}`;
+  const functionName = `raise_manual_redistribution_${suffix}`;
+  try {
+    await verificationClient.query(`
+      CREATE FUNCTION "${functionName}"() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW."eventType" = 'MANUAL_REDISTRIBUTION' THEN
+          RAISE EXCEPTION 'injected manual redistribution failure';
+        END IF;
+        RETURN NEW;
+      END $$;
+    `);
+    await verificationClient.query(`
+      CREATE TRIGGER "${triggerName}"
+      BEFORE INSERT ON "cre_assignment_history"
+      FOR EACH ROW EXECUTE FUNCTION "${functionName}"()
+    `);
+    await assert.rejects(
+      () => runController(allocationController.allocatePendingRedistribution, { user: sourceCcm }),
+      /injected manual redistribution failure/,
+    );
+    const rolledBackEntry = await prisma.masterCallList.findUniqueOrThrow({ where: { id: entry.id } });
+    const rolledBackAllocation = await prisma.allocation.findUniqueOrThrow({ where: { id: allocation.id } });
+    assert.equal(rolledBackEntry.ownerUserId, null);
+    assert.equal(rolledBackEntry.assignmentNeedsReview, true);
+    assert.equal(rolledBackAllocation.creId, null);
+    assert.equal(rolledBackAllocation.assignmentNeedsReview, true);
+    assert.equal(await prisma.creAssignmentHistory.count({
+      where: { masterCallListId: entry.id, eventType: 'MANUAL_REDISTRIBUTION' },
+    }), 0);
+  } finally {
+    await verificationClient.query(`DROP TRIGGER IF EXISTS "${triggerName}" ON "cre_assignment_history"`).catch(() => {});
+    await verificationClient.query(`DROP FUNCTION IF EXISTS "${functionName}"()`).catch(() => {});
+  }
+  const retried = await runController(allocationController.allocatePendingRedistribution, { user: sourceCcm });
+  assert.equal(retried.statusCode, 200);
+  assert.equal(retried.body.assignedCustomers, 1);
+  assert.equal((await prisma.masterCallList.findUniqueOrThrow({ where: { id: entry.id } })).ownerUserId, survivor.id);
+  assert.equal((await prisma.allocation.findUniqueOrThrow({ where: { id: allocation.id } })).creId, survivor.id);
 });
 
 test('two simultaneous CCM transfers cannot overwrite a stale CRE team assignment', async () => {
@@ -1468,6 +1806,425 @@ test('two simultaneous CCM transfers cannot overwrite a stale CRE team assignmen
   assert.ok([teamA, teamB].includes(stored.ccmId), JSON.stringify({ ccmId: stored.ccmId, results: results.map(({ statusCode, body }) => ({ statusCode, body })) }));
   assert.equal(results.filter(({ statusCode }) => statusCode === 200).length, 1);
   assert.equal(results.filter(({ statusCode }) => statusCode === 409).length, 1);
+});
+
+test('permanently deleting a CRE leaves work pending and retains historical identity and activity', async () => {
+  const team = id('delete-team');
+  const otherTeam = id('delete-other-team');
+  const actor = await createUser('delete-admin', 'ADMIN');
+  const ccm = await createUser('delete-ccm', 'CCM', team);
+  await createUser('delete-other-ccm', 'CCM', otherTeam);
+  const departingCre = await createUser('delete-departing-cre', 'CRE', team);
+  const remainingCres = [
+    await createUser('delete-remaining-cre-a', 'CRE', team),
+    await createUser('delete-remaining-cre-b', 'CRE', team),
+  ];
+  const otherCre = await createUser('delete-other-cre', 'CRE', otherTeam);
+
+  const fixtures = [];
+  for (let index = 0; index < 4; index += 1) {
+    const customer = await createCustomer(`delete-customer-${index}`, team);
+    const vehicle = await createVehicle(`delete-vehicle-${index}`, customer, team);
+    const entry = await prisma.masterCallList.create({
+      data: {
+        customerName: customer.fullName,
+        mobileNumber: '5550100',
+        vin: vehicle.vin,
+        vehicleId: vehicle.id,
+        ccmId: team,
+        ownerUserId: departingCre.id,
+      },
+    });
+    const allocation = await prisma.allocation.create({
+      data: { vehicleId: vehicle.id, creId: departingCre.id, ccmId: team, serviceType: 'service' },
+    });
+    fixtures.push({ customer, vehicle, entry, allocation });
+  }
+  const otherCustomer = await createCustomer('delete-other-customer', otherTeam);
+  const otherVehicle = await createVehicle('delete-other-vehicle', otherCustomer, otherTeam);
+  const otherAllocation = await prisma.allocation.create({
+    data: { vehicleId: otherVehicle.id, creId: otherCre.id, ccmId: otherTeam, serviceType: 'other-team' },
+  });
+
+  const historicalCustomer = fixtures[0].customer;
+  const historicalVehicle = fixtures[0].vehicle;
+  const workshopVisit = await createWorkshopVisit(
+    'delete-preserved-visit',
+    historicalCustomer,
+    historicalVehicle,
+    team,
+    id('delete-preserved-ro'),
+    new Date('2025-11-01T00:00:00Z'),
+  );
+  const call = await prisma.callLog.create({
+    data: {
+      customerId: historicalCustomer.id,
+      vehicleId: historicalVehicle.id,
+      ccmId: team,
+      assignedToId: departingCre.id,
+      createdById: departingCre.id,
+      outcome: 'CONTACTED',
+    },
+  });
+  const appointment = await prisma.appointment.create({
+    data: {
+      customerId: historicalCustomer.id,
+      vehicleId: historicalVehicle.id,
+      customerName: historicalCustomer.fullName,
+      vehicleName: historicalVehicle.model || 'Integration vehicle',
+      scheduledAt: new Date('2026-12-01T10:00:00Z'),
+      ccmId: team,
+      assigneeId: departingCre.id,
+      createdById: departingCre.id,
+    },
+  });
+  const followUp = await prisma.followUp.create({
+    data: {
+      customerId: historicalCustomer.id,
+      vehicleId: historicalVehicle.id,
+      ccmId: team,
+      creId: departingCre.id,
+      followUpAt: new Date('2026-12-02T10:00:00Z'),
+      category: 'SERVICE',
+    },
+  });
+  await prisma.creAssignmentHistory.create({
+    data: {
+      vehicleId: historicalVehicle.id,
+      masterCallListId: fixtures[0].entry.id,
+      ccmId: team,
+      previousCreId: departingCre.id,
+      actorUserId: departingCre.id,
+      eventType: 'REASSIGNED',
+    },
+  });
+  await prisma.auditLog.create({
+    data: {
+      userId: departingCre.id,
+      entityType: 'User',
+      entityId: departingCre.id,
+      action: 'HISTORICAL_CRE_ACTION',
+    },
+  });
+  const target = await prisma.cRETarget.create({
+    data: { creId: departingCre.id, month: '2026-11', targetCalls: 100, targetAppoints: 20 },
+  });
+  const monthlyDataset = await prisma.monthlyCustomerDataset.create({
+    data: { ccmUserId: departingCre.id, ccmId: team, year: 2026, month: 11 },
+  });
+
+  const result = await deleteCre(departingCre, actor);
+
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(result.body.redistribution, {
+    affectedCustomers: 4,
+    redistributedCustomers: 0,
+    unassignedCustomers: 4,
+    pendingCustomers: 4,
+    remainingCreCount: 2,
+  });
+  assert.equal(await prisma.user.findUnique({ where: { id: departingCre.id } }), null);
+  assert.deepEqual(await prisma.deletedUserIdentity.findUniqueOrThrow({ where: { id: departingCre.id } }).then(({ name, role, ccmId }) => ({ name, role, ccmId })), {
+    name: departingCre.name,
+    role: 'CRE',
+    ccmId: team,
+  });
+  const archivedIdentityEvent = await prisma.creAssignmentHistory.create({
+    data: {
+      vehicleId: historicalVehicle.id,
+      masterCallListId: fixtures[0].entry.id,
+      ccmId: team,
+      previousCreId: departingCre.id,
+      newCreId: remainingCres[0].id,
+      actorUserId: actor.id,
+      eventType: 'REASSIGNED',
+    },
+  });
+  assert.equal(archivedIdentityEvent.previousCreId, departingCre.id);
+  await assert.rejects(() => prisma.creAssignmentHistory.create({
+    data: {
+      vehicleId: historicalVehicle.id,
+      masterCallListId: fixtures[0].entry.id,
+      ccmId: team,
+      previousCreId: id('unknown-deleted-user'),
+      eventType: 'REASSIGNED',
+    },
+  }), /CRE assignment history references an unknown user identity/);
+
+  const reassignedEntries = await prisma.masterCallList.findMany({
+    where: { ccmId: team, id: { in: fixtures.map(({ entry }) => entry.id) } },
+    select: { ownerUserId: true, assignmentNeedsReview: true },
+  });
+  assert.equal(reassignedEntries.length, 4);
+  assert.ok(reassignedEntries.every(({ ownerUserId, assignmentNeedsReview }) => ownerUserId === null && assignmentNeedsReview));
+  assert.equal(await prisma.allocation.count({
+    where: { ccmId: team, creId: null, assignmentNeedsReview: true, status: 'assigned' },
+  }), 4);
+  assert.equal((await prisma.allocation.findUniqueOrThrow({ where: { id: otherAllocation.id } })).creId, otherCre.id);
+
+  const retainedCall = await prisma.callLog.findUniqueOrThrow({ where: { id: call.id } });
+  assert.equal(retainedCall.createdById, null);
+  assert.equal(retainedCall.assignedToId, null);
+  assert.equal(retainedCall.createdByIdSnapshot, departingCre.id);
+  assert.equal(retainedCall.assignedToIdSnapshot, departingCre.id);
+  assert.equal(retainedCall.createdByNameSnapshot, departingCre.name);
+  assert.equal(retainedCall.assignedToUsernameSnapshot, departingCre.username);
+  const callHistory = await runController(callWorkflowController.listCallLogs, {
+    user: ccm,
+    params: {},
+    query: { customerId: historicalCustomer.id },
+  });
+  assert.equal(callHistory.body.callLogs[0].creator.name, departingCre.name);
+  assert.equal(callHistory.body.callLogs[0].assignee.name, departingCre.name);
+  const retainedAppointment = await prisma.appointment.findUniqueOrThrow({ where: { id: appointment.id } });
+  assert.equal(retainedAppointment.assigneeIdSnapshot, departingCre.id);
+  assert.equal(retainedAppointment.createdByIdSnapshot, departingCre.id);
+  assert.equal(retainedAppointment.assigneeNameSnapshot, departingCre.name);
+  const appointmentHistory = await runController(recordsController.getAppointments, { user: ccm });
+  assert.equal(appointmentHistory.body.appointments.find(({ id: appointmentId }) => appointmentId === appointment.id).assigneeName, departingCre.name);
+  const retainedFollowUp = await prisma.followUp.findUniqueOrThrow({ where: { id: followUp.id } });
+  assert.equal(retainedFollowUp.creIdSnapshot, departingCre.id);
+  assert.equal(retainedFollowUp.creNameSnapshot, departingCre.name);
+  const followUpHistory = await runController(callWorkflowController.listFollowUps, {
+    user: ccm,
+    params: {},
+    query: { search: historicalCustomer.fullName },
+  });
+  assert.equal(followUpHistory.body.followUps.find(({ id: followUpId }) => followUpId === followUp.id).cre.name, departingCre.name);
+  const historicalEvent = await prisma.creAssignmentHistory.findFirst({
+    where: {
+      masterCallListId: fixtures[0].entry.id,
+      eventType: 'REASSIGNED',
+      previousCreId: departingCre.id,
+      actorUserId: departingCre.id,
+    },
+  });
+  assert.equal(historicalEvent.previousCreId, departingCre.id);
+  assert.equal(historicalEvent.actorUserId, departingCre.id);
+  const historicalAudit = await prisma.auditLog.findFirst({
+    where: { action: 'HISTORICAL_CRE_ACTION', entityId: departingCre.id },
+  });
+  assert.equal(historicalAudit.userId, null);
+  assert.equal(historicalAudit.userIdSnapshot, departingCre.id);
+  const retainedTarget = await prisma.cRETarget.findUniqueOrThrow({ where: { id: target.id } });
+  assert.equal(retainedTarget.creId, departingCre.id);
+  assert.equal(retainedTarget.creNameSnapshot, departingCre.name);
+  const retainedDataset = await prisma.monthlyCustomerDataset.findUniqueOrThrow({ where: { id: monthlyDataset.id } });
+  assert.equal(retainedDataset.ccmUserIdSnapshot, departingCre.id);
+  assert.equal(retainedDataset.ccmUserNameSnapshot, departingCre.name);
+  assert.equal(await prisma.customer.count({ where: { ccmId: team } }), 4);
+  assert.equal(await prisma.vehicle.count({ where: { ccmId: team } }), 4);
+  assert.equal(await prisma.physicalVehicle.count({ where: { id: { in: fixtures.map(({ vehicle }) => vehicle.physicalVehicleId) } } }), 4);
+  assert.equal(await prisma.workshopVisit.count({ where: { id: workshopVisit.id } }), 1);
+});
+
+test('permanently deleting a CRE leaves its customers pending even when another CRE remains', async () => {
+  const team = id('delete-one-remaining-team');
+  const actor = await createUser('delete-one-remaining-admin', 'ADMIN');
+  await createUser('delete-one-remaining-ccm', 'CCM', team);
+  const departingCre = await createUser('delete-one-remaining-departing', 'CRE', team);
+  const remainingCre = await createUser('delete-one-remaining-survivor', 'CRE', team);
+  const customer = await createCustomer('delete-one-remaining-customer', team);
+  const vehicle = await createVehicle('delete-one-remaining-vehicle', customer, team);
+  const entry = await prisma.masterCallList.create({
+    data: {
+      customerName: customer.fullName,
+      mobileNumber: '5550110',
+      vin: vehicle.vin,
+      vehicleId: vehicle.id,
+      ccmId: team,
+      ownerUserId: departingCre.id,
+    },
+  });
+
+  const result = await deleteCre(departingCre, actor);
+
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(result.body.redistribution, {
+    affectedCustomers: 1,
+    redistributedCustomers: 0,
+    unassignedCustomers: 1,
+    pendingCustomers: 1,
+    remainingCreCount: 1,
+  });
+  const pending = await prisma.masterCallList.findUniqueOrThrow({ where: { id: entry.id } });
+  assert.equal(pending.ownerUserId, null);
+  assert.equal(pending.assignmentNeedsReview, true);
+});
+
+test('concurrent permanent deletion requests redistribute a CRE workload only once', async () => {
+  const team = id('delete-concurrent-team');
+  const actor = await createUser('delete-concurrent-admin', 'ADMIN');
+  await createUser('delete-concurrent-ccm', 'CCM', team);
+  const departingCre = await createUser('delete-concurrent-departing', 'CRE', team);
+  const remainingCre = await createUser('delete-concurrent-survivor', 'CRE', team);
+  const customer = await createCustomer('delete-concurrent-customer', team);
+  const vehicle = await createVehicle('delete-concurrent-vehicle', customer, team);
+  const entry = await prisma.masterCallList.create({
+    data: {
+      customerName: customer.fullName,
+      mobileNumber: '5550120',
+      vin: vehicle.vin,
+      vehicleId: vehicle.id,
+      ccmId: team,
+      ownerUserId: departingCre.id,
+    },
+  });
+
+  const results = await Promise.all([deleteCre(departingCre, actor), deleteCre(departingCre, actor)]);
+
+  assert.equal(results.filter(({ statusCode }) => statusCode === 200).length, 1);
+  assert.equal(results.filter(({ statusCode }) => [404, 409].includes(statusCode)).length, 1);
+  const pending = await prisma.masterCallList.findUniqueOrThrow({ where: { id: entry.id } });
+  assert.equal(pending.ownerUserId, null);
+  assert.equal(pending.assignmentNeedsReview, true);
+  assert.equal(await prisma.deletedUserIdentity.count({ where: { id: departingCre.id } }), 1);
+  assert.equal(await prisma.creAssignmentHistory.count({
+    where: { masterCallListId: entry.id, previousCreId: departingCre.id, newCreId: null },
+  }), 1);
+});
+
+test('deleting the last CRE leaves work in the CCM pool for later manual assignment', async () => {
+  const team = id('delete-last-team');
+  const actor = await createUser('delete-last-admin', 'ADMIN');
+  const ccm = await createUser('delete-last-ccm', 'CCM', team);
+  const departingCre = await createUser('delete-last-cre', 'CRE', team);
+  const customer = await createCustomer('delete-last-customer', team);
+  const vehicle = await createVehicle('delete-last-vehicle', customer, team);
+  const entry = await prisma.masterCallList.create({
+    data: {
+      customerName: customer.fullName,
+      mobileNumber: '5550200',
+      vin: vehicle.vin,
+      vehicleId: vehicle.id,
+      ccmId: team,
+      ownerUserId: departingCre.id,
+    },
+  });
+  const allocation = await prisma.allocation.create({
+    data: { vehicleId: vehicle.id, creId: departingCre.id, ccmId: team, serviceType: 'service' },
+  });
+
+  const deleted = await deleteCre(departingCre, actor);
+  assert.equal(deleted.statusCode, 200);
+  assert.deepEqual(deleted.body.redistribution, {
+    affectedCustomers: 1,
+    redistributedCustomers: 0,
+    unassignedCustomers: 1,
+    pendingCustomers: 1,
+    remainingCreCount: 0,
+  });
+  const pendingEntry = await prisma.masterCallList.findUniqueOrThrow({ where: { id: entry.id } });
+  assert.equal(pendingEntry.ownerUserId, null);
+  assert.equal(pendingEntry.assignmentNeedsReview, true);
+  assert.equal((await prisma.allocation.findUniqueOrThrow({ where: { id: allocation.id } })).creId, null);
+
+  const createdCre = await runController(userController.createUser, {
+    user: actor,
+    body: {
+      name: 'Later replacement CRE',
+      username: `${suffix.slice(0, 12)}-delete-last-cre`,
+      password: 'integration-password',
+      role: 'CRE',
+      ccmId: team,
+    },
+  });
+  assert.equal(createdCre.statusCode, 201);
+  const newCre = createdCre.body.user;
+  assert.equal((await prisma.masterCallList.findUniqueOrThrow({ where: { id: entry.id } })).ownerUserId, null);
+  const pendingBefore = await runController(allocationController.getPendingRedistribution, { user: ccm });
+  assert.equal(pendingBefore.body.pendingCustomers, 1);
+  assert.equal(pendingBefore.body.activeCreCount, 1);
+  const manualAssignment = await runController(allocationController.allocatePendingRedistribution, {
+    user: ccm,
+  });
+  assert.equal(manualAssignment.statusCode, 200);
+  assert.equal(manualAssignment.body.assignedCustomers, 1);
+  assert.equal((await prisma.masterCallList.findUniqueOrThrow({ where: { id: entry.id } })).ownerUserId, newCre.id);
+  assert.equal((await prisma.allocation.findUniqueOrThrow({ where: { id: allocation.id } })).creId, newCre.id);
+});
+
+test('permanent CRE deletion rejects cross-CCM assignments without modifying either team', async () => {
+  const team = id('delete-cross-team');
+  const otherTeam = id('delete-cross-other');
+  const actor = await createUser('delete-cross-admin', 'ADMIN');
+  await createUser('delete-cross-ccm', 'CCM', team);
+  await createUser('delete-cross-other-ccm', 'CCM', otherTeam);
+  const departingCre = await createUser('delete-cross-cre', 'CRE', team);
+  const otherCustomer = await createCustomer('delete-cross-customer', otherTeam);
+  const otherVehicle = await createVehicle('delete-cross-vehicle', otherCustomer, otherTeam);
+  const foreignEntry = await prisma.masterCallList.create({
+    data: {
+      customerName: otherCustomer.fullName,
+      mobileNumber: '5550300',
+      vin: otherVehicle.vin,
+      vehicleId: otherVehicle.id,
+      ccmId: otherTeam,
+      ownerUserId: departingCre.id,
+    },
+  });
+
+  const result = await deleteCre(departingCre, actor);
+
+  assert.equal(result.statusCode, 409);
+  assert.equal(await prisma.user.findUnique({ where: { id: departingCre.id } }).then(Boolean), true);
+  assert.equal((await prisma.masterCallList.findUniqueOrThrow({ where: { id: foreignEntry.id } })).ownerUserId, departingCre.id);
+  assert.equal(await prisma.deletedUserIdentity.count({ where: { id: departingCre.id } }), 0);
+});
+
+test('a failed account deletion rolls back reassignment, history, and identity archival', async () => {
+  const team = id('delete-rollback-team');
+  const actor = await createUser('delete-rollback-admin', 'ADMIN');
+  await createUser('delete-rollback-ccm', 'CCM', team);
+  const departingCre = await createUser('delete-rollback-cre', 'CRE', team);
+  await createUser('delete-rollback-remaining-cre', 'CRE', team);
+  const customer = await createCustomer('delete-rollback-customer', team);
+  const vehicle = await createVehicle('delete-rollback-vehicle', customer, team);
+  const entry = await prisma.masterCallList.create({
+    data: {
+      customerName: customer.fullName,
+      mobileNumber: '5550400',
+      vin: vehicle.vin,
+      vehicleId: vehicle.id,
+      ccmId: team,
+      ownerUserId: departingCre.id,
+    },
+  });
+
+  const identifier = `p3_delete_fail_${suffix}`;
+  const triggerName = `${identifier}_trigger`;
+  const functionName = `${identifier}_function`;
+  const escapedUserId = departingCre.id.replaceAll("'", "''");
+  const testClient = new PgClient({ connectionString: databaseUrl });
+  await testClient.connect();
+  try {
+    await testClient.query(`
+      CREATE FUNCTION "${functionName}"() RETURNS trigger AS $$
+      BEGIN
+        IF OLD."id" = '${escapedUserId}' THEN
+          RAISE EXCEPTION 'injected permanent deletion failure';
+        END IF;
+        RETURN OLD;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await testClient.query(`
+      CREATE TRIGGER "${triggerName}"
+      BEFORE DELETE ON "users"
+      FOR EACH ROW EXECUTE FUNCTION "${functionName}"()
+    `);
+
+    await assert.rejects(() => deleteCre(departingCre, actor), /injected permanent deletion failure/);
+  } finally {
+    await testClient.query(`DROP TRIGGER IF EXISTS "${triggerName}" ON "users"`).catch(() => {});
+    await testClient.query(`DROP FUNCTION IF EXISTS "${functionName}"()`).catch(() => {});
+    await testClient.end();
+  }
+
+  assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: departingCre.id } })).id, departingCre.id);
+  assert.equal((await prisma.masterCallList.findUniqueOrThrow({ where: { id: entry.id } })).ownerUserId, departingCre.id);
+  assert.equal(await prisma.creAssignmentHistory.count({ where: { vehicleId: vehicle.id } }), 0);
+  assert.equal(await prisma.deletedUserIdentity.count({ where: { id: departingCre.id } }), 0);
 });
 
 }

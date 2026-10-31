@@ -129,7 +129,17 @@ export async function listCallLogs(req, res) {
     ...(!customerId ? { take: 200 } : {}),
   });
 
-  return res.json({ callLogs });
+  return res.json({
+    callLogs: callLogs.map((callLog) => ({
+      ...callLog,
+      creator: callLog.creator || (callLog.createdByIdSnapshot
+        ? { id: callLog.createdByIdSnapshot, name: callLog.createdByNameSnapshot }
+        : null),
+      assignee: callLog.assignee || (callLog.assignedToIdSnapshot
+        ? { id: callLog.assignedToIdSnapshot, name: callLog.assignedToNameSnapshot }
+        : null),
+    })),
+  });
 }
 
 export async function getFreeServicePerformanceSummary(req, res) {
@@ -526,6 +536,18 @@ const FOLLOW_UP_INCLUDE = {
   milestone: { select: { id: true, milestone: true, dueDate: true } },
 };
 
+function includeFormerFollowUpCre(followUp) {
+  if (followUp.cre || !followUp.creIdSnapshot) return followUp;
+  return {
+    ...followUp,
+    cre: {
+      id: followUp.creIdSnapshot,
+      name: followUp.creNameSnapshot,
+      username: followUp.creUsernameSnapshot,
+    },
+  };
+}
+
 export async function listFollowUps(req, res) {
   const source = req.query.source ? String(req.query.source).trim().toUpperCase() : null;
   if (source && !['SERVICE', 'FREE_SERVICE', 'WARRANTY'].includes(source)) {
@@ -570,7 +592,7 @@ export async function listFollowUps(req, res) {
       prisma.followUp.count({ where }),
     ]);
     return res.json({
-      followUps,
+      followUps: followUps.map(includeFormerFollowUpCre),
       total,
       limit: pagination.limit,
       offset: pagination.offset,
@@ -583,7 +605,7 @@ export async function listFollowUps(req, res) {
     orderBy,
     take: 200,
   });
-  return res.json({ followUps });
+  return res.json({ followUps: followUps.map(includeFormerFollowUpCre) });
 }
 
 export async function createFollowUp(req, res) {

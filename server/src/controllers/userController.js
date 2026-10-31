@@ -3,9 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { prisma } from '../config/prisma.js';
 import { isValidUsername, normalizeUsername, validateOptionalPhone } from '../utils/userRules.js';
 import {
+  allocatePendingCreRedistribution,
   allocateUnassignedMasterCallListEntries,
+  lockCcmAllocationTeam,
   lockAndValidateCreCcmTransfer,
-  redistributeCreAssignments,
   unassignCreAssignments,
 } from '../utils/customerAllocation.js';
 import { resolveCreServicePermissions } from '../utils/creServicePermissions.js';
@@ -234,6 +235,7 @@ export async function updateManagedUser(req, res) {
   }
 
   const updated = await prisma.$transaction(async (transaction) => {
+    let pendingCustomers = 0;
     const isCreCcmTransfer = ['CRE', 'FREE_SERVICE_CRE'].includes(existing.role)
       && ['CRE', 'FREE_SERVICE_CRE'].includes(nextRole)
       && existing.ccmId !== nextCcmId;
@@ -245,11 +247,20 @@ export async function updateManagedUser(req, res) {
       });
       if (transfer.error) return { error: transfer.error };
     }
-    if (existing.role === 'CRE' && nextRole === 'FREE_SERVICE_CRE' && existing.ccmId) {
-      await redistributeCreAssignments(transaction, { ccmId: existing.ccmId, departingCreId: existing.id, actorId: req.user.id });
-    }
-    if (existing.role === 'FREE_SERVICE_CRE' && nextRole !== 'FREE_SERVICE_CRE' && existing.ccmId) {
-      await redistributeCreAssignments(transaction, { ccmId: existing.ccmId, departingCreId: existing.id, actorId: req.user.id });
+    const leavingStandardCrew = ['CRE', 'FREE_SERVICE_CRE'].includes(existing.role)
+      && existing.status === 'active'
+      && existing.ccmId
+      && (isCreCcmTransfer || existing.role !== nextRole);
+    if (leavingStandardCrew) {
+      pendingCustomers = await unassignCreAssignments(transaction, {
+        ccmId: existing.ccmId,
+        departingCreId: existing.id,
+        actorId: req.user?.id ?? null,
+        reason: isCreCcmTransfer
+          ? `CRE transferred from CCM ${existing.ccmId} to CCM ${nextCcmId}`
+          : `CRE role changed from ${existing.role} to ${nextRole}`,
+        eventType: isCreCcmTransfer ? 'TRANSFERRED_PENDING_REDISTRIBUTION' : 'PENDING_REDISTRIBUTION',
+      });
     }
     const user = await transaction.user.update({
       where: { id: existing.id },
@@ -275,17 +286,27 @@ export async function updateManagedUser(req, res) {
     if (existing.role === 'FREE_SERVICE_CRE' && nextRole === 'CRE' && nextCcmId) {
       await allocateUnassignedMasterCallListEntries(transaction, nextCcmId, req.user.id);
     }
-    return { user };
+    if (isCreCcmTransfer) {
+      await transaction.auditLog.create({
+        data: {
+          userId: req.user?.id ?? null,
+          entityType: 'User',
+          entityId: existing.id,
+          action: 'CRE_CCM_TRANSFERRED',
+          details: JSON.stringify({ previousCcmId: existing.ccmId, newCcmId: nextCcmId, pendingCustomers }),
+        },
+      });
+    }
+    return { user, pendingCustomers };
   });
   if (updated.error) {
     const message = {
       'cre-changed': 'CRE status or CCM assignment changed before the update. Reload and try again.',
       'ccm-inactive': 'CRE accounts must be assigned to an active CCM.',
-      'active-assignments': 'Reassign this CRE’s customers and active vehicle allocations before moving them to another CCM.',
     }[updated.error];
     return res.status(409).json({ message });
   }
-  return res.json({ user: sanitizeUser(updated.user) });
+  return res.json({ user: sanitizeUser(updated.user), pendingCustomers: updated.pendingCustomers });
 }
 
 export async function updateUserStatus(req, res) {
@@ -317,10 +338,11 @@ export async function updateUserStatus(req, res) {
 
   const nextStatus = String(status).toLowerCase();
   const updated = await prisma.$transaction(async (transaction) => {
+    let pendingCustomers = 0;
     if (['CRE', 'FREE_SERVICE_CRE'].includes(existing.role)
       && existing.status === 'active'
       && nextStatus === 'inactive') {
-      await unassignCreAssignments(transaction, {
+      pendingCustomers = await unassignCreAssignments(transaction, {
         departingCreId: existing.id,
         actorId: req.user.id,
         reason,
@@ -332,7 +354,7 @@ export async function updateUserStatus(req, res) {
       && nextStatus === 'inactive') {
       await transaction.auditLog.create({
         data: {
-          userId: req.user.id,
+          userId: req.user?.id ?? null,
           entityType: 'User',
           entityId: existing.id,
           action: 'ACCOUNT_DEACTIVATED',
@@ -343,10 +365,10 @@ export async function updateUserStatus(req, res) {
     if (existing.role === 'CRE' && existing.ccmId && nextStatus === 'active') {
       await allocateUnassignedMasterCallListEntries(transaction, existing.ccmId, req.user.id);
     }
-    return user;
+    return { user, pendingCustomers };
   });
 
-  return res.json({ user: sanitizeUser(updated) });
+  return res.json({ user: sanitizeUser(updated.user), pendingCustomers: updated.pendingCustomers });
 }
 
 export async function assignUserToCcm(req, res) {
@@ -372,23 +394,45 @@ export async function assignUserToCcm(req, res) {
       newCcmId: nextCcmId,
     });
     if (transfer.error) return transfer;
+    let pendingCustomers = 0;
+    if (existing.ccmId && existing.ccmId !== nextCcmId) {
+      pendingCustomers = await unassignCreAssignments(transaction, {
+        ccmId: existing.ccmId,
+        departingCreId: existing.id,
+        actorId: req.user.id,
+        reason: `CRE transferred from CCM ${existing.ccmId} to CCM ${nextCcmId}`,
+        eventType: 'TRANSFERRED_PENDING_REDISTRIBUTION',
+      });
+      await transaction.auditLog.create({
+        data: {
+          userId: req.user.id,
+          entityType: 'User',
+          entityId: existing.id,
+          action: 'CRE_CCM_TRANSFERRED',
+          details: JSON.stringify({ previousCcmId: existing.ccmId, newCcmId: nextCcmId, pendingCustomers }),
+        },
+      });
+    }
     return {
       user: await transaction.user.update({
         where: { id },
         data: { ccmId: nextCcmId },
       }),
+      pendingCustomers,
     };
   });
   if (transferResult.error) {
     const messages = {
       'cre-changed': 'CRE status or CCM assignment changed before the update. Reload and try again.',
       'ccm-inactive': 'CCM assignment must reference an active CCM.',
-      'active-assignments': 'Reassign active vehicle allocations before moving this CRE to another CCM.',
     };
     return res.status(409).json({ message: messages[transferResult.error] });
   }
 
-  return res.json({ user: sanitizeUser(transferResult.user) });
+  return res.json({
+    user: sanitizeUser(transferResult.user),
+    pendingCustomers: transferResult.pendingCustomers,
+  });
 }
 
 export async function deleteManagedUser(req, res) {
@@ -401,10 +445,6 @@ export async function deleteManagedUser(req, res) {
     return res.status(404).json({ message: 'User not found.' });
   }
 
-  if (existing.role === 'CRE' || existing.role === 'FREE_SERVICE_CRE') {
-    return res.status(409).json({ message: 'CRE accounts must be deactivated instead of deleted.' });
-  }
-
   if (existing.role === 'CCM') {
     const assignedCre = await prisma.user.findFirst({
       where: { role: { in: ['CRE', 'FREE_SERVICE_CRE'] }, ccmId: existing.ccmId },
@@ -413,26 +453,181 @@ export async function deleteManagedUser(req, res) {
     if (assignedCre) return res.status(409).json({ message: 'Reassign or delete this CCM CRE accounts before deleting the CCM.' });
   }
 
-  await prisma.$transaction(async (transaction) => {
+  const result = await prisma.$transaction(async (transaction) => {
+    let redistribution = null;
+    let target = existing;
+    if (['CRE', 'FREE_SERVICE_CRE'].includes(existing.role)) {
+      if (existing.ccmId) await lockCcmAllocationTeam(transaction, existing.ccmId);
+      target = await transaction.user.findUnique({ where: { id: existing.id } });
+      if (!target || target.role !== existing.role || target.ccmId !== existing.ccmId) {
+        return { error: 'cre-changed' };
+      }
+
+      const [foreignMasterEntry, foreignAllocation] = target.ccmId
+        ? await Promise.all([
+          transaction.masterCallList.findFirst({
+            where: { ownerUserId: target.id, ccmId: { not: target.ccmId } },
+            select: { id: true },
+          }),
+          transaction.allocation.findFirst({
+            where: { creId: target.id, ccmId: { not: target.ccmId } },
+            select: { id: true },
+          }),
+        ])
+        : [null, null];
+      if (foreignMasterEntry || foreignAllocation) return { error: 'cross-ccm-assignments' };
+
+      if (!target.ccmId) {
+        const [unscopedEntry, unscopedAllocation] = await Promise.all([
+          transaction.masterCallList.findFirst({ where: { ownerUserId: target.id }, select: { id: true } }),
+          transaction.allocation.findFirst({ where: { creId: target.id }, select: { id: true } }),
+        ]);
+        if (unscopedEntry || unscopedAllocation) return { error: 'missing-ccm' };
+      } else {
+        redistribution = await unassignCreAssignments(transaction, {
+          ccmId: target.ccmId,
+          departingCreId: target.id,
+          actorId: req.user.id,
+          reason: 'CRE permanently deleted; customers are pending CCM allocation',
+          eventType: 'PENDING_REDISTRIBUTION',
+        });
+      }
+    }
+
+    await transaction.deletedUserIdentity.create({
+      data: {
+        id: target.id,
+        name: target.name,
+        username: target.username,
+        role: target.role,
+        ccmId: target.ccmId,
+      },
+    });
+    await snapshotDeletedUserReferences(transaction, target);
+
     if (existing.role === 'CCM' && existing.ccmId) {
       await transaction.monthlyCustomerDataset.updateMany({
         where: { OR: [{ ccmUserId: existing.id }, { ccmId: existing.ccmId }] },
         data: { ccmId: existing.ccmId, ccmUserId: null },
       });
     }
+    const redistributionResult = redistribution === null ? null : {
+      affectedCustomers: redistribution,
+      redistributedCustomers: 0,
+      unassignedCustomers: redistribution,
+      pendingCustomers: redistribution,
+      remainingCreCount: await transaction.user.count({
+        where: { role: 'CRE', status: 'active', ccmId: target.ccmId, id: { not: target.id } },
+      }),
+    };
     await transaction.auditLog.create({
       data: {
         userId: req.user.id,
         entityType: 'User',
-        entityId: existing.id,
+        entityId: target.id,
         action: 'ACCOUNT_DELETED',
-        details: JSON.stringify({ username: existing.username || existing.email?.split('@')[0], role: existing.role }),
+        details: JSON.stringify({
+          username: target.username || target.email?.split('@')[0],
+          name: target.name,
+          role: target.role,
+          ccmId: target.ccmId,
+          ...(redistributionResult ? { redistribution: redistributionResult } : {}),
+        }),
       },
     });
-    await transaction.user.delete({ where: { id: existing.id } });
+    await transaction.user.delete({ where: { id: target.id } });
+    return { deleted: true, redistribution: redistributionResult };
   });
 
-  return res.json({ id: existing.id, deleted: true });
+  if (result?.error) {
+    const message = {
+      'cre-changed': 'CRE role or CCM assignment changed before deletion. Reload and try again.',
+      'cross-ccm-assignments': 'This CRE has assignments in another CCM. Resolve those assignments before deletion.',
+      'missing-ccm': 'This CRE has assignments but is not assigned to a CCM. Resolve its assignments before deletion.',
+    }[result.error];
+    return res.status(409).json({ message });
+  }
+  return res.json({ id: existing.id, deleted: true, redistribution: result.redistribution });
+}
+
+async function snapshotDeletedUserReferences(transaction, user) {
+  const { id: userId, name, username } = user;
+  await Promise.all([
+    transaction.callLog.updateMany({
+      where: { assignedToId: userId },
+      data: {
+        assignedToIdSnapshot: userId,
+        assignedToNameSnapshot: name,
+        assignedToUsernameSnapshot: username,
+        assignedToId: null,
+      },
+    }),
+    transaction.callLog.updateMany({
+      where: { createdById: userId },
+      data: {
+        createdByIdSnapshot: userId,
+        createdByNameSnapshot: name,
+        createdByUsernameSnapshot: username,
+        createdById: null,
+      },
+    }),
+    transaction.appointment.updateMany({
+      where: { assigneeId: userId },
+      data: {
+        assigneeIdSnapshot: userId,
+        assigneeNameSnapshot: name,
+        assigneeUsernameSnapshot: username,
+        assigneeId: null,
+      },
+    }),
+    transaction.appointment.updateMany({
+      where: { createdById: userId },
+      data: {
+        createdByIdSnapshot: userId,
+        createdByNameSnapshot: name,
+        createdByUsernameSnapshot: username,
+        createdById: null,
+      },
+    }),
+    transaction.followUp.updateMany({
+      where: { creId: userId },
+      data: { creIdSnapshot: userId, creNameSnapshot: name, creUsernameSnapshot: username, creId: null },
+    }),
+    transaction.allocation.updateMany({
+      where: { creId: userId },
+      data: { creIdSnapshot: userId, creNameSnapshot: name, creUsernameSnapshot: username, creId: null },
+    }),
+    transaction.auditLog.updateMany({
+      where: { userId },
+      data: { userIdSnapshot: userId, userNameSnapshot: name, userUsernameSnapshot: username, userId: null },
+    }),
+    transaction.monthlyCustomerDataEntry.updateMany({
+      where: { createdById: userId },
+      data: { createdByIdSnapshot: userId, createdByNameSnapshot: name, createdByUsernameSnapshot: username, createdById: null },
+    }),
+    transaction.monthlyCustomerDataImport.updateMany({
+      where: { importedById: userId },
+      data: {
+        importedByIdSnapshot: userId,
+        importedByNameSnapshot: name,
+        importedByUsernameSnapshot: username,
+        importedById: null,
+      },
+    }),
+    transaction.monthlyCustomerDataset.updateMany({
+      where: { ccmUserId: userId },
+      data: {
+        ccmUserIdSnapshot: userId,
+        ccmUserNameSnapshot: name,
+        ccmUserUsernameSnapshot: username,
+        ccmUserId: null,
+      },
+    }),
+    transaction.cRETarget.updateMany({
+      where: { creId: userId },
+      data: { creNameSnapshot: name, creUsernameSnapshot: username },
+    }),
+  ]);
 }
 
 export async function listTeams(req, res) {

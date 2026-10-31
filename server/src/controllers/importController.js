@@ -34,6 +34,22 @@ import { completeImportRow } from '../utils/importRowProgress.js';
 
 const IMPORT_FINALIZATION_TRANSACTION_TIMEOUT_MS = 30_000;
 const IMPORT_ROW_TRANSACTION_TIMEOUT_MS = 30_000;
+const IMPORT_HISTORY_PAGE_SIZE = 20;
+
+function decodeImportHistoryCursor(value) {
+  if (!value) return null;
+  if (typeof value !== 'string' || value.length > 512) return undefined;
+  try {
+    const cursor = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    if (typeof cursor.id !== 'string' || !cursor.id || cursor.id.length > 128
+      || typeof cursor.createdAt !== 'string') return undefined;
+    const createdAt = new Date(cursor.createdAt);
+    if (!Number.isFinite(createdAt.getTime()) || createdAt.toISOString() !== cursor.createdAt) return undefined;
+    return { id: cursor.id, createdAt };
+  } catch {
+    return undefined;
+  }
+}
 
 function roleName(role) {
   return String(role || '').toUpperCase();
@@ -794,9 +810,19 @@ export async function getImportHistory(req, res) {
   if (requestedCcmId.length > 255) {
     return res.status(400).json({ message: 'ccmId must be 255 characters or fewer.' });
   }
+  const cursor = decodeImportHistoryCursor(req.query?.cursor);
+  if (cursor === undefined) {
+    return res.status(400).json({ message: 'Import history cursor is invalid.' });
+  }
   const where = {
     ...(role === 'CCM' ? { importedByUserId: req.user.id } : {}),
     ...(requestedCcmId ? { ccmId: requestedCcmId } : {}),
+    ...(cursor ? {
+      OR: [
+        { createdAt: { lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+      ],
+    } : {}),
   };
   const imports = await prisma.importBatch.findMany({
     where,
@@ -831,10 +857,16 @@ export async function getImportHistory(req, res) {
       rowErrors: { orderBy: { rowNumber: 'asc' }, take: 100 },
       _count: { select: { changes: true } },
     },
-    orderBy: { createdAt: 'desc' },
-    take: 100,
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: IMPORT_HISTORY_PAGE_SIZE + 1,
   });
-  const importerIds = [...new Set(imports.map(({ importedByUserId }) => importedByUserId).filter(Boolean))];
+  const hasMore = imports.length > IMPORT_HISTORY_PAGE_SIZE;
+  const page = imports.slice(0, IMPORT_HISTORY_PAGE_SIZE);
+  const lastBatch = page.at(-1);
+  const nextCursor = hasMore && lastBatch
+    ? Buffer.from(JSON.stringify({ id: lastBatch.id, createdAt: lastBatch.createdAt.toISOString() })).toString('base64url')
+    : null;
+  const importerIds = [...new Set(page.map(({ importedByUserId }) => importedByUserId).filter(Boolean))];
   const importers = importerIds.length
     ? await prisma.user.findMany({
       where: { id: { in: importerIds } },
@@ -842,10 +874,10 @@ export async function getImportHistory(req, res) {
     })
     : [];
   const importerById = new Map(importers.map((importer) => [importer.id, importer]));
-  const statsByBatch = await collectImportBatchStatsForIds(prisma, imports.map(({ id }) => id));
-  const invalidatedChanges = imports.length
+  const statsByBatch = await collectImportBatchStatsForIds(prisma, page.map(({ id }) => id));
+  const invalidatedChanges = page.length
     ? await prisma.importChangeLog.findMany({
-      where: { importBatchId: { in: imports.map(({ id }) => id) }, rollbackStatus: 'permanently_deleted' },
+      where: { importBatchId: { in: page.map(({ id }) => id) }, rollbackStatus: 'permanently_deleted' },
       select: { importBatchId: true, rollbackError: true, rowProgress: { select: { rowNumber: true } } },
     })
     : [];
@@ -859,7 +891,7 @@ export async function getImportHistory(req, res) {
     invalidationByBatch.set(change.importBatchId, state);
   }
   return res.json({
-    imports: imports.map((batch) => {
+    imports: page.map((batch) => {
       const invalidation = invalidationByBatch.get(batch.id);
       const permanentDeletion = invalidation && batch.status !== 'permanently_deleted'
         ? {
@@ -889,6 +921,8 @@ export async function getImportHistory(req, res) {
         permanentDeletion,
       };
     }),
+    hasMore,
+    nextCursor,
   });
 }
 

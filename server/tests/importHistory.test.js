@@ -223,3 +223,65 @@ test('Admin import history rejects an oversized CCM filter', async () => {
     prisma.importBatch.findMany = originalFindMany;
   }
 });
+
+test('import history returns the latest 20 batches and a cursor when more exist', async () => {
+  const batches = Array.from({ length: 21 }, (_, index) => ({
+    ...historyBatch({ id: `batch-${index + 1}`, ccmId: 'ccm-a', importedByUserId: null }),
+    createdAt: new Date(Date.UTC(2026, 9, 31, 12, 0, index)),
+  }));
+  let query;
+  await withImportHistoryMocks({ batches: [], users: [] }, async () => {
+    prisma.importBatch.findMany = async (args) => {
+      query = args;
+      return batches;
+    };
+    const res = mockRes();
+
+    await getImportHistory({ user: { id: 'admin-a', role: 'ADMIN' }, query: {} }, res);
+
+    assert.equal(query.take, 21);
+    assert.deepEqual(query.orderBy, [{ createdAt: 'desc' }, { id: 'desc' }]);
+    assert.deepEqual(res.body.imports.map(({ id }) => id), batches.slice(0, 20).map(({ id }) => id));
+    assert.equal(res.body.hasMore, true);
+    assert.deepEqual(JSON.parse(Buffer.from(res.body.nextCursor, 'base64url').toString('utf8')), {
+      id: 'batch-20',
+      createdAt: batches[19].createdAt.toISOString(),
+    });
+  });
+});
+
+test('import history cursor applies a stable keyset boundary and rejects malformed cursors', async () => {
+  const anchorDate = new Date('2026-10-30T06:00:00.000Z');
+  let query;
+  const originalFindMany = prisma.importBatch.findMany;
+  prisma.importBatch.findMany = async (args) => {
+    query = args;
+    return [];
+  };
+  try {
+    const cursor = Buffer.from(JSON.stringify({
+      id: 'batch-anchor',
+      createdAt: anchorDate.toISOString(),
+    })).toString('base64url');
+    const res = mockRes();
+
+    await getImportHistory({ user: { id: 'admin-a', role: 'ADMIN' }, query: { ccmId: 'ccm-a', cursor } }, res);
+
+    assert.deepEqual(query.where, {
+      ccmId: 'ccm-a',
+      OR: [
+        { createdAt: { lt: anchorDate } },
+        { createdAt: anchorDate, id: { lt: 'batch-anchor' } },
+      ],
+    });
+    assert.equal(res.body.hasMore, false);
+    assert.equal(res.body.nextCursor, null);
+
+    const invalid = mockRes();
+    await getImportHistory({ user: { id: 'admin-a', role: 'ADMIN' }, query: { cursor: 'not-a-cursor' } }, invalid);
+    assert.equal(invalid.statusCode, 400);
+    assert.match(invalid.body.message, /cursor is invalid/i);
+  } finally {
+    prisma.importBatch.findMany = originalFindMany;
+  }
+});

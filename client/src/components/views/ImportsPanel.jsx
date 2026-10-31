@@ -22,6 +22,9 @@ export default function ImportsPanel(props) {
     importRollbackSaving,
     importUploading,
     importsLoading,
+    importsMoreLoading,
+    importsHasMore,
+    loadMoreImportHistory,
     masterListCcms,
     openPermanentDeletionPreview,
     permanentDeletion,
@@ -181,6 +184,13 @@ export default function ImportsPanel(props) {
                   </tbody>
                 </table>
               </div>
+              {importsHasMore && (
+                <div className="import-history-load-more">
+                  <button type="button" className="outline-btn" disabled={importsMoreLoading || importsLoading} onClick={loadMoreImportHistory}>
+                    {importsMoreLoading ? 'Loading…' : 'Load 20 more'}
+                  </button>
+                </div>
+              )}
             </section>
             {permanentDeletionPreviewLoading && <p className="form-alert" role="status">Preparing permanent-deletion preview…</p>}
             {importRollbackBatch && (

@@ -338,6 +338,10 @@ function App() {
   const [appointmentForm, setAppointmentForm] = useState({ customerId: '', vehicleId: '', customerName: '', vehicleName: '', scheduledAt: '' });
   const [imports, setImports] = useState([]);
   const [importsLoading, setImportsLoading] = useState(false);
+  const [importsMoreLoading, setImportsMoreLoading] = useState(false);
+  const [importsHasMore, setImportsHasMore] = useState(false);
+  const [importsNextCursor, setImportsNextCursor] = useState(null);
+  const importHistoryRequestRef = useRef(0);
   const [importUploading, setImportUploading] = useState(false);
   const [importError, setImportError] = useState('');
   const [importMessage, setImportMessage] = useState('');
@@ -1785,10 +1789,40 @@ function App() {
   }
 
   async function refreshImportHistory(ccmId = importHistoryCcmId) {
+    const requestId = ++importHistoryRequestRef.current;
     const params = currentRole === 'ADMIN' && ccmId ? { ccmId } : {};
     const response = await api.get('/imports/history', { params });
+    if (requestId !== importHistoryRequestRef.current) return response;
     setImports(response.data.imports || []);
+    setImportsHasMore(Boolean(response.data.hasMore));
+    setImportsNextCursor(response.data.nextCursor || null);
     return response;
+  }
+
+  async function loadMoreImportHistory() {
+    if (!importsHasMore || !importsNextCursor || importsMoreLoading) return;
+    const requestId = importHistoryRequestRef.current;
+    setImportsMoreLoading(true);
+    setImportError('');
+    try {
+      const params = {
+        ...(currentRole === 'ADMIN' && importHistoryCcmId ? { ccmId: importHistoryCcmId } : {}),
+        cursor: importsNextCursor,
+      };
+      const response = await api.get('/imports/history', { params });
+      if (requestId !== importHistoryRequestRef.current) return;
+      const nextImports = response.data.imports || [];
+      setImports((current) => {
+        const existingIds = new Set(current.map(({ id }) => id));
+        return current.concat(nextImports.filter(({ id }) => !existingIds.has(id)));
+      });
+      setImportsHasMore(Boolean(response.data.hasMore));
+      setImportsNextCursor(response.data.nextCursor || null);
+    } catch (error) {
+      setImportError(error.response?.data?.message || 'Could not load more import history.');
+    } finally {
+      setImportsMoreLoading(false);
+    }
   }
 
   async function changeImportHistoryCcm(ccmId) {
@@ -3132,6 +3166,9 @@ function App() {
               importRollbackSaving={importRollbackSaving}
               importUploading={importUploading}
               importsLoading={importsLoading}
+              importsMoreLoading={importsMoreLoading}
+              importsHasMore={importsHasMore}
+              loadMoreImportHistory={loadMoreImportHistory}
               masterListCcms={masterListCcms}
               openPermanentDeletionPreview={openPermanentDeletionPreview}
               permanentDeletion={permanentDeletion}

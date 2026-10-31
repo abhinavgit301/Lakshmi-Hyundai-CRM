@@ -736,9 +736,13 @@ function App() {
         totalLaborCost: masterEntryForm.totalLaborCost || undefined,
         totalPartsCost: masterEntryForm.totalPartsCost || undefined,
       };
-      const response = await api.post('/call-list', payload);
-      const record = response.data.record;
-      setCalls((current) => [record, ...current.filter((existing) => existing.id !== record.id)]);
+      await api.post('/call-list', payload);
+      await refreshMasterList({
+        search: masterListSearch,
+        creId: masterListCreFilter,
+        dueCategory: masterListDueFilter,
+        repairType: masterListRepairFilter,
+      });
       setMasterEntryForm({
         serialNo: '',
         roNumber: '',
@@ -1077,8 +1081,13 @@ function App() {
       await loadMonthlyData(selectedCcm.ccmId);
       const profileResponse = await api.get(`/ccms/${selectedCcm.ccmId}/profile`);
       setCcmProfile(profileResponse.data);
-      const callListResponse = await api.get('/call-list');
+      const callListResponse = await api.get('/call-list?limit=50&offset=0');
       setCalls(callListResponse.data.records || []);
+      setMasterListPageInfo({
+        total: callListResponse.data.total || 0,
+        hasMore: callListResponse.data.hasMore === true,
+        offset: callListResponse.data.offset || 0,
+      });
     } catch (error) {
       setMonthlyError(error.response?.data?.message || 'Could not import monthly customer data.');
     } finally {
@@ -1728,11 +1737,16 @@ function App() {
     setAllocationError('');
     setMasterListError('');
     try {
-      const requests = [api.get('/call-list'), api.get('/customers')];
+      const requests = [api.get('/call-list?limit=50&offset=0'), api.get('/customers')];
       if (['ADMIN', 'GM', 'CCM'].includes(String(currentUser?.role || '').toUpperCase())) requests.push(api.get('/teams'));
       if (currentRole === 'CCM') requests.push(api.get('/allocations/pending-redistribution'));
       const [recordsResponse, customerResponse, teamResponse, pendingResponse] = await Promise.all(requests);
       setCalls(recordsResponse.data.records || []);
+      setMasterListPageInfo({
+        total: recordsResponse.data.total || 0,
+        hasMore: recordsResponse.data.hasMore === true,
+        offset: recordsResponse.data.offset || 0,
+      });
       setCustomers(customerResponse.data.customers || []);
       setAllocationCres(teamResponse?.data?.cres || []);
       setMasterListCcms(teamResponse?.data?.ccms || []);
@@ -1744,6 +1758,28 @@ function App() {
     }
   }
 
+  async function loadMoreAllocationRecords() {
+    if (masterListLoadingMore || !masterListPageInfo.hasMore) return;
+    setMasterListLoadingMore(true);
+    try {
+      const offset = masterListPageInfo.offset + 50;
+      const response = await api.get(`/call-list?limit=50&offset=${offset}`);
+      setCalls((current) => [
+        ...current,
+        ...(response.data.records || []).filter((record) => !current.some((existing) => existing.id === record.id)),
+      ]);
+      setMasterListPageInfo({
+        total: response.data.total || 0,
+        hasMore: response.data.hasMore === true,
+        offset: response.data.offset || 0,
+      });
+    } catch (error) {
+      setAllocationError(error.response?.data?.message || 'Could not load more allocation records.');
+    } finally {
+      setMasterListLoadingMore(false);
+    }
+  }
+
   async function allocatePendingCustomers() {
     setAllocationSaving(true);
     setAllocationError('');
@@ -1751,10 +1787,15 @@ function App() {
     try {
       const response = await api.post('/allocations/pending-redistribution/allocate');
       const [recordsResponse, pendingResponse] = await Promise.all([
-        api.get('/call-list'),
+        api.get('/call-list?limit=50&offset=0'),
         api.get('/allocations/pending-redistribution'),
       ]);
       setCalls(recordsResponse.data.records || []);
+      setMasterListPageInfo({
+        total: recordsResponse.data.total || 0,
+        hasMore: recordsResponse.data.hasMore === true,
+        offset: recordsResponse.data.offset || 0,
+      });
       setPendingRedistribution(pendingResponse.data || { pendingCustomers: 0, activeCreCount: 0 });
       setAllocationMessage(response.data.assignedCustomers
         ? `${response.data.assignedCustomers} pending customer${response.data.assignedCustomers === 1 ? '' : 's'} allocated among your active CREs.`
@@ -1776,8 +1817,13 @@ function App() {
     setAllocationMessage('');
     try {
       await api.post('/allocations', allocationForm);
-      const recordsResponse = await api.get('/call-list');
+      const recordsResponse = await api.get('/call-list?limit=50&offset=0');
       setCalls(recordsResponse.data.records || []);
+      setMasterListPageInfo({
+        total: recordsResponse.data.total || 0,
+        hasMore: recordsResponse.data.hasMore === true,
+        offset: recordsResponse.data.offset || 0,
+      });
       setAllocationForm({ vehicleId: '', creId: '', serviceType: '', category: '' });
       setAllocationFormOpen(false);
       setAllocationMessage('Vehicle assigned.');
@@ -1896,9 +1942,14 @@ function App() {
       importRequestKeyRef.current = null;
       const [, callListResponse] = await Promise.all([
         refreshImportHistory(),
-        api.get('/call-list'),
+        api.get('/call-list?limit=50&offset=0'),
       ]);
       setCalls(callListResponse.data.records || []);
+      setMasterListPageInfo({
+        total: callListResponse.data.total || 0,
+        hasMore: callListResponse.data.hasMore === true,
+        offset: callListResponse.data.offset || 0,
+      });
     } catch (error) {
       setImportError(error.response?.data?.message || 'Import failed. Review the file and try again.');
     } finally {
@@ -1921,10 +1972,15 @@ function App() {
       setImportMessage(`Import ${batch.fileName} was rolled back successfully. Reversed ${response.data.reversedChanges} recorded changes.`);
       const [, callListResponse, customersResponse] = await Promise.all([
         refreshImportHistory(),
-        api.get('/call-list'),
+        api.get('/call-list?limit=50&offset=0'),
         api.get('/customers'),
       ]);
       setCalls(callListResponse.data.records || []);
+      setMasterListPageInfo({
+        total: callListResponse.data.total || 0,
+        hasMore: callListResponse.data.hasMore === true,
+        offset: callListResponse.data.offset || 0,
+      });
       setCustomers(customersResponse.data.customers || []);
       await refreshDashboardSummary();
     } catch (error) {
@@ -1997,10 +2053,15 @@ function App() {
         : `Import ${permanentDeletion.batch.fileName} reversed: ${summary.totalRecordsDeleted} records deleted, ${summary.existingRecordsRestored} restored, ${summary.existingRecordsRebased} rebased, ${summary.recordsPreserved} preserved. PhysicalVehicle identities retained: ${retainedPhysicalVehicleIds || 'none'}.`);
       const [, callListResponse, customersResponse] = await Promise.all([
         refreshImportHistory(),
-        api.get('/call-list'),
+        api.get('/call-list?limit=50&offset=0'),
         api.get('/customers'),
       ]);
       setCalls(callListResponse.data.records || []);
+      setMasterListPageInfo({
+        total: callListResponse.data.total || 0,
+        hasMore: callListResponse.data.hasMore === true,
+        offset: callListResponse.data.offset || 0,
+      });
       setCustomers(customersResponse.data.customers || []);
       await refreshDashboardSummary();
     } catch (error) {
@@ -3099,6 +3160,7 @@ function App() {
               customers={customers}
               masterListCcms={masterListCcms}
               masterListError={masterListError}
+              masterListLoadingMore={masterListLoadingMore}
               masterListTeam={masterListTeam}
               renderCustomerActionPanel={renderCustomerActionPanel}
               renderMasterCallTable={renderMasterCallTable}
@@ -3108,6 +3170,8 @@ function App() {
               setMasterListTeam={setMasterListTeam}
               submitAllocation={submitAllocation}
               allocatePendingCustomers={allocatePendingCustomers}
+              loadMoreAllocationRecords={loadMoreAllocationRecords}
+              allocationPageInfo={masterListPageInfo}
               visibleAllocationRecords={visibleAllocationRecords}
             />
           </Suspense>

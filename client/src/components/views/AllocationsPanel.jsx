@@ -18,6 +18,7 @@ export default function AllocationsPanel(props) {
     customers,
     masterListCcms,
     masterListError,
+    masterListLoadingMore,
     masterListTeam,
     renderCustomerActionPanel,
     renderMasterCallTable,
@@ -27,6 +28,8 @@ export default function AllocationsPanel(props) {
     setMasterListTeam,
     submitAllocation,
     allocatePendingCustomers,
+    allocationPageInfo,
+    loadMoreAllocationRecords,
     visibleAllocationRecords,
   } = props;
   return (
@@ -90,9 +93,10 @@ export default function AllocationsPanel(props) {
                 <label className="inline-filter">Search
                   <input type="search" value={allocationSearch} placeholder="Name, number, VIN, model or reg. no." onChange={(event) => setAllocationSearch(event.target.value)} />
                 </label>
-                <span>{allocationsLoading ? 'Loading…' : `${visibleAllocationRecords.length} records`}</span>
+                <span>{allocationsLoading ? 'Loading…' : `${visibleAllocationRecords.length} of ${allocationPageInfo.total} records loaded`}</span>
               </div>
               {renderMasterCallTable(visibleAllocationRecords, allocationsLoading, { assignable: currentRole === 'CCM' })}
+              {allocationPageInfo.hasMore && <div className="list-pagination"><button type="button" className="outline-btn" disabled={allocationsLoading || masterListLoadingMore} onClick={loadMoreAllocationRecords}>{masterListLoadingMore ? 'Loading…' : 'Load 50 More'}</button></div>}
             </section>
             {callError && <p className="form-alert error" role="alert">{callError}</p>}
             {customerPanel.mode === 'call' && renderCustomerActionPanel()}

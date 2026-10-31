@@ -18,7 +18,7 @@ import { getCreCallCounts } from '../utils/callMetrics.js';
 import { findMissedWarrantyCases } from '../utils/serviceLists.js';
 import { lockCcmAllocationTeam } from '../utils/customerAllocation.js';
 import { recordCreAssignmentEvent, validateAssignmentReason } from '../utils/creAssignmentHistory.js';
-import { addCanonicalMasterCallListEntry, findCanonicalMasterCallListEntry, includeUnassignedAllocationQueue } from '../utils/masterCallList.js';
+import { addCanonicalMasterCallListEntry, buildAllocationQueueRecords, findCanonicalMasterCallListEntry } from '../utils/masterCallList.js';
 import { allowedServiceSources, canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { classifyMasterRepairType } from '../utils/repairTypes.js';
 import { filterMasterCallListRecords, validateMasterCallListFilters } from '../utils/masterCallListFilters.js';
@@ -659,7 +659,13 @@ export async function loadCallListRecords(
   where,
   now = new Date(),
   user = null,
-  { trackMemory = false, memoryTracker: providedMemoryTracker = null } = {},
+  {
+    trackMemory = false,
+    memoryTracker: providedMemoryTracker = null,
+    page: pageOptions = null,
+    filters = null,
+    allocationQueueRecords = [],
+  } = {},
 ) {
   const role = normalizeRole(user?.role);
   const ccmId = user?.ccmId || 'no-access';
@@ -757,6 +763,10 @@ export async function loadCallListRecords(
     },
   };
   const canonicalRecords = new Map();
+  const canonicalMatches = pageOptions ? new Map() : null;
+  const allocationQueueVinKeys = new Set(
+    allocationQueueRecords.map((record) => `${record.ccmId}\u0000${record.vin}`),
+  );
   const ownerIds = new Set();
   const ownerNames = new Map();
   const dealerCodeByCcmId = new Map();
@@ -798,17 +808,19 @@ export async function loadCallListRecords(
 
     const visitCcmIds = new Set();
     for (const row of page) {
-      if (row.ownerUserId) {
+      if (!pageOptions && row.ownerUserId) {
         ownerIds.add(row.ownerUserId);
       }
       for (const visit of row.vehicle?.physicalVehicle?.workshopVisits || []) {
         if (memoryTracker) processedVisits += 1;
-        if (visit.ccmId) visitCcmIds.add(visit.ccmId);
+        if (!pageOptions && visit.ccmId) visitCcmIds.add(visit.ccmId);
       }
     }
 
-    const uncachedVisitCcmIds = [...visitCcmIds].filter((visitCcmId) => !dealerCodeByCcmId.has(visitCcmId));
-    const pageDealerCodes = await getOriginatingDealerCodeMap(uncachedVisitCcmIds);
+    const uncachedVisitCcmIds = pageOptions
+      ? []
+      : [...visitCcmIds].filter((visitCcmId) => !dealerCodeByCcmId.has(visitCcmId));
+    const pageDealerCodes = pageOptions ? new Map() : await getOriginatingDealerCodeMap(uncachedVisitCcmIds);
     for (const visitCcmId of uncachedVisitCcmIds) {
       dealerCodeByCcmId.set(visitCcmId, pageDealerCodes.get(visitCcmId) || null);
     }
@@ -855,7 +867,22 @@ export async function loadCallListRecords(
           dealerCode: dealerCodeByCcmId.get(visit.ccmId) || null,
         })),
       };
-      addCanonicalMasterCallListEntry(canonicalRecords, record);
+      if (pageOptions) {
+        const key = `${record.ccmId}\u0000${record.vin}`;
+        const compactRecord = {
+          ...record,
+          importedDetails: null,
+          workshopVisits: [],
+          allocationQueue: !record.assigneeId && allocationQueueVinKeys.has(key),
+        };
+        const matches = filterMasterCallListRecords([record], filters, user?.role).length > 0;
+        addCanonicalMasterCallListEntry(canonicalRecords, compactRecord);
+        if (canonicalRecords.get(key) === compactRecord) {
+          canonicalMatches.set(key, matches);
+        }
+      } else {
+        addCanonicalMasterCallListEntry(canonicalRecords, record);
+      }
       if (memoryTracker) processedRows += 1;
     }
 
@@ -885,6 +912,64 @@ export async function loadCallListRecords(
     });
     for (const owner of owners) ownerNames.set(owner.id, owner.name);
   }
+  if (pageOptions) {
+    for (const queueRecord of allocationQueueRecords) {
+      const key = `${queueRecord.ccmId}\u0000${queueRecord.vin}`;
+      if (canonicalRecords.has(key)) {
+        const canonical = canonicalRecords.get(key);
+        if (!canonical.assigneeId) canonical.allocationQueue = true;
+        continue;
+      }
+      if (!canonicalMatches.has(key)) {
+        canonicalRecords.set(key, queueRecord);
+        canonicalMatches.set(
+          key,
+          filterMasterCallListRecords([queueRecord], filters, user?.role).length > 0,
+        );
+      }
+    }
+
+    const matchingRecords = [];
+    for (const [key, record] of canonicalRecords) {
+      if (canonicalMatches.get(key)) matchingRecords.push(record);
+    }
+    matchingRecords.sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)
+      || String(left.id).localeCompare(String(right.id)));
+    const total = matchingRecords.length;
+    const pageRecords = matchingRecords.slice(pageOptions.offset, pageOptions.offset + pageOptions.limit);
+    matchingRecords.length = 0;
+    const ownerPageIds = new Set();
+    for (const record of pageRecords) {
+      if (record.assigneeId) ownerPageIds.add(record.assigneeId);
+    }
+    const pageOwnerNames = new Map();
+    for (const chunk of splitIntoChunks([...ownerPageIds], RELATED_ID_QUERY_CHUNK_SIZE)) {
+      const owners = await prisma.user.findMany({
+        where: { id: { in: chunk } },
+        select: { id: true, name: true },
+      });
+      for (const owner of owners) pageOwnerNames.set(owner.id, owner.name);
+    }
+    const records = pageRecords.map((record) => ({
+      ...record,
+      assigneeName: pageOwnerNames.get(record.assigneeId) || null,
+    }));
+    const hasMore = pageOptions.offset + records.length < total;
+    canonicalRecords.clear();
+    canonicalMatches.clear();
+    if (memoryTracker) {
+      const finalSample = callListMemorySnapshot();
+      updateCallListMemoryPeak(memoryTracker.peak, finalSample);
+      memoryTracker.metrics.rows = processedRows;
+      memoryTracker.metrics.canonicalRecords = total;
+      memoryTracker.metrics.matchingRecords = total;
+      memoryTracker.metrics.visits = processedVisits;
+      memoryTracker.metrics.memory = finalSample;
+      logCallListMemory('complete', memoryTracker.metrics, memoryTracker.peak);
+    }
+    return { records, total, limit: pageOptions.limit, offset: pageOptions.offset, hasMore };
+  }
+
   const records = [...canonicalRecords.values()];
   for (const record of records) record.assigneeName = ownerNames.get(record.assigneeId) || null;
 
@@ -913,12 +998,7 @@ export async function getCallList(req, res) {
   const paginationResult = parsePagination(req.query);
   if (paginationResult.error) return res.status(400).json({ message: paginationResult.error });
   const memoryTracker = createCallListMemoryTracker();
-  let records = await loadCallListRecords(
-    getVisibilityWhere(req.user),
-    new Date(),
-    req.user,
-    { memoryTracker },
-  );
+  let allocationQueueRecords = [];
   if (normalizeRole(req.user?.role) === 'CCM') {
     const ccmId = req.user?.ccmId || 'no-access';
     const unassignedAllocations = await prisma.allocation.findMany({
@@ -939,23 +1019,24 @@ export async function getCallList(req, res) {
         },
       },
     });
-    records = includeUnassignedAllocationQueue(records, unassignedAllocations, ccmId);
+    allocationQueueRecords = buildAllocationQueueRecords([], unassignedAllocations, ccmId);
   }
-  let filtered = filterMasterCallListRecords(records, validated.filters, req.user?.role)
-    .sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)
-      || String(left.id).localeCompare(String(right.id)));
-  memoryTracker.metrics.matchingRecords = filtered.length;
+  const response = await loadCallListRecords(
+    getVisibilityWhere(req.user),
+    new Date(),
+    req.user,
+    {
+      memoryTracker,
+      page: paginationResult,
+      filters: validated.filters,
+      allocationQueueRecords,
+    },
+  );
+  memoryTracker.metrics.matchingRecords = response.total;
   let sample = callListMemorySnapshot();
   updateCallListMemoryPeak(memoryTracker.peak, sample);
   memoryTracker.metrics.memory = sample;
   logCallListMemory('filtered', memoryTracker.metrics, memoryTracker.peak);
-  if (!paginationResult.hasPagination) return res.json({ records: filtered });
-  const response = paginateRecords(filtered, paginationResult);
-  records.length = 0;
-  filtered.length = 0;
-  sample = callListMemorySnapshot();
-  updateCallListMemoryPeak(memoryTracker.peak, sample);
-  memoryTracker.metrics.memory = sample;
   logCallListMemory('response-ready', memoryTracker.metrics, memoryTracker.peak);
   return res.json(response);
 }

@@ -200,6 +200,171 @@ test('paginated Master Call List response retains exact page metadata and orderi
   }
 });
 
+test('Master Call List response keeps a 48k-row result set to the requested page', async () => {
+  const rows = Array.from({ length: 48048 }, (_, index) => ({
+    id: `mcl-${String(index).padStart(5, '0')}`,
+    createdAt: new Date(Date.UTC(2026, 0, 1) - index * 1000),
+    ccmId: 'ccm-a',
+    ownerUserId: null,
+    customerName: `Customer ${index}`,
+    mobileNumber: '',
+    vin: index === 100 ? 'VIN-0' : `VIN-${index}`,
+    status: 'pending',
+    vehicle: null,
+  }));
+  const queryCalls = [];
+  const originalMasterFindMany = prisma.masterCallList.findMany;
+  const originalUserFindMany = prisma.user.findMany;
+  prisma.masterCallList.findMany = async (args) => {
+    queryCalls.push(args);
+    let remainingRows = rows;
+    const cursorClause = args.where?.AND?.[1];
+    if (cursorClause) {
+      const [olderThan, sameDate] = cursorClause.OR;
+      const dateCursor = olderThan.createdAt.lt;
+      const idCursor = sameDate.id.lt;
+      remainingRows = rows.filter((row) => row.createdAt < dateCursor
+        || (row.createdAt.getTime() === sameDate.createdAt.getTime() && row.id < idCursor));
+    }
+    return remainingRows.slice(0, args.take);
+  };
+  prisma.user.findMany = async () => [];
+  const res = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  };
+
+  try {
+    await getCallList({ user: { role: 'ADMIN' }, query: {} }, res);
+
+    assert.equal(res.body.records.length, 50);
+    assert.equal(res.body.total, 48047);
+    assert.equal(res.body.limit, 50);
+    assert.equal(res.body.offset, 0);
+    assert.equal(res.body.hasMore, true);
+    assert.equal(queryCalls.length, 481);
+    assert.ok(queryCalls.every(({ take }) => take <= 100));
+    assert.equal(res.body.records[0].id, 'mcl-00001');
+    assert.ok(!res.body.records.some((record) => record.id === 'mcl-00000' || record.id === 'mcl-00100'));
+    assert.ok(res.body.records.every((record) => record.workshopVisits.length === 0));
+  } finally {
+    prisma.masterCallList.findMany = originalMasterFindMany;
+    prisma.user.findMany = originalUserFindMany;
+  }
+});
+
+test('paginated Master Call List preserves CCM allocation queue rows', async () => {
+  const masterRow = {
+    id: 'mcl-assigned-queue',
+    createdAt: new Date('2026-01-03T00:00:00Z'),
+    ccmId: 'ccm-a',
+    ownerUserId: null,
+    customerName: 'Existing customer',
+    mobileNumber: '',
+    vin: 'VIN-EXISTING',
+    status: 'pending',
+    vehicle: null,
+  };
+  const allocations = [
+    {
+      id: 'allocation-existing',
+      ccmId: 'ccm-a',
+      serviceType: 'Paid',
+      vehicle: { id: 'vehicle-existing', vin: 'VIN-EXISTING', model: 'Model A', registrationNumber: 'REG-A', customer: null },
+    },
+    {
+      id: 'allocation-only',
+      ccmId: 'ccm-a',
+      serviceType: 'Free',
+      vehicle: { id: 'vehicle-only', vin: 'VIN-ONLY', model: 'Model B', registrationNumber: 'REG-B', customer: null },
+    },
+  ];
+  const originalMasterFindMany = prisma.masterCallList.findMany;
+  const originalUserFindMany = prisma.user.findMany;
+  const originalAllocationFindMany = prisma.allocation.findMany;
+  prisma.masterCallList.findMany = async () => [masterRow];
+  prisma.user.findMany = async () => [];
+  prisma.allocation.findMany = async () => allocations;
+
+  const createResponse = () => ({
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  });
+  try {
+    const firstPage = createResponse();
+    await getCallList({ user: { role: 'CCM', ccmId: 'ccm-a' }, query: { limit: '1', offset: '0' } }, firstPage);
+    assert.equal(firstPage.body.total, 2);
+    assert.equal(firstPage.body.records[0].id, masterRow.id);
+    assert.equal(firstPage.body.records[0].allocationQueue, true);
+    assert.equal(firstPage.body.hasMore, true);
+
+    const secondPage = createResponse();
+    await getCallList({ user: { role: 'CCM', ccmId: 'ccm-a' }, query: { limit: '1', offset: '1' } }, secondPage);
+    assert.equal(secondPage.body.records[0].id, 'allocation:allocation-only');
+    assert.equal(secondPage.body.records[0].allocationOnly, true);
+    assert.equal(secondPage.body.hasMore, false);
+  } finally {
+    prisma.masterCallList.findMany = originalMasterFindMany;
+    prisma.user.findMany = originalUserFindMany;
+    prisma.allocation.findMany = originalAllocationFindMany;
+  }
+});
+
+test('paginated Master Call List still searches repair-order numbers in visit history', async () => {
+  const row = {
+    id: 'mcl-ro-search',
+    createdAt: new Date('2026-01-03T00:00:00Z'),
+    ccmId: 'ccm-a',
+    ownerUserId: null,
+    customerName: 'Repair history customer',
+    mobileNumber: '',
+    vin: 'VIN-RO',
+    status: 'pending',
+    vehicle: {
+      id: 'vehicle-ro',
+      customerId: 'customer-ro',
+      model: 'Model',
+      physicalVehicleId: 'physical-ro',
+      physicalVehicle: {
+        workshopVisits: [{
+          id: 'visit-ro',
+          repairOrderNo: 'RO-SEARCH-42',
+          ccmId: null,
+          visitDate: new Date('2025-01-01T00:00:00Z'),
+          importedDetails: { roNumber: 'RO-SEARCH-42' },
+        }],
+      },
+      allocations: [],
+      monthlyDataEntries: [],
+      appointments: [],
+      customer: { appointments: [] },
+    },
+  };
+  const originalMasterFindMany = prisma.masterCallList.findMany;
+  const originalUserFindMany = prisma.user.findMany;
+  prisma.masterCallList.findMany = async () => [row];
+  prisma.user.findMany = async () => [];
+  const res = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  };
+
+  try {
+    await getCallList({ user: { role: 'ADMIN' }, query: { search: 'RO-SEARCH-42' } }, res);
+
+    assert.equal(res.body.total, 1);
+    assert.equal(res.body.records[0].id, row.id);
+    assert.deepEqual(res.body.records[0].workshopVisits, []);
+    assert.equal(res.body.records[0].importedDetails, null);
+  } finally {
+    prisma.masterCallList.findMany = originalMasterFindMany;
+    prisma.user.findMany = originalUserFindMany;
+  }
+});
+
 test('Master Call List mobile falls back to the imported service-history value', async () => {
   const originalMasterFindMany = prisma.masterCallList.findMany;
   const originalUserFindMany = prisma.user.findMany;

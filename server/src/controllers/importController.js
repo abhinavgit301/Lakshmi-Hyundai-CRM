@@ -28,11 +28,12 @@ import {
   collectImportBatchStats,
   collectImportBatchStatsForIds,
   legacyImportHistoryProgress,
-  importRowMutationEvidenceIsComplete,
   importRollbackCompleteness,
 } from '../utils/importBatchStats.js';
+import { completeImportRow } from '../utils/importRowProgress.js';
 
 const IMPORT_FINALIZATION_TRANSACTION_TIMEOUT_MS = 30_000;
+const IMPORT_ROW_TRANSACTION_TIMEOUT_MS = 30_000;
 
 function roleName(role) {
   return String(role || '').toUpperCase();
@@ -156,30 +157,6 @@ async function recordRowError(transaction, batchId, rowError) {
   await transaction.importRowError.create({ data: { importBatchId: batchId, ...rowError } });
 }
 
-async function completeImportRow(transaction, batchId, rowNumber, rowProgressId, outcome) {
-  const changes = await transaction.importChangeLog.findMany({
-    where: { importBatchId: batchId, rowProgressId },
-  });
-  if (changes.some((change) => change.importBatchId !== batchId || change.rowProgressId !== rowProgressId)
-    || !importRowMutationEvidenceIsComplete(outcome, changes)) {
-    throw new Error(`Import row ${rowNumber} does not have complete mutation evidence.`);
-  }
-  const result = await transaction.importRowProgress.updateMany({
-    where: { id: rowProgressId, importBatchId: batchId, rowNumber, status: 'pending' },
-    data: {
-      status: 'completed',
-      outcome,
-      mutationState: 'complete',
-      loggedChangeCount: changes.length,
-    },
-  });
-  if (result.count !== 1) throw new Error(`Import row ${rowNumber} was already completed or is missing.`);
-  await transaction.importBatch.update({
-    where: { id: batchId },
-    data: { processedRows: { increment: 1 } },
-  });
-}
-
 export async function importRepairOrders(req, res) {
   const fileName = path.basename(String(req.body?.fileName || 'repair-orders.csv')).slice(0, 255);
   const content = req.body?.content ?? req.body?.csvContent;
@@ -276,14 +253,18 @@ export async function importRepairOrders(req, res) {
   const existingKeys = new Map();
   const importedCcmIds = new Set();
   let changeSequence = 0;
-  const logChange = (transaction, rowProgressId, change, evidenceScope = 'row') => recordImportChange(transaction, {
-    importBatchId: batch.id,
-    rowProgressId,
-    evidenceScope,
-    sequence: ++changeSequence,
-    ...change,
-  });
-  const createTrackedRecord = async (transaction, rowProgressId, change, create) => {
+  const logChange = async (transaction, rowProgressId, change, evidenceScope = 'row', rowEvidence = null) => {
+    const recordedChange = await recordImportChange(transaction, {
+      importBatchId: batch.id,
+      rowProgressId,
+      evidenceScope,
+      sequence: ++changeSequence,
+      ...change,
+    });
+    if (evidenceScope === 'row') rowEvidence?.push(recordedChange);
+    return recordedChange;
+  };
+  const createTrackedRecord = async (transaction, rowProgressId, change, create, rowEvidence = null) => {
     const record = await create();
     await logChange(transaction, rowProgressId, {
       ...change,
@@ -291,17 +272,17 @@ export async function importRepairOrders(req, res) {
       operation: 'CREATE',
       before: {},
       after: record,
-    });
+    }, 'row', rowEvidence);
     return record;
   };
-  const updateTrackedRecord = async (transaction, rowProgressId, change, update) => {
+  const updateTrackedRecord = async (transaction, rowProgressId, change, update, rowEvidence = null) => {
     const updatedRecord = await update();
     const after = Object.fromEntries(Object.keys(change.before).map((field) => [field, updatedRecord[field]]));
     await logChange(transaction, rowProgressId, {
       ...change,
       operation: 'UPDATE',
       after,
-    });
+    }, 'row', rowEvidence);
     return updatedRecord;
   };
   const updateBatchTrackedRecord = async (transaction, change, update) => {
@@ -316,8 +297,45 @@ export async function importRepairOrders(req, res) {
   };
 
   try {
-    const repairOrderNumbers = [...new Set(parsed.rows
-      .map(({ row }) => normalizeRepairOrderNo(row.roNumber))
+    const preparedRows = parsed.rows.map(({ row, rowNumber }) => {
+      const vin = normalizeVin(row.vin || '');
+      const roNumber = String(row.roNumber || '').trim();
+      const registrationValue = String(row.registrationNumber || '').trim().toUpperCase();
+      const registrationNumber = registrationValue && registrationValue !== '-' ? registrationValue : null;
+      const customerName = String(row.customerName || '').trim() || '-';
+      const mobileNumber = String(row.mobileNumber || '').trim() || '-';
+      const ownedRow = assignImportTargetCcm(row, batchCcmId);
+      const parsedLaborCost = parseOptionalNumber(row.totalLaborCost);
+      const parsedPartsCost = parseOptionalNumber(row.totalPartsCost);
+      const parsedVisitDate = parseOptionalDate(row.visitDate);
+      const parsedClosingDate = parseOptionalDate(row.closingDate);
+      const parsedGpDate = parseOptionalDate(row.gpDate);
+      const parsedSaleDate = parseOptionalDate(row.saleDate);
+      const parsedYear = parseOptionalYear(row.year);
+      return {
+        row,
+        rowNumber,
+        rowProgressId: rowProgressIds.get(rowNumber),
+        vin,
+        roNumber,
+        normalizedRepairOrderNo: normalizeRepairOrderNo(roNumber),
+        repairOrderKey: buildRepairOrderKey(batchCcmId, roNumber),
+        registrationNumber,
+        customerName,
+        mobileNumber,
+        ownedRow,
+        laborCost: Number.isNaN(parsedLaborCost) ? null : parsedLaborCost,
+        partsCost: Number.isNaN(parsedPartsCost) ? null : parsedPartsCost,
+        visitDate: Number.isNaN(parsedVisitDate) ? null : parsedVisitDate,
+        closingDate: Number.isNaN(parsedClosingDate) ? null : parsedClosingDate,
+        gpDate: Number.isNaN(parsedGpDate) ? null : parsedGpDate,
+        saleDate: Number.isNaN(parsedSaleDate) ? null : parsedSaleDate,
+        year: Number.isNaN(parsedYear) ? null : parsedYear,
+        importedDetails: importDetailValues(ownedRow),
+      };
+    });
+    const repairOrderNumbers = [...new Set(preparedRows
+      .map(({ normalizedRepairOrderNo }) => normalizedRepairOrderNo)
       .filter(Boolean))];
     const existingVisits = await prisma.workshopVisit.findMany({
       where: { ccmId: batchCcmId, normalizedRepairOrderNo: { in: repairOrderNumbers } },
@@ -330,34 +348,29 @@ export async function importRepairOrders(req, res) {
       );
     }
 
-    for (const { row, rowNumber } of parsed.rows) {
-      const rowProgressId = rowProgressIds.get(rowNumber);
-      const vin = normalizeVin(row.vin || '');
-      const roNumber = String(row.roNumber || '').trim();
-      const registrationValue = String(row.registrationNumber || '').trim().toUpperCase();
-      const registrationNumber = registrationValue && registrationValue !== '-' ? registrationValue : null;
-      const customerName = String(row.customerName || '').trim() || '-';
-      const mobileNumber = String(row.mobileNumber || '').trim() || '-';
+    for (const preparedRow of preparedRows) {
+      const {
+        row,
+        rowNumber,
+        rowProgressId,
+        vin,
+        roNumber,
+        normalizedRepairOrderNo,
+        repairOrderKey,
+        registrationNumber,
+        customerName,
+        mobileNumber,
+        ownedRow,
+        laborCost,
+        partsCost,
+        visitDate,
+        closingDate,
+        gpDate,
+        saleDate,
+        year,
+        importedDetails,
+      } = preparedRow;
       const ccmId = batchCcmId;
-      const ownedRow = assignImportTargetCcm(row, ccmId);
-      const parsedLaborCost = parseOptionalNumber(row.totalLaborCost);
-      const parsedPartsCost = parseOptionalNumber(row.totalPartsCost);
-      const parsedVisitDate = parseOptionalDate(row.visitDate);
-      const parsedClosingDate = parseOptionalDate(row.closingDate);
-      const parsedGpDate = parseOptionalDate(row.gpDate);
-      const parsedSaleDate = parseOptionalDate(row.saleDate);
-      const parsedUcSaleDate = parseOptionalDate(row.ucSaleDate);
-      const parsedMileage = parseOptionalMileage(row.mileage);
-      const parsedYear = parseOptionalYear(row.year);
-      const laborCost = Number.isNaN(parsedLaborCost) ? null : parsedLaborCost;
-      const partsCost = Number.isNaN(parsedPartsCost) ? null : parsedPartsCost;
-      const visitDate = Number.isNaN(parsedVisitDate) ? null : parsedVisitDate;
-      const closingDate = Number.isNaN(parsedClosingDate) ? null : parsedClosingDate;
-      const gpDate = Number.isNaN(parsedGpDate) ? null : parsedGpDate;
-      const saleDate = Number.isNaN(parsedSaleDate) ? null : parsedSaleDate;
-      const ucSaleDate = Number.isNaN(parsedUcSaleDate) ? null : parsedUcSaleDate;
-      const mileage = Number.isNaN(parsedMileage) ? null : parsedMileage;
-      const year = Number.isNaN(parsedYear) ? null : parsedYear;
 
       let earlyError = null;
       const missingImportField = validateRepairOrderImportFields(row);
@@ -389,12 +402,13 @@ export async function importRepairOrders(req, res) {
         ownerCcmId: ccmId,
       }, existingKeys);
       if (result.status === 'skipped' && registrationNumber) {
+        const rowChanges = [];
         try {
           await prisma.$transaction(async (transaction) => {
             await assertImportBatchProcessing(transaction, batch.id);
             await lockCcmAllocationTeam(transaction, ccmId);
             const existingVisit = await transaction.workshopVisit.findFirst({
-              where: { ccmId, normalizedRepairOrderNo: normalizeRepairOrderNo(roNumber) },
+              where: { ccmId, normalizedRepairOrderNo },
               include: { physicalVehicle: { select: { id: true, vin: true } } },
             });
             if (existingVisit && normalizeVin(existingVisit.physicalVehicle.vin) === vin) {
@@ -426,9 +440,9 @@ export async function importRepairOrders(req, res) {
                   }, () => transaction.vehicle.update({
                     where: { id: vehicle.id },
                     data: { registrationNumber },
-                  }));
+                  }), rowChanges);
                 }
-                const callListEntry = await findCanonicalMasterCallListEntry(transaction, vin, ccmId);
+                const callListEntry = await findCanonicalMasterCallListEntry(transaction, vin, ccmId, { lock: false });
                 if (callListEntry && callListEntry.registrationNumber !== updatedVehicle.registrationNumber) {
                   await updateTrackedRecord(transaction, rowProgressId, {
                     entityType: 'MasterCallList',
@@ -439,14 +453,14 @@ export async function importRepairOrders(req, res) {
                   }, () => transaction.masterCallList.update({
                     where: { id: callListEntry.id },
                     data: { registrationNumber: updatedVehicle.registrationNumber },
-                  }));
+                  }), rowChanges);
                 }
               }
             }
             const rowError = toRowError(row, rowNumber, 'DUPLICATE_RO', result.reason);
             await recordRowError(transaction, batch.id, rowError);
-            await completeImportRow(transaction, batch.id, rowNumber, rowProgressId, 'skipped');
-          });
+            await completeImportRow(transaction, batch.id, rowNumber, rowProgressId, 'skipped', rowChanges);
+          }, { timeout: IMPORT_ROW_TRANSACTION_TIMEOUT_MS });
           errors.push({ ...toRowError(row, rowNumber, 'DUPLICATE_RO', result.reason), status: 'skipped' });
         } catch (error) {
           if (error?.code !== 'REGISTRATION_CONFLICT' && error?.code !== 'P2002') throw error;
@@ -464,6 +478,7 @@ export async function importRepairOrders(req, res) {
         const code = result.status === 'flagged' ? 'VIN_CONFLICT' : result.status === 'skipped' ? 'DUPLICATE_RO' : 'INVALID_ROW';
         const rowError = toRowError(row, rowNumber, code, result.reason);
         errors.push({ ...rowError, status: result.status });
+        const rowChanges = [];
         await prisma.$transaction(async (transaction) => {
           await assertImportBatchProcessing(transaction, batch.id);
           if (result.status === 'flagged') {
@@ -477,15 +492,16 @@ export async function importRepairOrders(req, res) {
                 targetCcmId: ccmId,
                 reason: result.reason,
               },
-            }));
+            }), rowChanges);
           }
           const outcome = result.status === 'flagged' ? 'flagged' : result.status === 'skipped' ? 'skipped' : 'rejected';
           await recordRowError(transaction, batch.id, rowError);
-          await completeImportRow(transaction, batch.id, rowNumber, rowProgressId, outcome);
+          await completeImportRow(transaction, batch.id, rowNumber, rowProgressId, outcome, rowChanges);
         });
         continue;
       }
 
+      const rowChanges = [];
       try {
         await prisma.$transaction(async (transaction) => {
           await assertImportBatchProcessing(transaction, batch.id);
@@ -523,7 +539,7 @@ export async function importRepairOrders(req, res) {
                 email: String(row.email || '').trim().toLowerCase() || null,
                 ccmId,
               },
-            }));
+            }), rowChanges);
           }
 
           if (!vehicle) {
@@ -543,7 +559,7 @@ export async function importRepairOrders(req, res) {
                 customerId: customer.id,
                 ccmId,
               },
-            }));
+            }), rowChanges);
           } else if (!vehicle.saleDate && normalizeSaleDate(saleDate)) {
             const nextSaleDate = normalizeSaleDate(saleDate);
             vehicle = await updateTrackedRecord(transaction, rowProgressId, {
@@ -552,7 +568,7 @@ export async function importRepairOrders(req, res) {
               ccmId,
               before: { saleDate: vehicle.saleDate, updatedAt: vehicle.updatedAt },
               after: { saleDate: nextSaleDate },
-            }, () => transaction.vehicle.update({ where: { id: vehicle.id }, data: { saleDate: nextSaleDate } }));
+            }, () => transaction.vehicle.update({ where: { id: vehicle.id }, data: { saleDate: nextSaleDate } }), rowChanges);
           }
 
           await createTrackedRecord(transaction, rowProgressId, {
@@ -561,7 +577,7 @@ export async function importRepairOrders(req, res) {
           }, () => transaction.workshopVisit.create({
             data: {
               repairOrderNo: roNumber,
-              normalizedRepairOrderNo: normalizeRepairOrderNo(roNumber),
+              normalizedRepairOrderNo,
               customerId: customer.id,
               vehicleId: vehicle.id,
               physicalVehicleId: physicalVehicle.id,
@@ -572,9 +588,9 @@ export async function importRepairOrders(req, res) {
               visitDate,
               closingDate,
               gpDate,
-              importedDetails: importDetailValues(ownedRow),
+              importedDetails,
             },
-          }));
+          }), rowChanges);
 
           if (registrationNumber
             && (vehicle.registrationNumber || '').trim().toUpperCase() !== registrationNumber) {
@@ -588,10 +604,10 @@ export async function importRepairOrders(req, res) {
               where: { id: vehicle.id },
               data: { registrationNumber },
               include: { customer: true },
-            }));
+            }), rowChanges);
           }
 
-          const callListEntry = await findCanonicalMasterCallListEntry(transaction, vin, ccmId);
+          const callListEntry = await findCanonicalMasterCallListEntry(transaction, vin, ccmId, { lock: false });
           if (callListEntry) {
             const before = {
               customerName: callListEntry.customerName,
@@ -616,7 +632,7 @@ export async function importRepairOrders(req, res) {
               }, () => transaction.masterCallList.update({
                 where: { id: callListEntry.id },
                 data: after,
-              }));
+              }), rowChanges);
             }
           } else {
             await createTrackedRecord(transaction, rowProgressId, {
@@ -631,20 +647,27 @@ export async function importRepairOrders(req, res) {
                 registrationNumber: vehicle.registrationNumber,
                 ccmId,
               },
-            }));
+            }), rowChanges);
           }
-          await completeImportRow(transaction, batch.id, rowNumber, rowProgressId, wasExistingVehicle ? 'appended' : 'created');
+          await completeImportRow(
+            transaction,
+            batch.id,
+            rowNumber,
+            rowProgressId,
+            wasExistingVehicle ? 'appended' : 'created',
+            rowChanges,
+          );
           return wasExistingVehicle ? 'appended' : 'created';
-        });
+        }, { timeout: IMPORT_ROW_TRANSACTION_TIMEOUT_MS });
         importedCcmIds.add(ccmId);
-        existingKeys.set(buildRepairOrderKey(ccmId, roNumber), vin);
+        existingKeys.set(repairOrderKey, vin);
       } catch (error) {
         if (isRepairOrderIdentityUniqueConflict(error)) {
           // The failed transaction has rolled back before this lookup runs.
           const existingVisit = await prisma.workshopVisit.findFirst({
             where: {
               ccmId,
-              normalizedRepairOrderNo: normalizeRepairOrderNo(roNumber),
+              normalizedRepairOrderNo,
             },
             select: { physicalVehicle: { select: { vin: true } } },
           });
@@ -671,7 +694,7 @@ export async function importRepairOrders(req, res) {
                 samePhysicalVehicle ? 'skipped' : 'rejected',
               );
             });
-            if (samePhysicalVehicle) existingKeys.set(buildRepairOrderKey(ccmId, roNumber), vin);
+            if (samePhysicalVehicle) existingKeys.set(repairOrderKey, vin);
             continue;
           }
         }

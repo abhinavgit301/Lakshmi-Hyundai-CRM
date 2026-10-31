@@ -1,7 +1,7 @@
 import { lockCcmAllocationTeam } from './customerAllocation.js';
 
-export async function findCanonicalMasterCallListEntry(transaction, vin, ccmId) {
-  await lockCcmAllocationTeam(transaction, ccmId);
+export async function findCanonicalMasterCallListEntry(transaction, vin, ccmId, { lock = true } = {}) {
+  if (lock) await lockCcmAllocationTeam(transaction, ccmId);
   const entries = await transaction.masterCallList.findMany({
     where: { vin, ccmId },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],

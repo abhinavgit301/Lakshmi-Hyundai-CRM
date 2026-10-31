@@ -77,6 +77,29 @@ test('concurrent imports serialize by CCM and VIN so only one MCL entry is creat
   assert.equal(store.entries[0].ccmId, 'ccm-1');
 });
 
+test('canonical MCL lookup can reuse a CCM lock already held by its transaction', async () => {
+  const entry = {
+    id: 'mcl-locked',
+    vin: 'VIN-LOCKED',
+    ccmId: 'ccm-1',
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  };
+  let lockCalls = 0;
+  const transaction = {
+    $queryRaw: async () => { lockCalls += 1; },
+    masterCallList: {
+      findMany: async () => [entry],
+    },
+  };
+
+  const lockedLookup = await findCanonicalMasterCallListEntry(transaction, entry.vin, entry.ccmId, { lock: false });
+
+  assert.equal(lockedLookup.id, entry.id);
+  assert.equal(lockCalls, 0);
+  await findCanonicalMasterCallListEntry(transaction, entry.vin, entry.ccmId);
+  assert.equal(lockCalls, 1);
+});
+
 test('concurrent updates and a retry continue to update the same canonical MCL row', async () => {
   const store = createMclStore();
   await Promise.all(Array.from({ length: 5 }, (_, index) => (

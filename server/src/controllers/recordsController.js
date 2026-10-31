@@ -28,8 +28,19 @@ import { latestWorkshopVisitOrderBy } from '../utils/workshopVisitOrdering.js';
 import { addOriginatingDealerCodes } from '../utils/serviceHistoryDealerCodes.js';
 import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
 
+const CALL_LIST_QUERY_CHUNK_SIZE = 100;
+const RELATED_ID_QUERY_CHUNK_SIZE = 500;
+
 function normalizeRole(role) {
   return String(role || '').toUpperCase();
+}
+
+function splitIntoChunks(values, chunkSize) {
+  const chunks = [];
+  for (let offset = 0; offset < values.length; offset += chunkSize) {
+    chunks.push(values.slice(offset, offset + chunkSize));
+  }
+  return chunks;
 }
 
 export function getVisibilityWhere(user) {
@@ -600,10 +611,7 @@ export async function loadCallListRecords(where, now = new Date(), user = null) 
     scheduledAt: { gte: now },
     status: { in: ['PENDING', 'CONFIRMED', 'RESCHEDULED'] },
   };
-  const rows = await prisma.masterCallList.findMany({
-    where,
-    orderBy: { createdAt: 'desc' },
-    include: {
+  const include = {
       vehicle: {
         include: {
           physicalVehicle: {
@@ -662,19 +670,46 @@ export async function loadCallListRecords(where, now = new Date(), user = null) 
           },
         },
       },
-    },
-  });
+    };
+  const rows = [];
+  let cursor = null;
+  while (true) {
+    const pageWhere = cursor
+      ? {
+        AND: [
+          where,
+          {
+            OR: [
+              { createdAt: { lt: cursor.createdAt } },
+              { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+            ],
+          },
+        ],
+      }
+      : where;
+    const page = await prisma.masterCallList.findMany({
+      where: pageWhere,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: CALL_LIST_QUERY_CHUNK_SIZE,
+      include,
+    });
+    rows.push(...page);
+    if (page.length < CALL_LIST_QUERY_CHUNK_SIZE) break;
+    const lastRow = page.at(-1);
+    cursor = { createdAt: lastRow.createdAt, id: lastRow.id };
+  }
   const visitsWithDealerCodes = await addOriginatingDealerCodes(
     rows.flatMap((row) => row.vehicle?.physicalVehicle?.workshopVisits || []),
   );
   const dealerCodeByVisitId = new Map(visitsWithDealerCodes.map((visit) => [visit.id, visit]));
   const ownerIds = [...new Set(rows.map((row) => row.ownerUserId).filter(Boolean))];
-  const owners = ownerIds.length
-    ? await prisma.user.findMany({
-      where: { id: { in: ownerIds } },
+  const owners = [];
+  for (const chunk of splitIntoChunks(ownerIds, RELATED_ID_QUERY_CHUNK_SIZE)) {
+    owners.push(...await prisma.user.findMany({
+      where: { id: { in: chunk } },
       select: { id: true, name: true },
-    })
-    : [];
+    }));
+  }
   const ownerNames = new Map(owners.map((owner) => [owner.id, owner.name]));
 
   const records = rows.map((row) => ({

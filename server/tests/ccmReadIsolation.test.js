@@ -26,6 +26,8 @@ test('Master Call List loader scopes nested workshop history by role and preserv
   for (const role of ['ADMIN', 'GM']) {
     const query = await captureCallListQuery({ role });
     assert.deepEqual(query.where, {});
+    assert.deepEqual(query.orderBy, [{ createdAt: 'desc' }, { id: 'desc' }]);
+    assert.equal(query.take, 100);
     const visits = query.include.vehicle.include.physicalVehicle.include.workshopVisits;
     assert.deepEqual(visits.where, {});
     assert.deepEqual(visits.orderBy, latestWorkshopVisitOrderBy);
@@ -34,6 +36,7 @@ test('Master Call List loader scopes nested workshop history by role and preserv
 
   const ccmQuery = await captureCallListQuery({ role: 'CCM', ccmId: 'ccm-a' });
   assert.deepEqual(ccmQuery.where, { ccmId: 'ccm-a' });
+  assert.equal(ccmQuery.take, 100);
   const ccmVisits = ccmQuery.include.vehicle.include.physicalVehicle.include.workshopVisits;
   assert.deepEqual(ccmVisits.where, {
     physicalVehicle: { is: { vehicles: { some: { ccmId: 'ccm-a' } } } },
@@ -51,6 +54,7 @@ test('Master Call List loader scopes nested workshop history by role and preserv
 
   const creQuery = await captureCallListQuery({ role: 'CRE', id: 'cre-a1', ccmId: 'ccm-a' });
   assert.deepEqual(creQuery.where, { ccmId: 'ccm-a', ownerUserId: 'cre-a1' });
+  assert.equal(creQuery.take, 100);
   const creVisits = creQuery.include.vehicle.include.physicalVehicle.include.workshopVisits;
   assert.deepEqual(creVisits.orderBy, latestWorkshopVisitOrderBy);
   assert.deepEqual(creVisits.where.physicalVehicle.is.vehicles.some.OR[0], {
@@ -60,6 +64,56 @@ test('Master Call List loader scopes nested workshop history by role and preserv
     creQuery.include.vehicle.include.monthlyDataEntries.where.dataset.is,
     { ccmId: 'ccm-a' },
   );
+});
+
+test('Master Call List loader reads large histories in stable bounded chunks and bounds owner lookups', async () => {
+  const rows = Array.from({ length: 501 }, (_, index) => ({
+    id: `mcl-${index}`,
+    createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)),
+    ccmId: 'ccm-a',
+    ownerUserId: `owner-${index}`,
+    customerName: `Customer ${index}`,
+    mobileNumber: '',
+    vin: `VIN-${index}`,
+    status: 'pending',
+    vehicle: null,
+  })).sort((left, right) => right.createdAt - left.createdAt);
+  const callListQueries = [];
+  const ownerQueries = [];
+  const originalMasterFindMany = prisma.masterCallList.findMany;
+  const originalUserFindMany = prisma.user.findMany;
+  prisma.masterCallList.findMany = async (args) => {
+    callListQueries.push(args);
+    let remainingRows = rows;
+    const cursorClause = args.where?.AND?.[1];
+    if (cursorClause) {
+      const [olderThan, sameDate] = cursorClause.OR;
+      const dateCursor = olderThan.createdAt.lt;
+      const idCursor = sameDate.id.lt;
+      remainingRows = rows.filter((row) => row.createdAt < dateCursor
+        || (row.createdAt.getTime() === sameDate.createdAt.getTime() && row.id < idCursor));
+    }
+    return remainingRows.slice(0, args.take);
+  };
+  prisma.user.findMany = async (args) => {
+    ownerQueries.push(args);
+    return [];
+  };
+
+  try {
+    const result = await loadCallListRecords({}, new Date('2026-01-15T12:00:00Z'), { role: 'ADMIN' });
+
+    assert.equal(result.length, rows.length);
+    assert.equal(callListQueries.length, 6);
+    assert.ok(callListQueries.every(({ take }) => take === 100));
+    assert.equal(callListQueries[0].where.OR, undefined);
+    assert.deepEqual(callListQueries[1].where.AND[1].OR[0].createdAt.lt, rows[99].createdAt);
+    assert.equal(ownerQueries.length, 2);
+    assert.deepEqual(ownerQueries.map(({ where }) => where.id.in.length), [500, 1]);
+  } finally {
+    prisma.masterCallList.findMany = originalMasterFindMany;
+    prisma.user.findMany = originalUserFindMany;
+  }
 });
 
 async function captureCustomerQuery(user) {

@@ -29,3 +29,23 @@ test('service history dealer codes come from each visit origin CCM, independent 
   assert.deepEqual(query.where, { role: 'CCM', ccmId: { in: ['ccm-a', 'ccm-b', 'ccm-missing'] } });
   assert.deepEqual(query.select, { ccmId: true, dealerCode: true });
 });
+
+test('service history dealer-code lookups split large CCM ID lists into bounded queries', async () => {
+  const ccmIds = Array.from({ length: 501 }, (_, index) => `ccm-${index}`);
+  const visits = ccmIds.map((ccmId) => ({ id: `visit-${ccmId}`, ccmId }));
+  const querySizes = [];
+  const database = {
+    user: {
+      findMany: async ({ where }) => {
+        querySizes.push(where.ccmId.in.length);
+        return where.ccmId.in.map((ccmId) => ({ ccmId, dealerCode: `dealer-${ccmId}` }));
+      },
+    },
+  };
+
+  const result = await addOriginatingDealerCodes(visits, database);
+
+  assert.deepEqual(querySizes, [500, 1]);
+  assert.equal(result.length, 501);
+  assert.equal(result[500].dealerCode, 'dealer-ccm-500');
+});

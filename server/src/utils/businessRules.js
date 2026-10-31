@@ -4,15 +4,11 @@ import { buildRepairOrderKey, normalizeRepairOrderNo } from './repairOrderIdenti
 export function validateRepairOrderImportFields(row = {}) {
   const roNumber = String(row.roNumber || '').trim();
   const vin = String(row.vin || '').trim();
-  const registrationNumber = String(row.registrationNumber || '').trim();
   if (!roNumber || roNumber === '-') {
     return { code: 'MISSING_REPAIR_ORDER', field: 'Repair Order No' };
   }
   if (!vin || !normalizeVin(vin)) {
     return { code: 'MISSING_VIN', field: 'VIN' };
-  }
-  if (!registrationNumber || registrationNumber === '-') {
-    return { code: 'MISSING_REGISTRATION', field: 'Registration No' };
   }
   return null;
 }

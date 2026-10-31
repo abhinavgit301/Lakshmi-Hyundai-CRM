@@ -332,7 +332,8 @@ export async function importRepairOrders(req, res) {
       const rowProgressId = rowProgressIds.get(rowNumber);
       const vin = normalizeVin(row.vin || '');
       const roNumber = String(row.roNumber || '').trim();
-      const registrationNumber = String(row.registrationNumber || '').trim().toUpperCase();
+      const registrationValue = String(row.registrationNumber || '').trim().toUpperCase();
+      const registrationNumber = registrationValue && registrationValue !== '-' ? registrationValue : null;
       const customerName = String(row.customerName || '').trim() || '-';
       const mobileNumber = String(row.mobileNumber || '').trim() || '-';
       const ccmId = batchCcmId;
@@ -377,16 +378,6 @@ export async function importRepairOrders(req, res) {
         continue;
       }
 
-      const otherRegistrationOwner = registrationNumber
-        ? await prisma.vehicle.findFirst({
-          where: {
-            registrationNumber: { equals: registrationNumber, mode: 'insensitive' },
-            ccmId,
-            physicalVehicle: { is: { vin: { not: vin } } },
-          },
-          select: { id: true },
-        })
-        : null;
       const ownerCcmId = ccmId;
       const result = evaluateRepairOrderRow({
         ...ownedRow,
@@ -395,9 +386,77 @@ export async function importRepairOrders(req, res) {
         ccmId,
         ownerCcmId: ccmId,
       }, existingKeys);
-      if (result.status === 'processed' && otherRegistrationOwner) {
-        result.status = 'rejected';
-        result.reason = 'Registration number is already assigned to another vehicle.';
+      if (result.status === 'skipped' && registrationNumber) {
+        try {
+          await prisma.$transaction(async (transaction) => {
+            await assertImportBatchProcessing(transaction, batch.id);
+            await lockCcmAllocationTeam(transaction, ccmId);
+            const existingVisit = await transaction.workshopVisit.findFirst({
+              where: { ccmId, normalizedRepairOrderNo: normalizeRepairOrderNo(roNumber) },
+              include: { physicalVehicle: { select: { id: true, vin: true } } },
+            });
+            if (existingVisit && normalizeVin(existingVisit.physicalVehicle.vin) === vin) {
+              const physicalVehicle = existingVisit.physicalVehicle;
+              const vehicle = await transaction.vehicle.findUnique({
+                where: { physicalVehicleId_ccmId: { physicalVehicleId: physicalVehicle.id, ccmId } },
+              });
+              if (vehicle) {
+                const registrationOwner = await transaction.vehicle.findFirst({
+                  where: {
+                    registrationNumber: { equals: registrationNumber, mode: 'insensitive' },
+                    ccmId,
+                    physicalVehicleId: { not: physicalVehicle.id },
+                  },
+                  select: { id: true },
+                });
+                if (registrationOwner) {
+                  throw Object.assign(new Error('Registration number is already assigned to another vehicle.'), { code: 'REGISTRATION_CONFLICT' });
+                }
+
+                let updatedVehicle = vehicle;
+                if ((vehicle.registrationNumber || '').trim().toUpperCase() !== registrationNumber) {
+                  updatedVehicle = await updateTrackedRecord(transaction, rowProgressId, {
+                    entityType: 'Vehicle',
+                    entityId: vehicle.id,
+                    ccmId,
+                    before: { registrationNumber: vehicle.registrationNumber, updatedAt: vehicle.updatedAt },
+                    after: { registrationNumber },
+                  }, () => transaction.vehicle.update({
+                    where: { id: vehicle.id },
+                    data: { registrationNumber },
+                  }));
+                }
+                const callListEntry = await findCanonicalMasterCallListEntry(transaction, vin, ccmId);
+                if (callListEntry && callListEntry.registrationNumber !== updatedVehicle.registrationNumber) {
+                  await updateTrackedRecord(transaction, rowProgressId, {
+                    entityType: 'MasterCallList',
+                    entityId: callListEntry.id,
+                    ccmId,
+                    before: { registrationNumber: callListEntry.registrationNumber, updatedAt: callListEntry.updatedAt },
+                    after: { registrationNumber: updatedVehicle.registrationNumber },
+                  }, () => transaction.masterCallList.update({
+                    where: { id: callListEntry.id },
+                    data: { registrationNumber: updatedVehicle.registrationNumber },
+                  }));
+                }
+              }
+            }
+            const rowError = toRowError(row, rowNumber, 'DUPLICATE_RO', result.reason);
+            await recordRowError(transaction, batch.id, rowError);
+            await completeImportRow(transaction, batch.id, rowNumber, rowProgressId, 'skipped');
+          });
+          errors.push({ ...toRowError(row, rowNumber, 'DUPLICATE_RO', result.reason), status: 'skipped' });
+        } catch (error) {
+          if (error?.code !== 'REGISTRATION_CONFLICT' && error?.code !== 'P2002') throw error;
+          const rowError = toRowError(row, rowNumber, 'REGISTRATION_CONFLICT', error.message || 'Registration number is already assigned to another vehicle.');
+          errors.push({ ...rowError, status: 'rejected' });
+          await prisma.$transaction(async (transaction) => {
+            await assertImportBatchProcessing(transaction, batch.id);
+            await recordRowError(transaction, batch.id, rowError);
+            await completeImportRow(transaction, batch.id, rowNumber, rowProgressId, 'rejected');
+          });
+        }
+        continue;
       }
       if (result.status !== 'processed') {
         const code = result.status === 'flagged' ? 'VIN_CONFLICT' : result.status === 'skipped' ? 'DUPLICATE_RO' : 'INVALID_ROW';
@@ -430,6 +489,19 @@ export async function importRepairOrders(req, res) {
           await assertImportBatchProcessing(transaction, batch.id);
           await lockCcmAllocationTeam(transaction, ccmId);
           const physicalVehicle = await findOrCreatePhysicalVehicle(transaction, vin);
+          const registrationOwner = registrationNumber
+            ? await transaction.vehicle.findFirst({
+              where: {
+                registrationNumber: { equals: registrationNumber, mode: 'insensitive' },
+                ccmId,
+                physicalVehicleId: { not: physicalVehicle.id },
+              },
+              select: { id: true },
+            })
+            : null;
+          if (registrationOwner) {
+            throw Object.assign(new Error('Registration number is already assigned to another vehicle.'), { code: 'REGISTRATION_CONFLICT' });
+          }
           let vehicle = await transaction.vehicle.findUnique({
             where: { physicalVehicleId_ccmId: { physicalVehicleId: physicalVehicle.id, ccmId } },
             include: { customer: true },
@@ -502,11 +574,8 @@ export async function importRepairOrders(req, res) {
             },
           }));
 
-          if (vehicle.registrationNumber && registrationNumber
-            && vehicle.registrationNumber.trim().toUpperCase() !== registrationNumber) {
-            throw Object.assign(new Error('Registration number does not match the existing VIN record.'), { code: 'IDENTITY_CONFLICT' });
-          }
-          if (!vehicle.registrationNumber && registrationNumber) {
+          if (registrationNumber
+            && (vehicle.registrationNumber || '').trim().toUpperCase() !== registrationNumber) {
             vehicle = await updateTrackedRecord(transaction, rowProgressId, {
               entityType: 'Vehicle',
               entityId: vehicle.id,
@@ -531,7 +600,7 @@ export async function importRepairOrders(req, res) {
             const after = {
               customerName: String(row.customerName || '').trim() ? customerName : callListEntry.customerName,
               mobileNumber: String(row.mobileNumber || '').trim() ? mobileNumber : callListEntry.mobileNumber,
-              registrationNumber: vehicle.registrationNumber,
+              registrationNumber: vehicle.registrationNumber || callListEntry.registrationNumber,
               vehicleId: vehicle.id,
             };
             const callListEntryChanged = JSON.stringify(importSnapshot(before)) !== JSON.stringify(importSnapshot(after));
@@ -604,11 +673,13 @@ export async function importRepairOrders(req, res) {
             continue;
           }
         }
-        if (error?.code !== 'P2002' && error?.code !== 'IDENTITY_CONFLICT') throw error;
+        if (error?.code !== 'P2002'
+          && error?.code !== 'IDENTITY_CONFLICT'
+          && error?.code !== 'REGISTRATION_CONFLICT') throw error;
         const rowError = toRowError(
           row,
           rowNumber,
-          error?.code === 'IDENTITY_CONFLICT' ? 'IDENTITY_CONFLICT' : 'UNIQUE_CONFLICT',
+          error?.code === 'REGISTRATION_CONFLICT' ? 'REGISTRATION_CONFLICT' : error?.code === 'IDENTITY_CONFLICT' ? 'IDENTITY_CONFLICT' : 'UNIQUE_CONFLICT',
           error?.message || 'Repair order, VIN, or registration number already exists.',
         );
         errors.push({ ...rowError, status: 'rejected' });

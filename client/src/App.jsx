@@ -3352,7 +3352,7 @@ function App() {
             <p className="modal-warning">
               This action cannot be undone and will remove the scheduled slot from the workshop queue.
             </p>
-            <div className="form-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+            <div className="form-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: 'calc(var(--crm-density-scale, 1) * 10px)', marginTop: 'calc(var(--crm-density-scale, 1) * 18px)' }}>
               <button
                 type="button"
                 className="outline-btn"

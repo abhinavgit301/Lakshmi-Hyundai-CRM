@@ -153,7 +153,7 @@ export default function CcmDashboard(props) {
                             })}>{appointment.customer}</button></strong>
                             <small>{appointment.vehicle} {appointment.assigneeName ? `· ${appointment.assigneeName}` : ''}</small>
                           </div>
-                          <div className="meta-block" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <div className="meta-block" style={{ display: 'flex', alignItems: 'center', gap: 'calc(var(--crm-density-scale, 1) * 8px)' }}>
                             <span>{appointment.time || new Date(appointment.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                             <span className="badge badge-blue">{appointment.status}</span>
                             <button
@@ -170,7 +170,7 @@ export default function CcmDashboard(props) {
                         </li>
                       ))}
                       {((!dashboardData?.ccm?.todayAppointments || dashboardData.ccm.todayAppointments.length === 0) && appointments.length === 0) && (
-                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: '24px 0' }}>
+                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: 'calc(var(--crm-density-scale, 1) * 24px) 0' }}>
                           No appointments scheduled for team today.
                         </li>
                       )}

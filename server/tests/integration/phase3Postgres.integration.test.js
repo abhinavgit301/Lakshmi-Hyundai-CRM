@@ -166,7 +166,7 @@ async function runImportsBehindAllocationLock(ccmId, importRequests) {
 function csvRow(repairOrder, vin, registrationNumber, name = 'Phase 3 import customer') {
   return [
     'RO Number,VIN,Customer Name,Mobile,Make,Model,Reg No,Visit Date',
-    `${repairOrder},${vin},${name},5551000,Hyundai,Test,${registrationNumber},2026-01-15`,
+    `${repairOrder},${vin},${name},5551000,Hyundai,Test,${registrationNumber ?? ''},2026-01-15`,
   ].join('\n');
 }
 
@@ -487,6 +487,233 @@ test('repair-order imports create CCM-specific vehicle rows and share service hi
   assert.equal(await prisma.callLog.count({ where: { id: callLog.id } }), 1);
   assert.equal(await prisma.followUp.count({ where: { id: followUp.id } }), 1);
   assert.equal(await prisma.allocation.count({ where: { id: allocationA.id } }), 1);
+});
+
+test('repair-order import updates a changed registration for the same VIN and preserves prior service history', async () => {
+  const ccmId = id('mutable-registration-team');
+  const admin = await createUser('mutable-registration-admin', 'ADMIN');
+  await createUser('mutable-registration-ccm', 'CCM', ccmId);
+  const vin = `1HG${randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase()}`;
+  const oldRegistration = id('old-registration');
+  const newRegistration = id('new-registration');
+  const originalRo = id('mutable-registration-ro-original');
+  const nextRo = id('mutable-registration-ro-next');
+
+  const original = await importCsv(csvRow(originalRo, vin, oldRegistration), admin, ccmId);
+  const previousVisit = await prisma.workshopVisit.findFirstOrThrow({
+    where: { ccmId, physicalVehicle: { is: { vin } } },
+  });
+  const changed = await importCsv(csvRow(nextRo, vin, newRegistration), admin, ccmId);
+  assert.equal(original.statusCode, 201);
+  assert.equal(changed.statusCode, 201, JSON.stringify(changed.body));
+  assert.equal(changed.body.batch.appendedRows, 1);
+
+  const vehicle = await prisma.vehicle.findFirstOrThrow({ where: { ccmId, vin } });
+  assert.equal(vehicle.registrationNumber, newRegistration.toUpperCase());
+  assert.equal(await prisma.vehicle.count({ where: { physicalVehicleId: vehicle.physicalVehicleId, ccmId } }), 1);
+  assert.equal(await prisma.workshopVisit.count({ where: { ccmId, physicalVehicleId: vehicle.physicalVehicleId } }), 2);
+  assert.ok(await prisma.workshopVisit.findUnique({ where: { id: previousVisit.id } }));
+  const vehicleChange = await prisma.importChangeLog.findFirstOrThrow({
+    where: { importBatchId: changed.body.batch.id, entityType: 'Vehicle', entityId: vehicle.id },
+  });
+  assert.equal(vehicleChange.before.registrationNumber, oldRegistration.toUpperCase());
+  assert.equal(vehicleChange.after.registrationNumber, newRegistration.toUpperCase());
+});
+
+test('repair-order import accepts unchanged or missing registration without clearing the existing value', async () => {
+  const ccmId = id('registration-optional-team');
+  const admin = await createUser('registration-optional-admin', 'ADMIN');
+  await createUser('registration-optional-ccm', 'CCM', ccmId);
+  const vin = `1HG${randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase()}`;
+  const registration = id('registration-optional-value');
+  const initial = await importCsv(csvRow(id('registration-optional-ro-initial'), vin, registration), admin, ccmId);
+  const unchanged = await importCsv(csvRow(id('registration-optional-ro-unchanged'), vin, registration), admin, ccmId);
+  const missing = await importCsv(csvRow(id('registration-optional-ro-missing'), vin, null), admin, ccmId);
+
+  assert.equal(initial.statusCode, 201);
+  assert.equal(unchanged.statusCode, 201, JSON.stringify(unchanged.body));
+  assert.equal(missing.statusCode, 201, JSON.stringify(missing.body));
+  const vehicle = await prisma.vehicle.findFirstOrThrow({ where: { ccmId, vin } });
+  assert.equal(vehicle.registrationNumber, registration.toUpperCase());
+  const callListEntry = await prisma.masterCallList.findFirstOrThrow({ where: { ccmId, vin } });
+  assert.equal(callListEntry.registrationNumber, registration.toUpperCase());
+  assert.equal(await prisma.workshopVisit.count({ where: { ccmId, physicalVehicleId: vehicle.physicalVehicleId } }), 3);
+});
+
+test('duplicate repair order updates a valid registration without duplicating service history and rollback restores it', async () => {
+  const ccmId = id('registration-duplicate-team');
+  const admin = await createUser('registration-duplicate-admin', 'ADMIN');
+  await createUser('registration-duplicate-ccm', 'CCM', ccmId);
+  const vin = `1HG${randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase()}`;
+  const originalRegistration = id('registration-duplicate-old');
+  const changedRegistration = id('registration-duplicate-new');
+  const repairOrder = id('registration-duplicate-ro');
+  const customer = await createCustomer('registration-duplicate-customer', ccmId);
+  const physical = await prisma.$transaction((transaction) => findOrCreatePhysicalVehicle(transaction, vin));
+  const vehicleBefore = await prisma.vehicle.create({
+    data: {
+      id: id('registration-duplicate-vehicle'),
+      vin,
+      physicalVehicleId: physical.id,
+      registrationNumber: originalRegistration.toUpperCase(),
+      customerId: customer.id,
+      ccmId,
+      model: 'Integration fixture',
+    },
+  });
+  const previousVisit = await createWorkshopVisit(
+    'registration-duplicate-original-visit',
+    customer,
+    vehicleBefore,
+    ccmId,
+    repairOrder,
+    new Date('2026-01-15T00:00:00Z'),
+  );
+  await prisma.masterCallList.create({
+    data: {
+      customerName: customer.fullName,
+      mobileNumber: '5551000',
+      vin,
+      vehicleId: vehicleBefore.id,
+      registrationNumber: originalRegistration.toUpperCase(),
+      ccmId,
+    },
+  });
+  const duplicate = await importCsv(csvRow(repairOrder, vin, changedRegistration), admin, ccmId);
+
+  assert.equal(duplicate.statusCode, 201, JSON.stringify(duplicate.body));
+  assert.equal(duplicate.body.batch.skippedRows, 1, JSON.stringify({ batch: duplicate.body.batch, errors: duplicate.body.errors }));
+  assert.equal(await prisma.workshopVisit.count({ where: { ccmId, physicalVehicleId: vehicleBefore.physicalVehicleId } }), 1);
+  assert.ok(await prisma.workshopVisit.findUnique({ where: { id: previousVisit.id } }));
+  assert.equal((await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleBefore.id } })).registrationNumber, changedRegistration.toUpperCase());
+  assert.equal(await prisma.importBatch.findUniqueOrThrow({ where: { id: duplicate.body.batch.id } }).then(({ rollbackSupported }) => rollbackSupported), true);
+
+  await rollbackService.rollbackImportBatch(duplicate.body.batch.id, admin.id);
+  assert.equal((await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleBefore.id } })).registrationNumber, originalRegistration.toUpperCase());
+  assert.equal(await prisma.workshopVisit.count({ where: { ccmId, physicalVehicleId: vehicleBefore.physicalVehicleId } }), 1);
+  assert.equal((await prisma.importBatch.findUniqueOrThrow({ where: { id: duplicate.body.batch.id } })).status, 'rolled_back');
+});
+
+test('registration already owned by another VIN in the CCM rejects the row without changing either vehicle', async () => {
+  const ccmId = id('registration-conflict-team');
+  const admin = await createUser('registration-conflict-admin', 'ADMIN');
+  await createUser('registration-conflict-ccm', 'CCM', ccmId);
+  const vinA = `1HG${randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase()}`;
+  const vinB = `2HG${randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase()}`;
+  const registrationA = id('registration-conflict-a');
+  const registrationB = id('registration-conflict-b');
+  await importCsv(csvRow(id('registration-conflict-ro-a'), vinA, registrationA), admin, ccmId);
+  await importCsv(csvRow(id('registration-conflict-ro-b'), vinB, registrationB), admin, ccmId);
+
+  const rejected = await importCsv(csvRow(id('registration-conflict-ro-c'), vinA, registrationB), admin, ccmId);
+  assert.equal(rejected.statusCode, 201, JSON.stringify(rejected.body));
+  assert.equal(rejected.body.batch.rejectedRows, 1);
+  assert.equal(rejected.body.errors[0].errorCode, 'REGISTRATION_CONFLICT');
+  assert.equal((await prisma.vehicle.findFirstOrThrow({ where: { ccmId, vin: vinA } })).registrationNumber, registrationA.toUpperCase());
+  assert.equal((await prisma.vehicle.findFirstOrThrow({ where: { ccmId, vin: vinB } })).registrationNumber, registrationB.toUpperCase());
+  assert.equal(await prisma.workshopVisit.count({
+    where: { ccmId, physicalVehicle: { is: { vin: vinA } } },
+  }), 1);
+});
+
+test('registration update for a shared VIN only changes the importing CCM vehicle and preserves both histories', async () => {
+  const ccmA = id('registration-shared-a');
+  const ccmB = id('registration-shared-b');
+  const admin = await createUser('registration-shared-admin', 'ADMIN');
+  await createUser('registration-shared-ccm-a', 'CCM', ccmA);
+  await createUser('registration-shared-ccm-b', 'CCM', ccmB);
+  const vin = `1HG${randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase()}`;
+  const registrationA = id('registration-shared-old-a');
+  const registrationB = id('registration-shared-old-b');
+  const registrationBNext = id('registration-shared-new-b');
+  const importA = await importCsv(csvRow(id('registration-shared-ro-a'), vin, registrationA), admin, ccmA);
+  const importB = await importCsv(csvRow(id('registration-shared-ro-b'), vin, registrationB), admin, ccmB);
+  const physical = await prisma.physicalVehicle.findUniqueOrThrow({ where: { vin } });
+  const updateB = await importCsv(csvRow(id('registration-shared-ro-b-next'), vin, registrationBNext), admin, ccmB);
+
+  assert.equal(importA.statusCode, 201);
+  assert.equal(importB.statusCode, 201);
+  assert.equal(updateB.statusCode, 201, JSON.stringify(updateB.body));
+  assert.equal(await prisma.physicalVehicle.count({ where: { vin } }), 1);
+  assert.equal((await prisma.vehicle.findFirstOrThrow({ where: { ccmId: ccmA, physicalVehicleId: physical.id } })).registrationNumber, registrationA.toUpperCase());
+  assert.equal((await prisma.vehicle.findFirstOrThrow({ where: { ccmId: ccmB, physicalVehicleId: physical.id } })).registrationNumber, registrationBNext.toUpperCase());
+  assert.equal(await prisma.workshopVisit.count({ where: { physicalVehicleId: physical.id, ccmId: ccmA } }), 1);
+  assert.equal(await prisma.workshopVisit.count({ where: { physicalVehicleId: physical.id, ccmId: ccmB } }), 2);
+});
+
+test('permanent deletion rebases a later registration change and rollback restores a latest registration update', async () => {
+  const ccmId = id('registration-rebase-team');
+  const admin = await createUser('registration-rebase-admin', 'ADMIN');
+  await createUser('registration-rebase-ccm', 'CCM', ccmId);
+  const vin = `1HG${randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase()}`;
+  const registrationA = id('registration-rebase-a');
+  const registrationB = id('registration-rebase-b');
+  const registrationC = id('registration-rebase-c');
+  const importA = await importCsv(csvRow(id('registration-rebase-ro-a'), vin, registrationA), admin, ccmId);
+  const importB = await importCsv(csvRow(id('registration-rebase-ro-b'), vin, registrationB), admin, ccmId);
+  const importC = await importCsv(csvRow(id('registration-rebase-ro-c'), vin, registrationC), admin, ccmId);
+  const vehicle = await prisma.vehicle.findFirstOrThrow({ where: { ccmId, vin } });
+  const preview = await deletionService.previewPermanentImportDeletion(importB.body.batch.id);
+  assert.equal(preview.blockers.length, 0, JSON.stringify(preview.blockers));
+  await deletionService.permanentlyDeleteImportBatch(importB.body.batch.id, admin.id, preview.confirmationToken);
+  assert.equal((await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } })).registrationNumber, registrationC.toUpperCase());
+  const laterRegistrationChange = await prisma.importChangeLog.findFirstOrThrow({
+    where: { importBatchId: importC.body.batch.id, entityType: 'Vehicle', entityId: vehicle.id },
+  });
+  assert.equal(laterRegistrationChange.before.registrationNumber, registrationA.toUpperCase());
+  assert.equal(await prisma.workshopVisit.count({ where: { ccmId, physicalVehicleId: vehicle.physicalVehicleId } }), 2);
+
+  const rollbackCPreview = await deletionService.previewPermanentImportDeletion(importC.body.batch.id);
+  assert.equal(rollbackCPreview.blockers.length, 0, JSON.stringify(rollbackCPreview.blockers));
+  await deletionService.permanentlyDeleteImportBatch(importC.body.batch.id, admin.id, rollbackCPreview.confirmationToken);
+  assert.equal((await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } })).registrationNumber, registrationA.toUpperCase());
+  assert.equal(await prisma.workshopVisit.count({ where: { ccmId, physicalVehicleId: vehicle.physicalVehicleId } }), 1);
+  assert.equal(importA.statusCode, 201);
+});
+
+test('monthly customer-data import updates a scoped VIN vehicle registration and records provenance', async () => {
+  const ccmId = id('monthly-registration-team');
+  const admin = await createUser('monthly-registration-admin', 'ADMIN');
+  await createUser('monthly-registration-ccm', 'CCM', ccmId);
+  const vin = `1HG${randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase()}`;
+  const oldRegistration = id('monthly-registration-old');
+  const newRegistration = id('monthly-registration-new');
+  await importCsv(csvRow(id('monthly-registration-ro'), vin, oldRegistration), admin, ccmId);
+  const vehicle = await prisma.vehicle.findFirstOrThrow({ where: { ccmId, vin } });
+  const content = [
+    'Customer Name,Mobile,VIN,Registration Number,Make,Model',
+    `Monthly Customer,5551099,${vin},${newRegistration},Hyundai,Test`,
+  ].join('\n');
+
+  const imported = await importMonthlyCsv(content, admin, ccmId, 2026, 11);
+  assert.equal(imported.statusCode, 201, JSON.stringify(imported.body));
+  const updated = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } });
+  assert.equal(updated.registrationNumber, newRegistration.toUpperCase());
+  const change = await prisma.importChangeLog.findFirstOrThrow({
+    where: { importBatchId: imported.body.import.importBatchId, entityType: 'Vehicle', entityId: vehicle.id },
+  });
+  assert.equal(change.before.registrationNumber, oldRegistration.toUpperCase());
+  assert.equal(change.after.registrationNumber, newRegistration.toUpperCase());
+  assert.equal(await prisma.physicalVehicle.count({ where: { vin } }), 1);
+
+  const missingRegistrationContent = [
+    'Customer Name,Mobile,VIN,Registration Number,Make,Model',
+    `Monthly Customer Follow-up,5551098,${vin},,Hyundai,Test`,
+  ].join('\n');
+  const missingRegistrationImport = await importMonthlyCsv(missingRegistrationContent, admin, ccmId, 2026, 12);
+  assert.equal(missingRegistrationImport.statusCode, 201, JSON.stringify(missingRegistrationImport.body));
+  assert.equal((await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } })).registrationNumber, newRegistration.toUpperCase());
+
+  const conflictingVin = `2HG${randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase()}`;
+  const conflictContent = [
+    'Customer Name,Mobile,VIN,Registration Number,Make,Model',
+    `Conflicting Monthly Customer,5551097,${conflictingVin},${newRegistration},Hyundai,Test`,
+  ].join('\n');
+  const conflictImport = await importMonthlyCsv(conflictContent, admin, ccmId, 2026, 10);
+  assert.equal(conflictImport.statusCode, 201, JSON.stringify(conflictImport.body));
+  assert.equal(conflictImport.body.import.rejectedRows, 1);
+  assert.equal(conflictImport.body.import.rowErrors[0].errorCode, 'REGISTRATION_CONFLICT');
+  assert.equal(await prisma.vehicle.count({ where: { ccmId, vin: conflictingVin } }), 0);
 });
 
 test('concurrent imports for one CCM/VIN retain one physical identity and one scoped vehicle record', async () => {

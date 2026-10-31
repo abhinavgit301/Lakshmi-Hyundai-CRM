@@ -128,7 +128,7 @@ export default function CreDashboard(props) {
                               <td>{fu.vehicleModel || '—'}</td>
                               <td>
                                 {new Date(fu.followUpAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                                {fu.isOverdue && <span className="badge badge-danger" style={{ marginLeft: 6 }}>Overdue</span>}
+                                {fu.isOverdue && <span className="badge badge-danger" style={{ marginLeft: 'calc(var(--crm-density-scale, 1) * 6px)' }}>Overdue</span>}
                               </td>
                               <td><span className="badge badge-neutral">{fu.source?.toLowerCase().replace('_', ' ') || fu.category}</span></td>
                               <td>
@@ -171,7 +171,7 @@ export default function CreDashboard(props) {
                             })}>{appointment.customer}</button></strong>
                             <small>{appointment.vehicle}</small>
                           </div>
-                          <div className="meta-block" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <div className="meta-block" style={{ display: 'flex', alignItems: 'center', gap: 'calc(var(--crm-density-scale, 1) * 8px)' }}>
                             <span>{appointment.time || new Date(appointment.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                             <span className="badge badge-blue">{appointment.status}</span>
                             <button
@@ -188,7 +188,7 @@ export default function CreDashboard(props) {
                         </li>
                       ))}
                       {((!dashboardData?.cre?.todayAppointments || dashboardData.cre.todayAppointments.length === 0) && appointments.length === 0) && (
-                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: '24px 0' }}>
+                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: 'calc(var(--crm-density-scale, 1) * 24px) 0' }}>
                           No appointments scheduled for today.
                         </li>
                       )}

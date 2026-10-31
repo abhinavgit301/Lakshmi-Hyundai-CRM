@@ -125,7 +125,7 @@ test('repair order import rejects a missing VIN but accepts a present short VIN'
   assert.equal(present.status, 'processed');
 });
 
-test('repair order import requires only repair order, VIN, and registration number', () => {
+test('repair order import requires only repair order and VIN while registration remains optional', () => {
   assert.deepEqual(validateRepairOrderImportFields({
     roNumber: 'RO-1',
     vin: 'VIN-1',
@@ -141,11 +141,12 @@ test('repair order import requires only repair order, VIN, and registration numb
     vin: '',
     registrationNumber: 'REG-1',
   }).code, 'MISSING_VIN');
+  assert.equal(validateRepairOrderImportFields({ roNumber: 'RO-1', vin: 'VIN-1' }), null);
   assert.equal(validateRepairOrderImportFields({
     roNumber: 'RO-1',
     vin: 'VIN-1',
     registrationNumber: '-',
-  }).code, 'MISSING_REGISTRATION');
+  }), null);
 });
 
 test('repair order import accepts required fields when customer and other optional fields are absent', () => {

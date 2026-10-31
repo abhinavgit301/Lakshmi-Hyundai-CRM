@@ -121,7 +121,7 @@ export default function GmDashboard(props) {
                         </li>
                       ))}
                       {((!dashboardData?.gm?.todayAppointments || dashboardData.gm.todayAppointments.length === 0) && appointments.length === 0) && (
-                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: '24px 0' }}>
+                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: 'calc(var(--crm-density-scale, 1) * 24px) 0' }}>
                           No appointments scheduled today across workshop.
                         </li>
                       )}

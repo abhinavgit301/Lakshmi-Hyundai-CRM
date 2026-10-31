@@ -36,7 +36,7 @@ export default function AdminDashboard(props) {
 
                   <article className="stat-card">
                     <p>User Role Breakdown</p>
-                    <strong style={{ fontSize: '1.25rem' }}>
+                    <strong style={{ fontSize: 'calc(var(--crm-density-scale, 1) * 1.25rem)' }}>
                       {dashboardData?.admin?.userStats?.byRole?.cre ?? dashboardData?.admin?.userStats?.cre ?? 0} CREs · {dashboardData?.admin?.userStats?.byRole?.freeServiceCre ?? 0} Free-Service CREs · {dashboardData?.admin?.userStats?.byRole?.ccm ?? dashboardData?.admin?.userStats?.ccm ?? 0} CCMs
                     </strong>
                     <span>
@@ -116,7 +116,7 @@ export default function AdminDashboard(props) {
                         </li>
                       ))}
                       {(!dashboardData?.admin?.recentAuditLogs || dashboardData.admin.recentAuditLogs.length === 0) && (
-                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: '24px 0' }}>
+                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: 'calc(var(--crm-density-scale, 1) * 24px) 0' }}>
                           No audit logs recorded yet.
                         </li>
                       )}

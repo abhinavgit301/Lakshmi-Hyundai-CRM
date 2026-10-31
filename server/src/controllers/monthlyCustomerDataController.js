@@ -100,7 +100,7 @@ async function loadMonthContext(req, res) {
   return { ccm, ...period.value };
 }
 
-async function persistLinkedEntities(transaction, ccmId, row, trackCreate) {
+async function persistLinkedEntities(transaction, ccmId, row, trackCreate, trackUpdate) {
   const physicalVehicle = row.vin ? await findOrCreatePhysicalVehicle(transaction, row.vin) : null;
   let vehicle = row.vin
     ? await transaction.vehicle.findUnique({
@@ -109,6 +109,22 @@ async function persistLinkedEntities(transaction, ccmId, row, trackCreate) {
     })
     : null;
   let customer = vehicle?.customer || null;
+  const registrationNumber = row.registrationNumber && row.registrationNumber !== '-'
+    ? String(row.registrationNumber).trim().toUpperCase()
+    : null;
+  if (physicalVehicle && registrationNumber) {
+    const registrationOwner = await transaction.vehicle.findFirst({
+     where: {
+       registrationNumber: { equals: registrationNumber, mode: 'insensitive' },
+       ccmId,
+       ...(vehicle ? { id: { not: vehicle.id } } : { physicalVehicleId: { not: physicalVehicle.id } }),
+     },
+     select: { id: true },
+    });
+    if (registrationOwner) {
+     throw Object.assign(new Error('Registration number is already assigned to another vehicle.'), { code: 'REGISTRATION_CONFLICT' });
+    }
+  }
 
   if (!customer) {
     customer = await trackCreate({ entityType: 'Customer', ccmId }, () => transaction.customer.create({
@@ -127,7 +143,7 @@ async function persistLinkedEntities(transaction, ccmId, row, trackCreate) {
       data: {
         vin: row.vin,
         physicalVehicleId: physicalVehicle.id,
-        registrationNumber: row.registrationNumber,
+        registrationNumber,
         make: row.make,
         model: row.model,
         variant: row.variant,
@@ -135,6 +151,18 @@ async function persistLinkedEntities(transaction, ccmId, row, trackCreate) {
         ccmId,
         customerId: customer.id,
       },
+    }));
+  } else if (vehicle && registrationNumber
+    && (vehicle.registrationNumber || '').trim().toUpperCase() !== registrationNumber) {
+    vehicle = await trackUpdate({
+      entityType: 'Vehicle',
+      entityId: vehicle.id,
+      ccmId,
+      before: { registrationNumber: vehicle.registrationNumber, updatedAt: vehicle.updatedAt },
+    }, () => transaction.vehicle.update({
+      where: { id: vehicle.id },
+      data: { registrationNumber },
+      include: { customer: true },
     }));
   }
 
@@ -148,13 +176,21 @@ async function ensureMasterCallListEntry(transaction, ccmId, links, row, trackCr
   if (!vehicle?.vin) return;
   const existing = await findCanonicalMasterCallListEntry(transaction, vehicle.vin, ccmId);
   if (existing) {
-    if (!existing.vehicleId) {
+    const data = {};
+    if (!existing.vehicleId) data.vehicleId = vehicle.id;
+    if (vehicle.registrationNumber && existing.registrationNumber !== vehicle.registrationNumber) {
+      data.registrationNumber = vehicle.registrationNumber;
+    }
+    if (Object.keys(data).length) {
+      const before = { updatedAt: existing.updatedAt };
+      if (Object.hasOwn(data, 'vehicleId')) before.vehicleId = existing.vehicleId;
+      if (Object.hasOwn(data, 'registrationNumber')) before.registrationNumber = existing.registrationNumber;
       await trackUpdate({
         entityType: 'MasterCallList',
         entityId: existing.id,
         ccmId,
-        before: { vehicleId: existing.vehicleId, updatedAt: existing.updatedAt },
-      }, () => transaction.masterCallList.update({ where: { id: existing.id }, data: { vehicleId: vehicle.id } }));
+        before,
+      }, () => transaction.masterCallList.update({ where: { id: existing.id }, data }));
     }
     return;
   }
@@ -465,6 +501,7 @@ export async function importMonthlyCustomerData(req, res) {
             prepared.context.ccm.ccmId,
             item.row,
             trackRowCreate,
+            trackRowUpdate,
           );
           await ensureMasterCallListEntry(
             transaction,
@@ -486,16 +523,18 @@ export async function importMonthlyCustomerData(req, res) {
         if (key) seenKeys.add(key);
         addedRows += 1;
       } catch (error) {
-        if (error?.code !== 'P2002' && error?.code !== 'MONTHLY_CCM_CONFLICT') throw error;
-        skippedRows += 1;
+        if (error?.code !== 'P2002' && error?.code !== 'MONTHLY_CCM_CONFLICT' && error?.code !== 'REGISTRATION_CONFLICT') throw error;
+        const rejected = error?.code === 'REGISTRATION_CONFLICT';
+        if (rejected) rejectedRows += 1;
+        else skippedRows += 1;
         await prisma.importRowProgress.update({
           where: { id: rowProgressId },
-          data: { status: 'completed', outcome: 'skipped', mutationState: 'complete', loggedChangeCount: 0 },
+          data: { status: 'completed', outcome: rejected ? 'rejected' : 'skipped', mutationState: 'complete', loggedChangeCount: 0 },
         });
         rowErrors.push({
           importId: importRecord.id,
           rowNumber: item.rowNumber,
-          errorCode: error?.code === 'MONTHLY_CCM_CONFLICT' ? 'CCM_OWNERSHIP_CONFLICT' : 'LINK_CONFLICT',
+          errorCode: rejected ? 'REGISTRATION_CONFLICT' : error?.code === 'MONTHLY_CCM_CONFLICT' ? 'CCM_OWNERSHIP_CONFLICT' : 'LINK_CONFLICT',
           errorMessage: error.message || 'A matching unique customer or vehicle identifier already exists.',
           customerName: item.row.customerName,
           mobileNumber: item.row.mobileNumber,

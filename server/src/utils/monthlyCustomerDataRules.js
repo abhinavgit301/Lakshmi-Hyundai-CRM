@@ -27,7 +27,8 @@ export function validateMonthlyCustomerRow(row = {}) {
   const email = row.email ? String(row.email).trim().toLowerCase() : null;
   const rawVin = String(row.vin || '').trim();
   const vin = rawVin ? normalizeVin(rawVin) : null;
-  const registrationNumber = row.registrationNumber ? String(row.registrationNumber).trim().toUpperCase() : null;
+  const rawRegistrationNumber = row.registrationNumber ? String(row.registrationNumber).trim().toUpperCase() : null;
+  const registrationNumber = rawRegistrationNumber && rawRegistrationNumber !== '-' ? rawRegistrationNumber : null;
   const make = row.make ? String(row.make).trim() : null;
   const model = row.model ? String(row.model).trim() : null;
   const variant = row.variant ? String(row.variant).trim() : null;

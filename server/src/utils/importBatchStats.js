@@ -221,6 +221,14 @@ export function importRowMutationEvidenceIsComplete(outcome, changes, importType
       && changes[0].entityType === 'VINConflictReview'
       && changes[0].operation === 'CREATE';
   }
+  if (outcome === 'skipped' && changes.length > 0) {
+    return changes.every((change) => (
+      change.operation === 'UPDATE'
+      && ['Vehicle', 'MasterCallList'].includes(change.entityType)
+      && Object.keys(change.before || {}).sort().join('|') === 'registrationNumber|updatedAt'
+      && Object.keys(change.after || {}).sort().join('|') === 'registrationNumber|updatedAt'
+    ));
+  }
   return ['skipped', 'rejected'].includes(outcome) && changes.length === 0;
 }
 

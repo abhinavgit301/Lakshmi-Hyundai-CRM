@@ -305,7 +305,7 @@ function App() {
   const followUpRequestRef = useRef({});
   const followUpLoadMoreRef = useRef({});
   const masterListAppliedFiltersRef = useRef('');
-  const [initialDataLoading, setInitialDataLoading] = useState(true);
+  const [, setInitialDataLoading] = useState(true);
   const [initialDataError, setInitialDataError] = useState('');
   const [wpYear, setWpYear] = useState(new Date().getFullYear());
   const [wpMonth, setWpMonth] = useState(new Date().getMonth() + 1);
@@ -2677,11 +2677,23 @@ function App() {
   const stableStartCallFromMasterRecord = useStableCallback(startCallFromMasterRecord);
   const stableChangeMasterListAssignee = useStableCallback(changeMasterListAssignee);
 
+  function retryInitialLoad() {
+    setInitialDataError('');
+    setInitialDataLoading(true);
+    initialLoadPromiseRef.current = null;
+    setAuthChecked(false);
+    setSessionVersion((version) => version + 1);
+  }
+
   if (!authChecked) {
     return (
       <main className="auth-loading" aria-live="polite">
         <div className="initial-progress" aria-hidden="true"><span /></div>
-        <p>{initialDataLoading && currentUser ? 'Preparing your workspace…' : 'Checking session…'}</p>
+        <div className="initial-load-message">
+          <h1>Workspace is loading</h1>
+          <p>please wait</p>
+        </div>
+        <button type="button" className="primary-btn" onClick={retryInitialLoad}>Retry</button>
       </main>
     );
   }
@@ -2691,13 +2703,7 @@ function App() {
       <main className="auth-loading initial-load-error" role="alert">
         <h1>Workspace could not be loaded</h1>
         <p>{initialDataError}</p>
-        <button type="button" className="primary-btn" onClick={() => {
-          setInitialDataError('');
-          setInitialDataLoading(true);
-          initialLoadPromiseRef.current = null;
-          setAuthChecked(false);
-          setSessionVersion((version) => version + 1);
-        }}>Retry</button>
+        <button type="button" className="primary-btn" onClick={retryInitialLoad}>Retry</button>
       </main>
     );
   }

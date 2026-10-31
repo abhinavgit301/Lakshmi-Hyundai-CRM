@@ -835,6 +835,22 @@ th {
   animation: initial-progress-slide 1.2s ease-in-out infinite;
 }
 
+.initial-load-message {
+  display: grid;
+  justify-items: center;
+  gap: calc(var(--crm-density-scale, 1) * 6px);
+}
+
+.initial-load-message h1,
+.initial-load-message p {
+  margin: 0;
+}
+
+.initial-load-message h1 {
+  color: var(--navy-900);
+  font-size: calc(var(--crm-density-scale, 1) * 1.4rem);
+}
+
 .initial-load-error {
   align-content: center;
   justify-items: center;

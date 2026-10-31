@@ -6,6 +6,15 @@ import { normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
 const DELETION_MARKER = 'permanently_deleted';
 const PERMANENT_DELETION_TRANSACTION_TIMEOUT_MS = 60_000;
 const RECORD_QUERY_CHUNK_SIZE = 500;
+const deletionEntityOrder = [
+  'WorkshopVisit',
+  'MonthlyCustomerDataEntry',
+  'Allocation',
+  'MasterCallList',
+  'VINConflictReview',
+  'Vehicle',
+  'Customer',
+];
 const entityConfig = {
   Customer: { delegate: 'customer', table: 'customers', label: 'Customer' },
   Vehicle: { delegate: 'vehicle', table: 'vehicles', label: 'Vehicle' },
@@ -1026,16 +1035,24 @@ export async function previewPermanentImportDeletion(importBatchId, database = p
 }
 
 async function lockPlanRecords(transaction, plan) {
-  const lockRecords = new Map();
+  const recordIdsByTable = new Map();
   for (const record of plan.currentRecords) {
     const config = entityConfig[record.entityType];
-    if (config) lockRecords.set(`${config.table}:${record.entityId}`, { ...config, id: record.entityId });
+    if (!config) continue;
+    const ids = recordIdsByTable.get(config.table) || new Set();
+    ids.add(record.entityId);
+    recordIdsByTable.set(config.table, ids);
   }
-  for (const [, record] of [...lockRecords].sort(([left], [right]) => left.localeCompare(right))) {
-    await transaction.$queryRawUnsafe(
-      `SELECT "id" FROM "${record.table}" WHERE "id" = $1 FOR UPDATE`,
-      record.id,
-    );
+  for (const [table, recordIds] of [...recordIdsByTable].sort(([left], [right]) => left.localeCompare(right))) {
+    const ids = [...recordIds].sort();
+    for (let offset = 0; offset < ids.length; offset += RECORD_QUERY_CHUNK_SIZE) {
+      const chunk = ids.slice(offset, offset + RECORD_QUERY_CHUNK_SIZE);
+      const placeholders = chunk.map((_, index) => `$${index + 1}`).join(', ');
+      await transaction.$queryRawUnsafe(
+        `SELECT "id" FROM "${table}" WHERE "id" IN (${placeholders}) ORDER BY "id" FOR UPDATE`,
+        ...chunk,
+      );
+    }
   }
 }
 
@@ -1106,12 +1123,21 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
       }
     }
 
+    const deletionIdsByType = new Map(deletionEntityOrder.map((entityType) => [entityType, []]));
     for (const record of plan.deletionRecords) {
-      const result = await transaction[entityConfig[record.entityType].delegate].deleteMany({
-        where: { id: record.entityId },
-      });
-      if (result.count !== 1) {
-        throw new PermanentImportDeletionConflict(`The ${record.entityType} ${record.entityId} changed while deletion was in progress.`);
+      deletionIdsByType.get(record.entityType)?.push(record.entityId);
+    }
+    for (const entityType of deletionEntityOrder) {
+      const ids = deletionIdsByType.get(entityType);
+      const delegate = entityConfig[entityType].delegate;
+      for (let offset = 0; offset < ids.length; offset += RECORD_QUERY_CHUNK_SIZE) {
+        const chunk = ids.slice(offset, offset + RECORD_QUERY_CHUNK_SIZE);
+        const result = await transaction[delegate].deleteMany({
+          where: { id: { in: chunk } },
+        });
+        if (result.count !== chunk.length) {
+          throw new PermanentImportDeletionConflict(`One or more ${entityType} records changed while deletion was in progress.`);
+        }
       }
     }
 

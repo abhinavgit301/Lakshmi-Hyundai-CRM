@@ -56,6 +56,19 @@ function record(type, id, fields = {}) {
       ...common,
     };
   }
+  if (type === 'MasterCallList') {
+    return {
+      customerName: `${id} customer`,
+      mobileNumber: '9000000000',
+      vin: `${id}-vin`,
+      registrationNumber: `${id}-reg`,
+      ownerUserId: null,
+      vehicleId: null,
+      assignmentNeedsReview: false,
+      status: 'pending',
+      ...common,
+    };
+  }
   return common;
 }
 
@@ -127,6 +140,7 @@ function createDatabase({
   const rowProgress = [];
   const targetChangesByRow = new Map();
   for (const changeLog of targetChanges) {
+    if (changeLog.evidenceScope === 'batch') continue;
     const rowId = changeLog.rowProgressId || `${targetId}-row`;
     const rowChanges = targetChangesByRow.get(rowId) || [];
     rowChanges.push(changeLog);
@@ -210,6 +224,8 @@ function createDatabase({
     changeLogs: changes,
     auditLogs: [],
     deletionOrder: [],
+    deleteBatchSizes: [],
+    lockQuerySizes: [],
     recordFindUniqueCalls: [],
   };
   const transactionOptions = [];
@@ -230,7 +246,10 @@ function createDatabase({
   function createTransaction(draft) {
     const tx = {
       $queryRaw: async () => [],
-      $queryRawUnsafe: async () => [],
+      $queryRawUnsafe: async (_query, ...ids) => {
+        draft.lockQuerySizes.push(ids.length);
+        return [];
+      },
       importBatch: {
         findUnique: async ({ where, include, select }) => {
           const found = draft.batches.find(({ id }) => id === where.id);
@@ -303,8 +322,9 @@ function createDatabase({
         deleteMany: async ({ where }) => {
           if (failAtDelete === tableName) throw new Error(`Injected failure deleting ${tableName}.`);
           const matches = rows.filter((row) => matchesWhere(row, where));
-          draft.tables[tableName] = rows.filter((row) => !matches.includes(row));
-          tx[tableName] = createTableDelegate(draft, tableName);
+          draft.deleteBatchSizes.push(matches.length);
+          rows.splice(0, rows.length, ...rows.filter((row) => !matches.includes(row)));
+          draft.tables[tableName] = rows;
           draft.deletionOrder.push(tableName);
           return { count: matches.length };
         },
@@ -331,7 +351,9 @@ function createDatabase({
       deleteMany: async ({ where }) => {
         if (failAtDelete === tableName) throw new Error(`Injected failure deleting ${tableName}.`);
         const matches = rows.filter((row) => matchesWhere(row, where));
-        draft.tables[tableName] = rows.filter((row) => !matches.includes(row));
+        draft.deleteBatchSizes.push(matches.length);
+        rows.splice(0, rows.length, ...rows.filter((row) => !matches.includes(row)));
+        draft.tables[tableName] = rows;
         draft.deletionOrder.push(tableName);
         return { count: matches.length };
       },
@@ -374,7 +396,7 @@ test('deletes only target-created customer, vehicle, and service history while r
   const preview = await previewPermanentImportDeletion(targetId, database);
 
   assert.equal(preview.willDelete.length, 3);
-  assert.equal(preview.blockers.length, 0);
+  assert.equal(preview.blockers.length, 0, JSON.stringify(preview.blockers));
   assert.ok(preview.dependencies.length > 0);
   assert.ok(preview.dependencies.every(({ disposition, blocked }) => (
     disposition === 'deleted_with_target_import' && blocked === false
@@ -389,6 +411,7 @@ test('deletes only target-created customer, vehicle, and service history while r
   assert.equal(state.changeLogs.length, 3);
   assert.ok(state.changeLogs.every(({ rollbackStatus }) => rollbackStatus === 'pending'));
   assert.equal(state.auditLogs.length, 1);
+  assert.deepEqual(state.deletionOrder, ['workshopVisit', 'vehicle', 'customer']);
   assert.deepEqual(transactionOptions.at(-1), {
     isolationLevel: 'Serializable',
     timeout: 60_000,
@@ -418,6 +441,38 @@ test('permanent deletion batches current-record reads for large imports', async 
   assert.equal(preview.willDelete.length, 501);
   assert.equal(preview.blockers.length, 0);
   assert.deepEqual(state.recordFindUniqueCalls, []);
+});
+
+test('permanent deletion locks and deletes large call-list imports in bounded batches', async () => {
+  const entries = Array.from({ length: 1_001 }, (_, index) => (
+    record('MasterCallList', `call-target-${String(index).padStart(4, '0')}`)
+  ));
+  const visits = entries.map((_, index) => record('WorkshopVisit', `visit-target-${String(index).padStart(4, '0')}`, {
+    customerId: 'customer-existing',
+    vehicleId: 'vehicle-existing',
+  }));
+  const changes = entries.flatMap((entry, index) => {
+    const rowProgressId = `${targetId}-row-${index}`;
+    return [
+      change(targetId, index * 2 + 1, 'MasterCallList', entry.id, 'CREATE', {}, entry, rowProgressId),
+      change(targetId, index * 2 + 2, 'WorkshopVisit', visits[index].id, 'CREATE', {}, visits[index], rowProgressId),
+    ];
+  });
+  const { database, state } = createDatabase({
+    targetChanges: changes,
+    targetRecords: { MasterCallList: entries, WorkshopVisit: visits },
+  });
+  const preview = await previewPermanentImportDeletion(targetId, database);
+
+  assert.equal(preview.willDelete.length, entries.length + visits.length);
+  assert.equal(preview.blockers.length, 0, JSON.stringify(preview.blockers));
+  const result = await permanentlyDeleteImportBatch(targetId, 'admin-1', preview.confirmationToken, database);
+
+  assert.equal(result.status, 'permanently_deleted');
+  assert.deepEqual(state.deleteBatchSizes, [500, 500, 1, 500, 500, 1]);
+  assert.deepEqual(state.lockQuerySizes, [1, 500, 500, 1, 500, 500, 1]);
+  assert.deepEqual(state.tables.masterCallList, []);
+  assert.deepEqual(state.tables.workshopVisit, []);
 });
 
 test('preserves empty-import confirmation behavior and is idempotent without rewriting change logs', async () => {

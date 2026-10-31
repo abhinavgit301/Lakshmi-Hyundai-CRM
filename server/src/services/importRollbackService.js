@@ -1,6 +1,8 @@
 import { prisma } from '../config/prisma.js';
 import { lockCcmAllocationTeam } from '../utils/customerAllocation.js';
-import { importRollbackCompleteness } from '../utils/importBatchStats.js';
+import { importChangeLogIsComplete, importRollbackCompleteness } from '../utils/importBatchStats.js';
+import { normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
+import { recordCreAssignmentEvent } from '../utils/creAssignmentHistory.js';
 
 const entityDelegates = {
   Customer: 'customer',
@@ -9,6 +11,7 @@ const entityDelegates = {
   MasterCallList: 'masterCallList',
   Allocation: 'allocation',
   VINConflictReview: 'vINConflictReview',
+  MonthlyCustomerDataEntry: 'monthlyCustomerDataEntry',
 };
 
 const entityLabels = {
@@ -18,6 +21,17 @@ const entityLabels = {
   MasterCallList: 'Master Call List entry',
   Allocation: 'CRE allocation',
   VINConflictReview: 'VIN conflict review',
+  MonthlyCustomerDataEntry: 'monthly customer-data entry',
+};
+
+const entityTables = {
+  Customer: 'customers',
+  Vehicle: 'vehicles',
+  WorkshopVisit: 'workshop_visits',
+  MasterCallList: 'master_call_lists',
+  Allocation: 'allocations',
+  VINConflictReview: 'vin_conflict_reviews',
+  MonthlyCustomerDataEntry: 'monthly_customer_data_entries',
 };
 
 const dateFields = {
@@ -45,10 +59,21 @@ function comparable(value) {
   return value;
 }
 
-function snapshotMatches(record, expected, requireFullRecord) {
+function snapshotMatches(record, expected, requireFullRecord, entityType) {
+  const legacyNormalizedRepairOrder = entityType === 'WorkshopVisit'
+    && !Object.hasOwn(expected || {}, 'normalizedRepairOrderNo')
+    && Object.hasOwn(record || {}, 'normalizedRepairOrderNo');
+  const legacyAssignmentReviewFlag = entityType === 'MasterCallList'
+    && !Object.hasOwn(expected || {}, 'assignmentNeedsReview')
+    && record?.assignmentNeedsReview === false;
+  if (legacyNormalizedRepairOrder
+    && record.normalizedRepairOrderNo !== normalizeRepairOrderNo(expected.repairOrderNo)) return false;
   if (requireFullRecord) {
     const expectedFields = Object.keys(expected || {}).sort();
-    const actualFields = Object.keys(record || {}).sort();
+    const actualFields = Object.keys(record || {})
+      .filter((field) => !((legacyNormalizedRepairOrder && field === 'normalizedRepairOrderNo')
+        || (legacyAssignmentReviewFlag && field === 'assignmentNeedsReview')))
+      .sort();
     if (expectedFields.length !== actualFields.length
       || expectedFields.some((field, index) => field !== actualFields[index])) return false;
   }
@@ -86,25 +111,84 @@ async function ensureNoReferences(transaction, change) {
       transaction.appointment.count({ where: { vehicleId: change.entityId } }),
       transaction.vehicleOwnershipHistory.count({ where: { vehicleId: change.entityId } }),
       transaction.allocation.count({ where: { vehicleId: change.entityId } }),
-      transaction.masterCallList.count({ where: { vin: change.after?.vin } }),
+      transaction.masterCallList.count({
+        where: {
+          ccmId: change.after?.ccmId,
+          vin: change.after?.vin,
+        },
+      }),
       transaction.monthlyCustomerDataEntry.count({ where: { vehicleId: change.entityId } }),
       transaction.freeServiceMilestone.count({ where: { vehicleId: change.entityId } }),
     ]);
     if (visits + calls + followUps + appointments + ownership + allocations + callList + monthlyEntries + milestones) {
       throw new ImportRollbackConflict('The imported vehicle has later service, allocation, call-list, call, appointment, ownership, or monthly-data dependencies. Remove or reassign those records before retrying rollback.');
     }
+  } else if (change.entityType === 'WorkshopVisit') {
+    const visit = await transaction.workshopVisit.findUnique({
+      where: { id: change.entityId },
+      select: { physicalVehicleId: true },
+    });
+    const milestones = await transaction.freeServiceMilestone.findMany({
+      where: { physicalVehicleId: visit?.physicalVehicleId || change.after?.physicalVehicleId },
+      select: { id: true, completedByWorkshopVisitId: true, completedByRepairOrderNo: true },
+    });
+    const referenced = milestones.some((milestone) => (
+      milestone.completedByWorkshopVisitId === change.entityId
+      || (milestone.completedByWorkshopVisitId == null
+        && normalizeRepairOrderNo(milestone.completedByRepairOrderNo)
+          === normalizeRepairOrderNo(change.after?.repairOrderNo))
+    ));
+    if (referenced) {
+      throw new ImportRollbackConflict('The repair order is referenced by a free-service milestone. Resolve the milestone reference before retrying rollback.');
+    }
   }
 }
 
-async function reverseChange(transaction, change) {
-  if (change.rollbackStatus === 'permanently_deleted') return;
+async function recordRollbackAssignmentEvent(transaction, entityType, record, previousCreId, newCreId, actorUserId) {
+  if (previousCreId === newCreId || !['MasterCallList', 'Allocation'].includes(entityType)) return;
+  const vehicleId = entityType === 'Allocation'
+    ? record.vehicleId
+    : record.vehicleId || (await transaction.vehicle.findFirst({
+      where: { vin: record.vin, ccmId: record.ccmId },
+      select: { id: true },
+    }))?.id;
+  if (!vehicleId) {
+    throw new ImportRollbackConflict('The assignment history could not be recorded because its vehicle no longer exists.');
+  }
+  await recordCreAssignmentEvent(transaction, {
+    vehicleId,
+    allocationId: entityType === 'Allocation' ? record.id : null,
+    masterCallListId: entityType === 'MasterCallList' ? record.id : null,
+    ccmId: record.ccmId,
+    previousCreId,
+    newCreId,
+    actorUserId,
+    eventType: 'IMPORT_ROLLBACK',
+  });
+}
+
+async function reverseChange(transaction, change, actorUserId) {
+  if (change.rollbackStatus !== 'pending'
+    || change.rolledBackAt != null
+    || change.rollbackError != null
+    || !importChangeLogIsComplete(change)) {
+    throw new ImportRollbackConflict(`Change ${change.id} is invalidated or incomplete and cannot be reversed.`);
+  }
   const { delegate, record } = await findEntity(transaction, change.entityType, change.entityId);
-  if (!snapshotMatches(record, change.after, change.operation === 'CREATE')) {
+  if (!snapshotMatches(record, change.after, change.operation === 'CREATE', change.entityType)) {
     throw new ImportRollbackConflict(`The ${entityLabels[change.entityType]} has changed since this import. Its later changes were preserved; resolve the conflict before retrying rollback.`);
   }
 
   if (change.operation === 'CREATE') {
     await ensureNoReferences(transaction, change);
+    await recordRollbackAssignmentEvent(
+      transaction,
+      change.entityType,
+      record,
+      record.creId ?? record.ownerUserId ?? null,
+      null,
+      actorUserId,
+    );
     await delegate.delete({ where: { id: change.entityId } });
     return;
   }
@@ -123,16 +207,110 @@ async function reverseChange(transaction, change) {
     field,
     dateFieldSet.has(field) && value !== null ? new Date(value) : value,
   ]));
+  const assignmentField = change.entityType === 'Allocation' ? 'creId'
+    : change.entityType === 'MasterCallList' ? 'ownerUserId' : null;
+  if (assignmentField && Object.hasOwn(restoredValues, assignmentField)) {
+    await recordRollbackAssignmentEvent(
+      transaction,
+      change.entityType,
+      record,
+      record[assignmentField] ?? null,
+      restoredValues[assignmentField] ?? null,
+      actorUserId,
+    );
+  }
   await delegate.update({
     where: { id: change.entityId },
     data: restoredValues,
   });
 }
 
+function validateRollbackEvidence(batch) {
+  if (!['completed', 'failed'].includes(batch.status)) {
+    throw new ImportRollbackConflict('Only completed or failed imports can be rolled back.');
+  }
+  if (batch.rolledBackAt != null || batch.rollbackError != null) {
+    throw new ImportRollbackConflict(`Import ${batch.id} has batch-level rollback metadata and cannot be safely reversed.`);
+  }
+  if (!batch.rollbackSupported) {
+    throw new ImportRollbackConflict('This historical import has no verified change snapshots and cannot be safely rolled back.');
+  }
+  for (const change of batch.changes) {
+    if (change.importBatchId !== batch.id
+      || change.rollbackStatus !== 'pending'
+      || change.rolledBackAt != null
+      || change.rollbackError != null
+      || !importChangeLogIsComplete(change)) {
+      throw new ImportRollbackConflict(`Change ${change.id || '(unknown)'} in import ${batch.id} is invalidated, inconsistent, or incomplete and cannot be safely reversed.`);
+    }
+  }
+}
+
+async function validateNoCrossBatchChanges(transaction, batch) {
+  const entities = [...new Map(batch.changes.map(({ entityType, entityId }) => [
+    `${entityType}:${entityId}`,
+    { entityType, entityId },
+  ])).values()];
+  if (!entities.length) return;
+  const changes = await transaction.importChangeLog.findMany({
+    where: { OR: entities.map(({ entityType, entityId }) => ({ entityType, entityId })) },
+    select: { id: true, importBatchId: true, entityType: true, entityId: true },
+  });
+  const crossBatchChange = changes.find(({ importBatchId }) => importBatchId !== batch.id);
+  if (crossBatchChange) {
+    throw new ImportRollbackConflict(
+      `Import ${batch.id} cannot be rolled back because change ${crossBatchChange.id} in import ${crossBatchChange.importBatchId} also references ${crossBatchChange.entityType} ${crossBatchChange.entityId}.`,
+    );
+  }
+}
+
+async function lockRollbackRecords(transaction, changes) {
+  const records = [...new Map(changes.map(({ entityType, entityId }) => [
+    `${entityType}:${entityId}`,
+    { entityType, entityId },
+  ])).values()].sort((left, right) => (
+    `${entityTables[left.entityType]}:${left.entityId}`.localeCompare(`${entityTables[right.entityType]}:${right.entityId}`)
+  ));
+  for (const { entityType, entityId } of records) {
+    const table = entityTables[entityType];
+    if (!table) throw new ImportRollbackConflict(`Unsupported recorded entity type: ${entityType}.`);
+    await transaction.$queryRawUnsafe(
+      `SELECT "id" FROM "${table}" WHERE "id" = $1 FOR UPDATE`,
+      entityId,
+    );
+  }
+}
+
+async function validateCurrentRollbackState(transaction, changes) {
+  const simulatedRecords = new Map();
+  for (const change of changes) {
+    const key = `${change.entityType}:${change.entityId}`;
+    if (!simulatedRecords.has(key)) {
+      const { record } = await findEntity(transaction, change.entityType, change.entityId);
+      simulatedRecords.set(key, { ...record });
+    }
+    const current = simulatedRecords.get(key);
+    if (!snapshotMatches(current, change.after, change.operation === 'CREATE', change.entityType)) {
+      throw new ImportRollbackConflict(`The ${entityLabels[change.entityType]} has changed since this import. Its later changes were preserved; resolve the conflict before retrying rollback.`);
+    }
+    if (change.operation === 'CREATE') {
+      simulatedRecords.set(key, null);
+    } else {
+      simulatedRecords.set(key, {
+        ...current,
+        ...Object.fromEntries(Object.entries(change.before).map(([field, value]) => [
+          field,
+          (dateFields[change.entityType] || []).includes(field) && value !== null ? new Date(value) : value,
+        ])),
+      });
+    }
+  }
+}
+
 export async function rollbackImportBatch(importBatchId, adminId, database = prisma) {
   return database.$transaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "import_batches" WHERE "id" = ${importBatchId} FOR UPDATE`;
-    const batch = await transaction.importBatch.findUnique({
+    let batch = await transaction.importBatch.findUnique({
       where: { id: importBatchId },
       include: { changes: { orderBy: { sequence: 'desc' } } },
     });
@@ -141,15 +319,23 @@ export async function rollbackImportBatch(importBatchId, adminId, database = pri
     if (batch.status === 'processing' || batch.status === 'rollback_in_progress') {
       throw new ImportRollbackConflict('This import is still processing or another rollback is in progress.');
     }
-    if (!['completed', 'failed'].includes(batch.status)) {
-      throw new ImportRollbackConflict('Only completed or failed imports can be rolled back.');
-    }
-    if (!batch.rollbackSupported) {
-      throw new ImportRollbackConflict('This historical import has no verified change snapshots and cannot be safely rolled back.');
-    }
+    validateRollbackEvidence(batch);
     if (!await importRollbackCompleteness(transaction, batch.id, batch.totalRows)) {
       throw new ImportRollbackConflict('This import does not have complete row progress and change snapshots. Its rollback eligibility could not be verified.');
     }
+
+    await lockRollbackRecords(transaction, batch.changes);
+    batch = await transaction.importBatch.findUnique({
+      where: { id: importBatchId },
+      include: { changes: { orderBy: { sequence: 'desc' } } },
+    });
+    if (!batch) throw new ImportRollbackConflict('Import not found.');
+    validateRollbackEvidence(batch);
+    if (!await importRollbackCompleteness(transaction, batch.id, batch.totalRows)) {
+      throw new ImportRollbackConflict('This import does not have complete row progress and change snapshots. Its rollback eligibility could not be verified.');
+    }
+    await validateNoCrossBatchChanges(transaction, batch);
+    await validateCurrentRollbackState(transaction, batch.changes);
 
     const ccmIds = [...new Set(batch.changes.map(({ ccmId }) => ccmId).filter(Boolean))].sort();
     for (const ccmId of ccmIds) await lockCcmAllocationTeam(transaction, ccmId);
@@ -161,8 +347,7 @@ export async function rollbackImportBatch(importBatchId, adminId, database = pri
     const now = new Date();
     let reversedChanges = 0;
     for (const change of batch.changes) {
-      if (change.rollbackStatus === 'permanently_deleted') continue;
-      await reverseChange(transaction, change);
+      await reverseChange(transaction, change, adminId);
       reversedChanges += 1;
     }
     if (batch.changes.length) {
@@ -176,12 +361,20 @@ export async function rollbackImportBatch(importBatchId, adminId, database = pri
       where: { id: batch.id },
       data: { status: 'rolled_back', rolledBackAt: now, rollbackError: null },
     });
+    if (batch.importType === 'monthly_customer_data') {
+      await transaction.monthlyCustomerDataImport.updateMany({
+        where: { importBatchId: batch.id },
+        data: { status: 'rolled_back' },
+      });
+    }
     await transaction.auditLog.create({
       data: {
         userId: adminId,
         entityType: 'ImportBatch',
         entityId: batch.id,
-        action: 'REPAIR_ORDER_IMPORT_ROLLED_BACK',
+        action: batch.importType === 'monthly_customer_data'
+          ? 'MONTHLY_CUSTOMER_DATA_IMPORT_ROLLED_BACK'
+          : 'REPAIR_ORDER_IMPORT_ROLLED_BACK',
         details: JSON.stringify({ changeCount: batch.changes.length }),
       },
     });

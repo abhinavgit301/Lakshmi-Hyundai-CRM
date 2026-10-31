@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCallLog, createFollowUp } from '../src/controllers/callWorkflowController.js';
+import { createManualCallListEntry } from '../src/controllers/recordsController.js';
 import { prisma } from '../src/config/prisma.js';
 import { isVehicleAssignedToCre } from '../src/utils/creAccess.js';
 
@@ -46,6 +47,40 @@ async function withPrismaMocks(overrides, run) {
     }
   }
 }
+
+test('manual repair-order entry normalizes the RO and checks duplicates within the selected CCM', async () => {
+  let duplicateLookup;
+  await withPrismaMocks({
+    'user.findFirst': async () => ({ ccmId: 'ccm-a' }),
+    'vehicle.findUnique': async () => ({ ccmId: 'ccm-a', registrationNumber: null }),
+    'workshopVisit.findMany': async ({ where }) => {
+      duplicateLookup = where;
+      return [{
+        ccmId: 'ccm-a',
+        repairOrderNo: 'RO 100',
+        normalizedRepairOrderNo: 'RO 100',
+        vehicle: { vin: '1HGBH41JXZ' },
+      }];
+    },
+  }, async () => {
+    const res = mockRes();
+    await createManualCallListEntry({
+      user: { id: 'ccm-user-a', role: 'CCM', ccmId: 'ccm-a' },
+      body: {
+        roNumber: ' ro \t 100 ',
+        vin: '1HGBH41JXZ',
+        customerName: 'Customer',
+        mobileNumber: '9000000000',
+      },
+    }, res);
+
+    assert.equal(res.statusCode, 409);
+    assert.deepEqual(duplicateLookup, {
+      ccmId: 'ccm-a',
+      normalizedRepairOrderNo: 'RO 100',
+    });
+  });
+});
 
 test('CRE cannot log a call for another CCM customer', async () => {
   const customerB = makeCustomer('customer-b', 'ccm-b', [
@@ -105,8 +140,8 @@ test('inactive allocations do not grant CRE call access', async () => {
   });
 });
 
-test('CCM call ownership comes from the linked customer, not the request body', async () => {
-  const customerA = makeCustomer('customer-a', 'ccm-a', [makeVehicle('vehicle-a', 'ccm-a')]);
+test('CCM vehicle call ownership comes from the vehicle, not customer attribution or the request body', async () => {
+  const customerA = makeCustomer('customer-a', 'ccm-b', [makeVehicle('vehicle-a', 'ccm-a')]);
   let createArgs;
   const transaction = {
     callLog: { create: async (args) => { createArgs = args; return { id: 'call-1' }; } },
@@ -126,8 +161,8 @@ test('CCM call ownership comes from the linked customer, not the request body', 
   });
 });
 
-test('CRE follow-up ownership is immutable team data, not a supplied CCM ID', async () => {
-  const customerA = makeCustomer('customer-a', 'ccm-a', [
+test('CRE follow-up ownership comes from the assigned vehicle despite customer attribution', async () => {
+  const customerA = makeCustomer('customer-a', 'ccm-b', [
     makeVehicle('vehicle-a', 'ccm-a', [], [{ ownerUserId: 'cre-a1', ccmId: 'ccm-a' }]),
   ]);
   let createArgs;

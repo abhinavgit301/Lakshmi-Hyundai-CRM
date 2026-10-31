@@ -4,6 +4,7 @@ import {
   allocateUnassignedMasterCallListEntries,
   selectLeastLoadedCre,
   selectNextCre,
+  unassignCreAssignments,
 } from '../src/utils/customerAllocation.js';
 
 function distribute(creIds, workloads, customerCount) {
@@ -58,8 +59,9 @@ test('import batches cap one CRE at half the new customers so teammates are not 
 });
 
 test('shared allocation continues to assign call-list entries without import-only mutation hooks', async () => {
-  const entry = { id: 'call-1', vin: 'VIN-1' };
+  const entry = { id: 'call-1', vin: 'VIN-1', vehicle: { id: 'vehicle-1' } };
   let assignedOwner = null;
+  const history = [];
   const transaction = {
     $queryRaw: async () => [],
     user: {
@@ -78,18 +80,25 @@ test('shared allocation continues to assign call-list entries without import-onl
     auditLog: {
       create: async () => ({}),
     },
+    creAssignmentHistory: {
+      create: async ({ data }) => { history.push(data); return data; },
+    },
   };
 
   const count = await allocateUnassignedMasterCallListEntries(transaction, 'ccm-1', 'admin-1');
 
   assert.equal(count, 1);
   assert.equal(assignedOwner, 'cre-1');
+  assert.equal(history[0].masterCallListId, 'call-1');
+  assert.equal(history[0].vehicleId, 'vehicle-1');
+  assert.equal(history[0].eventType, 'AUTO_ASSIGNED');
 });
 
 test('import mutation hook receives exact before and persisted after assignment snapshots', async () => {
   const entry = {
     id: 'call-tracked',
     vin: 'VIN-TRACKED',
+    vehicle: { id: 'vehicle-tracked' },
     updatedAt: new Date('2025-01-01T00:00:00.000Z'),
   };
   const afterTimestamp = new Date('2025-01-02T00:00:00.000Z');
@@ -113,6 +122,9 @@ test('import mutation hook receives exact before and persisted after assignment 
     auditLog: {
       create: async () => ({}),
     },
+    creAssignmentHistory: {
+      create: async () => ({}),
+    },
   };
 
   await allocateUnassignedMasterCallListEntries(transaction, 'ccm-1', 'admin-1', {
@@ -130,4 +142,136 @@ test('import mutation hook receives exact before and persisted after assignment 
     before: { ownerUserId: null, updatedAt: entry.updatedAt },
     after: { ownerUserId: 'cre-1', updatedAt: afterTimestamp },
   }]);
+});
+
+test('deactivation moves call-list and allocation assignments to a review queue without redistribution', async () => {
+  const history = [];
+  const updates = [];
+  const transaction = {
+    $queryRaw: async () => [],
+    masterCallList: {
+      findMany: async () => [{
+        id: 'call-1',
+        vehicle: { id: 'vehicle-1' },
+      }],
+      update: async ({ where, data }) => {
+        updates.push({ model: 'masterCallList', where, data });
+        return {};
+      },
+    },
+    allocation: {
+      findMany: async () => [{ id: 'allocation-1', vehicleId: 'vehicle-1' }],
+      update: async ({ where, data }) => {
+        updates.push({ model: 'allocation', where, data });
+        return {};
+      },
+    },
+    creAssignmentHistory: {
+      create: async ({ data }) => { history.push(data); return data; },
+    },
+    auditLog: { create: async () => ({}) },
+  };
+
+  await unassignCreAssignments(transaction, {
+    ccmId: 'ccm-1',
+    departingCreId: 'cre-old',
+    actorId: 'admin-1',
+    reason: 'CRE deactivated',
+  });
+
+  assert.deepEqual(updates, [
+    {
+      model: 'masterCallList',
+      where: { id: 'call-1' },
+      data: { ownerUserId: null, status: 'pending', assignmentNeedsReview: true },
+    },
+    {
+      model: 'allocation',
+      where: { id: 'allocation-1' },
+      data: { creId: null },
+    },
+  ]);
+  assert.deepEqual(history.map(({ previousCreId, newCreId, eventType }) => ({
+    previousCreId,
+    newCreId,
+    eventType,
+  })), [
+    { previousCreId: 'cre-old', newCreId: null, eventType: 'DEACTIVATED' },
+    { previousCreId: 'cre-old', newCreId: null, eventType: 'DEACTIVATED' },
+  ]);
+  assert.ok(history.every((event) => event.actorUserId === 'admin-1'
+    && event.reason === 'CRE deactivated'));
+});
+
+test('deactivation preserves an allocation-only vehicle as an unassigned allocation with history', async () => {
+  const history = [];
+  let allocationCreId = 'cre-old';
+  const transaction = {
+    $queryRaw: async () => [],
+    masterCallList: {
+      findMany: async () => [],
+    },
+    allocation: {
+      findMany: async () => [{
+        id: 'allocation-only',
+        vehicleId: 'vehicle-only',
+      }],
+      update: async ({ data }) => {
+        allocationCreId = data.creId;
+        return {};
+      },
+    },
+    creAssignmentHistory: {
+      create: async ({ data }) => { history.push(data); return data; },
+    },
+    auditLog: { create: async () => ({}) },
+  };
+
+  await unassignCreAssignments(transaction, {
+    ccmId: 'ccm-1',
+    departingCreId: 'cre-old',
+    actorId: 'admin-1',
+    reason: 'CRE deactivated',
+  });
+
+  assert.equal(allocationCreId, null);
+  assert.deepEqual(history.map(({ allocationId, masterCallListId, previousCreId, newCreId }) => ({
+    allocationId,
+    masterCallListId,
+    previousCreId,
+    newCreId,
+  })), [{
+    allocationId: 'allocation-only',
+    masterCallListId: null,
+    previousCreId: 'cre-old',
+    newCreId: null,
+  }]);
+});
+
+test('automatic allocation leaves deactivated assignments in the CCM review queue', async () => {
+  let assignedOwner = null;
+  const entry = {
+    id: 'call-review',
+    vin: 'VIN-REVIEW',
+    vehicle: { id: 'vehicle-review' },
+    assignmentNeedsReview: true,
+  };
+  const transaction = {
+    $queryRaw: async () => [],
+    user: { findMany: async () => [{ id: 'cre-new' }] },
+    masterCallList: {
+      findMany: async ({ where }) => (
+        where.assignmentNeedsReview === false ? [] : [entry]
+      ),
+      update: async ({ data }) => { assignedOwner = data.ownerUserId; },
+    },
+    allocation: { findMany: async () => [] },
+    auditLog: { create: async () => ({}) },
+    creAssignmentHistory: { create: async () => ({}) },
+  };
+
+  const assignedCount = await allocateUnassignedMasterCallListEntries(transaction, 'ccm-1', 'admin-1');
+
+  assert.equal(assignedCount, 0);
+  assert.equal(assignedOwner, null);
 });

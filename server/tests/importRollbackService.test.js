@@ -16,13 +16,14 @@ function fullRecord(entityType, id, overrides = {}) {
       year: null, saleDate: null, status: 'ACTIVE', customerId: 'customer-1', ccmId: 'ccm-1',
     },
     WorkshopVisit: {
-      repairOrderNo: `RO-${id}`, customerId: 'customer-1', vehicleId: 'vehicle-1', ccmId: 'ccm-1',
+      repairOrderNo: `RO-${id}`, normalizedRepairOrderNo: String(overrides.repairOrderNo || `RO-${id}`).trim().replace(/\s+/g, ' ').toUpperCase(), customerId: 'customer-1',
+      vehicleId: 'vehicle-1', ccmId: 'ccm-1',
       totalLaborCost: null, totalPartsCost: null, totalAmount: null, visitDate: null,
       closingDate: null, gpDate: null, importedDetails: {},
     },
     MasterCallList: {
       customerName: 'Customer', mobileNumber: '123', vin: `VIN-${id}`, registrationNumber: null,
-      ccmId: 'ccm-1', ownerUserId: null, status: 'pending',
+      ccmId: 'ccm-1', ownerUserId: null, assignmentNeedsReview: false, status: 'pending',
     },
     VINConflictReview: {
       vin: `VIN-${id}`, sourceCcmId: 'ccm-1', targetCcmId: 'ccm-2', reason: 'Conflict',
@@ -54,12 +55,20 @@ function cloneTestValue(value) {
   return value;
 }
 
-function createDatabase({ batch, records = {}, referenceCounts = {}, serializeTransactions = false }) {
-  const state = cloneTestValue({ batch, records, auditLogs: [] });
+function createDatabase({
+  batch,
+  records = {},
+  referenceCounts = {},
+  crossBatchChanges = [],
+  failAudit = false,
+  serializeTransactions = false,
+}) {
+  const state = cloneTestValue({ batch, records, auditLogs: [], assignmentHistory: [], crossBatchChanges });
   let transactionQueue = Promise.resolve();
   const transactionFor = (draft) => {
     const transaction = {
       $queryRaw: async () => [],
+      $queryRawUnsafe: async () => [],
       importBatch: {
         findUnique: async () => ({
           ...draft.batch,
@@ -74,7 +83,14 @@ function createDatabase({ batch, records = {}, referenceCounts = {}, serializeTr
         findMany: async () => draft.batch.rowProgress || [],
       },
       importChangeLog: {
-        findMany: async () => draft.batch.changes,
+        findMany: async ({ where = {} } = {}) => [
+          ...draft.batch.changes,
+          ...draft.crossBatchChanges.filter((change) => (
+            !where.OR || where.OR.some(({ entityType, entityId }) => (
+              entityType === change.entityType && entityId === change.entityId
+            ))
+          )),
+        ],
         updateMany: async ({ where, data }) => {
           draft.batch.changes = draft.batch.changes.map((change) => (
             where.importBatchId === draft.batch.id && change.rollbackStatus === where.rollbackStatus
@@ -86,7 +102,14 @@ function createDatabase({ batch, records = {}, referenceCounts = {}, serializeTr
       },
       auditLog: {
         create: async ({ data }) => {
+          if (failAudit) throw new Error('Injected audit failure.');
           draft.auditLogs.push(data);
+          return data;
+        },
+      },
+      creAssignmentHistory: {
+        create: async ({ data }) => {
+          draft.assignmentHistory.push(data);
           return data;
         },
       },
@@ -101,7 +124,15 @@ function createDatabase({ batch, records = {}, referenceCounts = {}, serializeTr
       VINConflictReview: 'vINConflictReview',
     })) {
       transaction[delegateName] = {
-        findUnique: async ({ where }) => draft.records[entityType]?.[where.id] || null,
+        findUnique: async ({ where }) => draft.records[entityType]?.[where.id]
+          || (entityType === 'Vehicle' && where.vin
+            ? Object.values(draft.records.Vehicle || {}).find((record) => record.vin === where.vin) || null
+            : null),
+        ...(entityType === 'Vehicle' ? {
+          findFirst: async ({ where }) => Object.values(draft.records.Vehicle || {}).find((record) => (
+            record.vin === where.vin && record.ccmId === where.ccmId
+          )) || null,
+        } : {}),
         delete: async ({ where }) => {
           const record = draft.records[entityType]?.[where.id];
           delete draft.records[entityType]?.[where.id];
@@ -111,7 +142,19 @@ function createDatabase({ batch, records = {}, referenceCounts = {}, serializeTr
           draft.records[entityType][where.id] = { ...draft.records[entityType][where.id], ...data };
           return draft.records[entityType][where.id];
         },
-        count: async () => referenceCounts[delegateName] || 0,
+        count: async ({ where = {} } = {}) => {
+          const matchingCount = (entityType, field) => Object.values(draft.records[entityType] || {})
+            .filter((record) => record[field] === where[field]).length;
+          if (delegateName === 'vehicle' && Object.hasOwn(where, 'customerId')) {
+            return (referenceCounts[delegateName] || 0) + matchingCount('Vehicle', 'customerId');
+          }
+          if (delegateName === 'workshopVisit'
+            && (Object.hasOwn(where, 'customerId') || Object.hasOwn(where, 'vehicleId'))) {
+            const field = Object.hasOwn(where, 'customerId') ? 'customerId' : 'vehicleId';
+            return (referenceCounts[delegateName] || 0) + matchingCount('WorkshopVisit', field);
+          }
+          return referenceCounts[delegateName] || 0;
+        },
       };
     }
     for (const delegateName of [
@@ -123,6 +166,11 @@ function createDatabase({ batch, records = {}, referenceCounts = {}, serializeTr
       'freeServiceMilestone',
     ]) {
       transaction[delegateName] = { count: async () => referenceCounts[delegateName] || 0 };
+      if (delegateName === 'freeServiceMilestone') {
+        transaction[delegateName].findMany = async ({ where = {} } = {}) => (
+          referenceCounts.freeServiceMilestoneRows || []
+        ).filter((milestone) => !where.vehicleId || milestone.vehicleId === where.vehicleId);
+      }
     }
     return transaction;
   };
@@ -175,8 +223,12 @@ function makeBatch({ status = 'completed', rollbackSupported = true, changes = [
       evidenceScope: change.evidenceScope || 'row',
       sequence: index + 1,
       rollbackStatus: 'pending',
+      rolledBackAt: null,
+      rollbackError: null,
       ...change,
     })),
+    rolledBackAt: null,
+    rollbackError: null,
   };
 }
 
@@ -201,17 +253,78 @@ test('rollback removes a tracked import-created repair order and audits the oper
   assert.equal(state.auditLogs[0].action, 'REPAIR_ORDER_IMPORT_ROLLED_BACK');
 });
 
-test('rollback skips records invalidated by permanent deletion and does not recreate them', async () => {
+test('rollback blocks deleting an exact or unambiguous legacy milestone completion visit', async () => {
+  const { change, record } = visitChange('visit-milestone-reference');
+  for (const milestoneReference of [
+    { completedByWorkshopVisitId: record.id, completedByRepairOrderNo: record.repairOrderNo },
+    { completedByWorkshopVisitId: null, completedByRepairOrderNo: record.repairOrderNo },
+  ]) {
+    const { database, state } = createDatabase({
+      batch: makeBatch({ changes: [change] }),
+      records: { WorkshopVisit: { [record.id]: record } },
+      referenceCounts: {
+        freeServiceMilestoneRows: [{
+          id: 'milestone-1',
+          vehicleId: record.vehicleId,
+          ...milestoneReference,
+        }],
+      },
+    });
+
+    await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', database), ImportRollbackConflict);
+    assert.ok(state.records.WorkshopVisit[record.id]);
+  }
+});
+
+test('rollback rejects contradictory batch-level rollback metadata', async () => {
+  const { change, record } = visitChange('visit-batch-metadata');
+  for (const [status, metadata] of [
+    ['completed', { rolledBackAt: new Date('2025-01-02T00:00:00.000Z') }],
+    ['completed', { rollbackError: 'Unverified rollback attempt.' }],
+    ['failed', { rolledBackAt: new Date('2025-01-02T00:00:00.000Z'), rollbackError: 'Unverified rollback attempt.' }],
+  ]) {
+    const batch = { ...makeBatch({ status, changes: [change] }), ...metadata };
+    const { database, state } = createDatabase({
+      batch,
+      records: { WorkshopVisit: { [record.id]: record } },
+    });
+    await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', database), ImportRollbackConflict);
+    assert.ok(state.records.WorkshopVisit[record.id]);
+    assert.equal(state.batch.status, status);
+  }
+});
+
+test('rollback rejects pending logs with rollback metadata and non-pending statuses', async () => {
+  const { change, record } = visitChange('visit-log-metadata');
+  for (const logOverrides of [
+    { rolledBackAt: new Date('2025-01-02T00:00:00.000Z') },
+    { rollbackError: 'Unverified rollback attempt.' },
+    { rolledBackAt: new Date('2025-01-02T00:00:00.000Z'), rollbackError: 'Unverified rollback attempt.' },
+    { rollbackStatus: 'rolled_back' },
+    { rollbackStatus: 'permanently_deleted', rollbackError: 'Invalidated log.' },
+  ]) {
+    const batch = makeBatch({ changes: [{ ...change, ...logOverrides }] });
+    const { database, state } = createDatabase({
+      batch,
+      records: { WorkshopVisit: { [record.id]: record } },
+    });
+    await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', database), ImportRollbackConflict);
+    assert.ok(state.records.WorkshopVisit[record.id]);
+    assert.equal(state.batch.status, 'completed');
+    assert.equal(state.auditLogs.length, 0);
+  }
+});
+
+test('rollback rejects logs invalidated by permanent deletion without changing business records', async () => {
   const { change } = visitChange();
   change.rollbackStatus = 'permanently_deleted';
   const { database, state } = createDatabase({
-    batch: makeBatch({ changes: [change] }),
+    batch: makeBatch({ changes: [{ ...change, rollbackStatus: 'permanently_deleted' }] }),
   });
 
-  const result = await rollbackImportBatch('batch-1', 'admin-1', database);
-
-  assert.equal(result.batch.status, 'rolled_back');
-  assert.equal(result.reversedChanges, 0);
+  await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', database), ImportRollbackConflict);
+  assert.equal(state.batch.status, 'completed');
+  assert.equal(state.batch.changes[0].rollbackStatus, 'permanently_deleted');
   assert.equal(state.records.WorkshopVisit?.[change.entityId], undefined);
 });
 
@@ -316,6 +429,36 @@ test('a repair order depending on an imported customer and vehicle blocks their 
   assert.equal(state.batch.status, 'completed');
 });
 
+test('rollback reverses a valid customer, vehicle, and repair-order import in dependency order', async () => {
+  const customer = fullRecord('Customer', 'customer-full-import');
+  const vehicle = fullRecord('Vehicle', 'vehicle-full-import', { customerId: customer.id });
+  const visit = fullRecord('WorkshopVisit', 'visit-full-import', {
+    customerId: customer.id,
+    vehicleId: vehicle.id,
+  });
+  const { database, state } = createDatabase({
+    batch: makeBatch({
+      changes: [
+        createChange('Customer', customer),
+        createChange('Vehicle', vehicle),
+        createChange('WorkshopVisit', visit),
+      ],
+    }),
+    records: {
+      Customer: { [customer.id]: customer },
+      Vehicle: { [vehicle.id]: vehicle },
+      WorkshopVisit: { [visit.id]: visit },
+    },
+  });
+
+  const result = await rollbackImportBatch('batch-1', 'admin-1', database);
+
+  assert.equal(result.reversedChanges, 3);
+  assert.equal(state.records.Customer[customer.id], undefined);
+  assert.equal(state.records.Vehicle[vehicle.id], undefined);
+  assert.equal(state.records.WorkshopVisit[visit.id], undefined);
+});
+
 test('a later customer phone update is not overwritten by rollback', async () => {
   const customer = fullRecord('Customer', 'customer-phone', { mobileNumber: '333' });
   const { change: visitLog, record: visit } = visitChange('visit-phone');
@@ -331,6 +474,58 @@ test('a later customer phone update is not overwritten by rollback', async () =>
 
   await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', database), ImportRollbackConflict);
   assert.equal(state.records.Customer[customer.id].mobileNumber, '333');
+});
+
+test('cross-batch changes block rollback before any target mutation', async () => {
+  const customer = fullRecord('Customer', 'customer-cross-batch', {
+    mobileNumber: '222',
+    updatedAt: '2025-01-02T00:00:00.000Z',
+  });
+  const { change: visitLog, record: visit } = visitChange('visit-cross-batch');
+  const before = { mobileNumber: '111', updatedAt: '2025-01-01T00:00:00.000Z' };
+  const after = { mobileNumber: '222', updatedAt: '2025-01-02T00:00:00.000Z' };
+  const targetUpdate = {
+    importBatchId: 'batch-1',
+    rowProgressId: rowId,
+    evidenceScope: 'row',
+    sequence: 1,
+    rollbackStatus: 'pending',
+    entityType: 'Customer',
+    entityId: customer.id,
+    operation: 'UPDATE',
+    before,
+    after,
+  };
+  const crossBatchChange = {
+    importBatchId: 'later-batch',
+    rowProgressId: 'later-row',
+    evidenceScope: 'row',
+    rollbackStatus: 'pending',
+    rolledBackAt: null,
+    rollbackError: null,
+    id: 'later-change-1',
+    entityType: 'Customer',
+    entityId: customer.id,
+    operation: 'UPDATE',
+    before: { mobileNumber: '222', updatedAt: '2025-01-02T00:00:00.000Z' },
+    after: { mobileNumber: '333', updatedAt: '2025-01-03T00:00:00.000Z' },
+  };
+  const { database, state } = createDatabase({
+    batch: makeBatch({ changes: [targetUpdate, visitLog] }),
+    records: {
+      Customer: { [customer.id]: customer },
+      WorkshopVisit: { [visit.id]: visit },
+    },
+    crossBatchChanges: [crossBatchChange],
+  });
+
+  await assert.rejects(
+    rollbackImportBatch('batch-1', 'admin-1', database),
+    /later-change-1.*later-batch.*Customer/i,
+  );
+  assert.equal(state.records.Customer[customer.id].mobileNumber, '222');
+  assert.equal(state.batch.status, 'completed');
+  assert.ok(state.records.WorkshopVisit[visit.id]);
 });
 
 test('a later manual edit of an import-tracked field blocks rollback', async () => {
@@ -383,8 +578,32 @@ test('full CREATE snapshots compare timestamp and nullable fields after JSON ser
   assert.equal(state.records.WorkshopVisit[record.id], undefined);
 });
 
+test('legacy repair-order snapshots remain reversible only when derived identity matches', async () => {
+  const record = fullRecord('WorkshopVisit', 'visit-legacy-identity');
+  const legacySnapshot = { ...record };
+  delete legacySnapshot.normalizedRepairOrderNo;
+  const { database, state } = createDatabase({
+    batch: makeBatch({ changes: [createChange('WorkshopVisit', legacySnapshot)] }),
+    records: { WorkshopVisit: { [record.id]: record } },
+  });
+
+  await rollbackImportBatch('batch-1', 'admin-1', database);
+  assert.equal(state.records.WorkshopVisit[record.id], undefined);
+
+  const conflictingRecord = {
+    ...record,
+    normalizedRepairOrderNo: 'DIFFERENT-RO',
+  };
+  const conflicting = createDatabase({
+    batch: makeBatch({ changes: [createChange('WorkshopVisit', legacySnapshot)] }),
+    records: { WorkshopVisit: { [record.id]: conflictingRecord } },
+  });
+  await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', conflicting.database), ImportRollbackConflict);
+  assert.ok(conflicting.state.records.WorkshopVisit[record.id]);
+});
+
 test('rollback restores a batch-scoped tracked CRE allocation only if its assignment has not since changed', async () => {
-  const allocation = { id: 'allocation-1', creId: 'cre-b' };
+  const allocation = { id: 'allocation-1', vehicleId: 'vehicle-1', ccmId: 'ccm-1', creId: 'cre-b' };
   const { database, state } = createDatabase({
     batch: makeBatch({
       outcome: 'skipped',
@@ -402,6 +621,17 @@ test('rollback restores a batch-scoped tracked CRE allocation only if its assign
 
   await rollbackImportBatch('batch-1', 'admin-1', database);
   assert.equal(state.records.Allocation[allocation.id].creId, 'cre-a');
+  assert.deepEqual(state.assignmentHistory, [{
+    vehicleId: 'vehicle-1',
+    allocationId: 'allocation-1',
+    masterCallListId: null,
+    ccmId: 'ccm-1',
+    previousCreId: 'cre-b',
+    newCreId: 'cre-a',
+    actorUserId: 'admin-1',
+    reason: null,
+    eventType: 'IMPORT_ROLLBACK',
+  }]);
 });
 
 test('a later call-list owner assignment is preserved and blocks conflicting rollback', async () => {
@@ -440,12 +670,20 @@ test('rollback reverses an import-created call-list entry assigned by the batch 
         },
       ],
     }),
-    records: { MasterCallList: { [entry.id]: assignedEntry }, WorkshopVisit: { [visit.id]: visit } },
+    records: {
+      MasterCallList: { [entry.id]: assignedEntry },
+      WorkshopVisit: { [visit.id]: visit },
+      Vehicle: { 'vehicle-1': fullRecord('Vehicle', 'vehicle-1', { vin: entry.vin }) },
+    },
   });
 
   await rollbackImportBatch('batch-1', 'admin-1', database);
   assert.equal(state.records.MasterCallList[entry.id], undefined);
   assert.equal(state.records.WorkshopVisit[visit.id], undefined);
+  assert.equal(state.assignmentHistory.length, 1);
+  assert.equal(state.assignmentHistory[0].eventType, 'IMPORT_ROLLBACK');
+  assert.equal(state.assignmentHistory[0].previousCreId, 'cre-a');
+  assert.equal(state.assignmentHistory[0].newCreId, null);
 });
 
 test('rollback restores a vehicle created by an earlier row and updated by a later row', async () => {
@@ -536,23 +774,19 @@ test('a later manual vehicle edit blocks CREATE then UPDATE rollback without cha
   assert.equal(state.batch.status, 'completed');
 });
 
-test('a fake transaction failure after one reverse step leaves all fake state unchanged', async () => {
+test('transaction failure after reversal leaves business records and audit evidence unchanged', async () => {
   const { change: visitLog, record: visit } = visitChange('visit-atomic');
-  const missingVehicle = fullRecord('Vehicle', 'missing-vehicle');
   const { database, state } = createDatabase({
-    batch: makeBatch({
-      changes: [
-        createChange('Vehicle', missingVehicle),
-        visitLog,
-      ],
-    }),
+    batch: makeBatch({ changes: [visitLog] }),
     records: { WorkshopVisit: { [visit.id]: visit } },
+    failAudit: true,
   });
 
-  await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', database), ImportRollbackConflict);
+  await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', database), /Injected audit failure/);
   assert.ok(state.records.WorkshopVisit[visit.id]);
   assert.equal(state.batch.status, 'completed');
   assert.equal(state.batch.changes[0].rollbackStatus, 'pending');
+  assert.equal(state.auditLogs.length, 0);
 });
 
 test('concurrent fake rollback attempts result in one succeeding', async () => {

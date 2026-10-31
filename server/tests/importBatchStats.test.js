@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   collectImportBatchStatsForIds,
   importBatchMutationEvidenceIsComplete,
+  importChangeLogIsComplete,
+  importRowMutationEvidenceIsComplete,
   legacyImportHistoryProgress,
 } from '../src/utils/importBatchStats.js';
 
@@ -109,6 +111,7 @@ test('a change log without a completed row evidence record is not considered tra
       after: {
         id: 'visit-1',
         repairOrderNo: 'RO-1',
+        normalizedRepairOrderNo: 'RO-1',
         customerId: 'customer-1',
         vehicleId: 'vehicle-1',
         ccmId: null,
@@ -143,6 +146,7 @@ test('batch allocation evidence is accepted only with matching allocation logs',
     evidenceScope: 'batch',
     entityType: 'MasterCallList',
     entityId: 'call-1',
+    sequence: 1,
     operation: 'UPDATE',
     before: { ownerUserId: null, updatedAt: '2025-01-01T00:00:00.000Z' },
     after: { ownerUserId: 'cre-1', updatedAt: '2025-01-02T00:00:00.000Z' },
@@ -165,6 +169,115 @@ test('batch allocation evidence is accepted only with matching allocation logs',
     ...complete,
     changes: [{ ...batchChange, before: { ownerUserId: null }, after: { ownerUserId: 'cre-1' } }],
   }), false);
+});
+
+test('import mutation evidence requires unique positive per-batch sequence values', () => {
+  const makeVisitChange = (sequence, entityId, rowProgressId) => ({
+    importBatchId: 'batch-1',
+    rowProgressId,
+    evidenceScope: 'row',
+    sequence,
+    entityType: 'WorkshopVisit',
+    entityId,
+    operation: 'CREATE',
+    before: {},
+    after: {
+      id: entityId,
+      repairOrderNo: `RO-${entityId}`,
+      normalizedRepairOrderNo: `RO-${entityId}`.toUpperCase(),
+      customerId: 'customer-1',
+      vehicleId: 'vehicle-1',
+      ccmId: null,
+      totalLaborCost: null,
+      totalPartsCost: null,
+      totalAmount: null,
+      visitDate: null,
+      closingDate: null,
+      gpDate: null,
+      importedDetails: null,
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:00.000Z',
+    },
+  });
+  const batch = {
+    id: 'batch-1',
+    totalRows: 2,
+    allocationEvidenceState: 'not_started',
+    allocationChangeCount: 0,
+    rowProgress: ['progress-1', 'progress-2'].map((id, index) => ({
+      id,
+      importBatchId: 'batch-1',
+      rowNumber: index + 2,
+      status: 'completed',
+      outcome: 'created',
+      mutationState: 'complete',
+      loggedChangeCount: 1,
+    })),
+    changes: [
+      makeVisitChange(1, 'visit-1', 'progress-1'),
+      makeVisitChange(2, 'visit-2', 'progress-2'),
+    ],
+  };
+
+  assert.equal(importBatchMutationEvidenceIsComplete(batch), true);
+  const duplicateSequenceBatch = {
+    ...batch,
+    changes: [batch.changes[0], { ...batch.changes[1], sequence: 1 }],
+  };
+  assert.equal(importChangeLogIsComplete(duplicateSequenceBatch.changes[0]), true);
+  assert.equal(importChangeLogIsComplete(duplicateSequenceBatch.changes[1]), true);
+  assert.equal(importRowMutationEvidenceIsComplete('created', [duplicateSequenceBatch.changes[0]]), true);
+  assert.equal(importRowMutationEvidenceIsComplete('created', [duplicateSequenceBatch.changes[1]]), true);
+  assert.equal(new Set(duplicateSequenceBatch.changes.map(({ sequence }) => sequence)).size, 1);
+  assert.equal(importBatchMutationEvidenceIsComplete(duplicateSequenceBatch), false);
+});
+
+test('UPDATE evidence requires at least one genuinely changed non-system field', () => {
+  const update = {
+    entityId: 'vehicle-1',
+    entityType: 'Vehicle',
+    operation: 'UPDATE',
+    before: { model: 'i20', updatedAt: '2025-01-01T00:00:00.000Z' },
+    after: { model: 'i20 N', updatedAt: '2025-01-02T00:00:00.000Z' },
+  };
+  const timestampOnly = {
+    ...update,
+    before: { updatedAt: '2025-01-01T00:00:00.000Z' },
+    after: { updatedAt: '2025-01-02T00:00:00.000Z' },
+  };
+  const unchangedBusinessField = {
+    ...update,
+    before: { model: 'i20', updatedAt: '2025-01-01T00:00:00.000Z' },
+    after: { model: 'i20', updatedAt: '2025-01-02T00:00:00.000Z' },
+  };
+
+  assert.equal(importChangeLogIsComplete(timestampOnly), false);
+  assert.equal(importChangeLogIsComplete(unchangedBusinessField), false);
+  assert.equal(importChangeLogIsComplete(update), true);
+});
+
+test('UPDATE evidence treats null as a present, comparable business value', () => {
+  const update = {
+    entityId: 'vehicle-1',
+    entityType: 'Vehicle',
+    operation: 'UPDATE',
+    before: { registrationNumber: 'REG-1', updatedAt: '2025-01-01T00:00:00.000Z' },
+    after: { registrationNumber: null, updatedAt: '2025-01-02T00:00:00.000Z' },
+  };
+  const nullToValue = {
+    ...update,
+    before: { registrationNumber: null, updatedAt: '2025-01-01T00:00:00.000Z' },
+    after: { registrationNumber: 'REG-1', updatedAt: '2025-01-02T00:00:00.000Z' },
+  };
+  const unchangedNull = {
+    ...update,
+    before: { registrationNumber: null, updatedAt: '2025-01-01T00:00:00.000Z' },
+    after: { registrationNumber: null, updatedAt: '2025-01-02T00:00:00.000Z' },
+  };
+
+  assert.equal(importChangeLogIsComplete(update), true);
+  assert.equal(importChangeLogIsComplete(nullToValue), true);
+  assert.equal(importChangeLogIsComplete(unchangedNull), false);
 });
 
 function groupRows(rows, by) {

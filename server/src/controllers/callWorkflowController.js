@@ -8,6 +8,7 @@ import { parseDateKey, workshopDayRange, workshopMonthOf, workshopMonthRange, zo
 import { allowedServiceSources, canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { appointmentVisibilityWhere } from '../utils/appointmentAccess.js';
 import { appointmentConversionRatePercent } from '../utils/performanceMetrics.js';
+import { parsePagination } from '../utils/pagination.js';
 import { classifyDueCohorts, countOverdueRecords, creDueWhere, loadCallListRecords } from './recordsController.js';
 
 function normalizeRole(role) {
@@ -19,7 +20,7 @@ function normalizeRole(role) {
   return value;
 }
 
-async function findAccessibleCustomer(customerId, user) {
+async function findAccessibleCustomer(customerId, user, vehicleId = null) {
   const customer = await prisma.customer.findUnique({
     where: { id: customerId },
     include: {
@@ -32,10 +33,21 @@ async function findAccessibleCustomer(customerId, user) {
   if (!customer) return null;
   const role = normalizeRole(user?.role);
   if (role === 'Admin' || role === 'GM') return customer;
-  if (!user?.ccmId || customer.ccmId !== user.ccmId) return null;
-  if (role === 'CCM') return customer;
+  if (!user?.ccmId) return null;
+  if (role === 'CCM') {
+    if (vehicleId) {
+      return customer.vehicles.some((vehicle) => vehicle.id === vehicleId && vehicle.ccmId === user.ccmId)
+        ? customer
+        : null;
+    }
+    return customer.ccmId === user.ccmId ? customer : null;
+  }
   if (role !== 'CRE') return null;
-  if (!customer.vehicles.some((vehicle) => isVehicleAssignedToCre(vehicle, user))) return null;
+  if (!customer.vehicles.some((vehicle) => (
+    (!vehicleId || vehicle.id === vehicleId)
+      && vehicle.ccmId === user.ccmId
+      && isVehicleAssignedToCre(vehicle, user)
+  ))) return null;
 
   return customer;
 }
@@ -48,13 +60,10 @@ export function callLogVisibility(user, customerId = '') {
     const ccmId = user.ccmId || 'no-access';
     visibility = {
       ccmId,
-      customer: { is: { ccmId } },
-      AND: [{
-        OR: [
-          { vehicleId: null },
-          { vehicle: { is: { ccmId } } },
-        ],
-      }],
+      OR: [
+        { vehicleId: null, customer: { is: { ccmId } } },
+        { vehicle: { is: { ccmId } } },
+      ],
     };
   } else if (role === 'CRE') {
     const ccmId = user.ccmId || 'no-access';
@@ -84,13 +93,10 @@ function followUpVisibility(user) {
     const ccmId = user.ccmId || 'no-access';
     return {
       ccmId,
-      customer: { is: { ccmId } },
-      AND: [{
-        OR: [
-          { vehicleId: null },
-          { vehicle: { is: { ccmId } } },
-        ],
-      }],
+      OR: [
+        { vehicleId: null, customer: { is: { ccmId } } },
+        { vehicle: { is: { ccmId } } },
+      ],
     };
   }
 
@@ -167,13 +173,10 @@ export async function getFreeServicePerformanceSummary(req, res) {
   const selectedRange = performanceRange === 'month' ? monthRange : requestedDay;
   const teamCallScope = {
     ccmId: target.ccmId || 'no-access',
-    customer: { is: { ccmId: target.ccmId || 'no-access' } },
-    AND: [{
-      OR: [
-        { vehicleId: null },
-        { vehicle: { is: { ccmId: target.ccmId || 'no-access' } } },
-      ],
-    }],
+    OR: [
+      { vehicleId: null, customer: { is: { ccmId: target.ccmId || 'no-access' } } },
+      { vehicle: { is: { ccmId: target.ccmId || 'no-access' } } },
+    ],
   };
   const calls = await prisma.callLog.findMany({
     where: {
@@ -430,16 +433,16 @@ export async function createCallLog(req, res) {
   if (!canAccessServiceSource(req.user, callSource)) {
     return res.status(403).json({ message: 'You do not have permission to log calls for this service category.' });
   }
-  const customer = await findAccessibleCustomer(customerId, req.user);
+  const customer = await findAccessibleCustomer(customerId, req.user, vehicleId);
   if (!customer) return res.status(404).json({ message: 'Customer not found.' });
 
   let vehicle = null;
   if (vehicleId) {
     vehicle = customer.vehicles.find((entry) => entry.id === vehicleId);
     if (!vehicle) return res.status(400).json({ message: 'Vehicle does not belong to this customer.' });
-    if (vehicle.ccmId !== customer.ccmId
+    if (!vehicle.ccmId
       || (['CCM', 'CRE'].includes(normalizeRole(req.user.role))
-        && (!req.user.ccmId || vehicle.ccmId !== req.user.ccmId || customer.ccmId !== req.user.ccmId))) {
+        && (!req.user.ccmId || vehicle.ccmId !== req.user.ccmId))) {
       return res.status(404).json({ message: 'Customer not found.' });
     }
     if (normalizeRole(req.user.role) === 'CRE' && !isVehicleAssignedToCre(vehicle, req.user)) {
@@ -447,10 +450,7 @@ export async function createCallLog(req, res) {
     }
   }
 
-  const ccmId = customer.ccmId || vehicle?.ccmId || null;
-  if (vehicle && customer.ccmId !== vehicle.ccmId) {
-    return res.status(400).json({ message: 'Customer and vehicle ownership do not match.' });
-  }
+  const ccmId = vehicle?.ccmId || customer.ccmId || null;
   if (['CCM', 'CRE'].includes(normalizeRole(req.user.role))
     && (!req.user.ccmId || ccmId !== req.user.ccmId)) {
     return res.status(404).json({ message: 'Customer not found.' });
@@ -534,19 +534,55 @@ export async function listFollowUps(req, res) {
   if (source && !canAccessServiceSource(req.user, source)) {
     return res.status(403).json({ message: 'You do not have permission to access this follow-up category.' });
   }
+  const pagination = parsePagination(req.query);
+  if (pagination.error) return res.status(400).json({ message: pagination.error });
+  const search = String(req.query.search || '').trim().toLocaleLowerCase();
+  if (search.length > 200) return res.status(400).json({ message: 'search must be 200 characters or fewer.' });
 
+  const visibility = followUpVisibility(req.user);
+  const searchConditions = search ? [
+    { id: { contains: search, mode: 'insensitive' } },
+    { customer: { is: { fullName: { contains: search, mode: 'insensitive' } } } },
+    { customer: { is: { mobileNumber: { contains: search, mode: 'insensitive' } } } },
+    { vehicle: { is: { vin: { contains: search, mode: 'insensitive' } } } },
+    { vehicle: { is: { model: { contains: search, mode: 'insensitive' } } } },
+    { vehicle: { is: { registrationNumber: { contains: search, mode: 'insensitive' } } } },
+  ] : [];
+  const where = {
+    ...visibility,
+    status: 'pending',
+    ...(source ? { source } : {}),
+    ...(!source && normalizeRole(req.user.role) === 'CRE' ? { source: { in: allowedServiceSources(req.user) } } : {}),
+    ...(search ? {
+      AND: [...(visibility.AND || []), { OR: searchConditions }],
+    } : {}),
+  };
+  const orderBy = [{ followUpAt: 'asc' }, { id: 'asc' }];
+  if (pagination.hasPagination) {
+    const [followUps, total] = await Promise.all([
+      prisma.followUp.findMany({
+        where,
+        include: FOLLOW_UP_INCLUDE,
+        orderBy,
+        skip: pagination.offset,
+        take: pagination.limit,
+      }),
+      prisma.followUp.count({ where }),
+    ]);
+    return res.json({
+      followUps,
+      total,
+      limit: pagination.limit,
+      offset: pagination.offset,
+      hasMore: pagination.offset + followUps.length < total,
+    });
+  }
   const followUps = await prisma.followUp.findMany({
-    where: {
-      ...followUpVisibility(req.user),
-      status: 'pending',
-      ...(source ? { source } : {}),
-      ...(!source && normalizeRole(req.user.role) === 'CRE' ? { source: { in: allowedServiceSources(req.user) } } : {}),
-    },
+    where,
     include: FOLLOW_UP_INCLUDE,
-    orderBy: { followUpAt: 'asc' },
+    orderBy,
     take: 200,
   });
-
   return res.json({ followUps });
 }
 
@@ -558,25 +594,22 @@ export async function createFollowUp(req, res) {
   if (!canAccessServiceSource(req.user, source)) {
     return res.status(403).json({ message: 'You do not have permission to create follow-ups for this service category.' });
   }
-  const customer = await findAccessibleCustomer(customerId, req.user);
+  const customer = await findAccessibleCustomer(customerId, req.user, vehicleId);
   if (!customer) return res.status(404).json({ message: 'Customer not found.' });
   let vehicle = null;
   if (vehicleId) {
     vehicle = customer.vehicles.find((entry) => entry.id === vehicleId);
     if (!vehicle) return res.status(400).json({ message: 'Vehicle does not belong to this customer.' });
-    if (vehicle.ccmId !== customer.ccmId
+    if (!vehicle.ccmId
       || (['CCM', 'CRE'].includes(normalizeRole(req.user.role))
-        && (!req.user.ccmId || vehicle.ccmId !== req.user.ccmId || customer.ccmId !== req.user.ccmId))) {
+        && (!req.user.ccmId || vehicle.ccmId !== req.user.ccmId))) {
       return res.status(404).json({ message: 'Customer not found.' });
     }
     if (normalizeRole(req.user.role) === 'CRE' && !isVehicleAssignedToCre(vehicle, req.user)) {
       return res.status(404).json({ message: 'Customer not found.' });
     }
   }
-  const ccmId = customer.ccmId || vehicle?.ccmId || null;
-  if (vehicle && customer.ccmId !== vehicle.ccmId) {
-    return res.status(400).json({ message: 'Customer and vehicle ownership do not match.' });
-  }
+  const ccmId = vehicle?.ccmId || customer.ccmId || null;
   if (['CCM', 'CRE'].includes(normalizeRole(req.user.role))
     && (!req.user.ccmId || ccmId !== req.user.ccmId)) {
     return res.status(404).json({ message: 'Customer not found.' });

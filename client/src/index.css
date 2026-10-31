@@ -779,10 +779,81 @@ th {
 }
 
 .auth-loading {
+  position: relative;
   display: grid;
   min-height: 100vh;
   place-items: center;
   color: var(--slate-600);
+}
+
+.initial-progress {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 1000;
+  height: 3px;
+  overflow: hidden;
+  background: var(--slate-200);
+}
+
+.initial-progress span {
+  display: block;
+  width: 35%;
+  height: 100%;
+  background: var(--blue-600, #2563eb);
+  animation: initial-progress-slide 1.2s ease-in-out infinite;
+}
+
+.initial-load-error {
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.initial-load-error h1,
+.initial-load-error p {
+  margin: 0;
+}
+
+.list-pagination {
+  display: flex;
+  justify-content: center;
+  padding: 16px 0 4px;
+}
+
+.skeleton {
+  display: block;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #eef2f2 25%, #e1e8e9 37%, #eef2f2 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+.skeleton-panel { display: grid; gap: 12px; }
+.skeleton-title { width: 180px; height: 18px; }
+.skeleton-row { height: 34px; }
+.skeleton-line { height: 12px; margin-bottom: 10px; }
+.skeleton-line.short { width: 40%; }
+.skeleton-stat { width: 55%; height: 28px; }
+
+@keyframes skeleton-shimmer {
+  from { background-position: 100% 50%; }
+  to { background-position: 0 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
+
+@keyframes initial-progress-slide {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(310%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .initial-progress span {
+    animation-duration: 2.4s;
+  }
 }
 
 .auth-shell {
@@ -1375,6 +1446,13 @@ tbody tr:hover td { background: #fafbfb; }
   .performance-kpi strong { font-size: 1.55rem; }
 }
 
+.auth-page {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
 .auth-loading {
   min-height: 100vh;
   background: radial-gradient(ellipse at 50% 30%, #fff 0%, #f1f5f4 75%);
@@ -1385,7 +1463,7 @@ tbody tr:hover td { background: #fafbfb; }
   isolation: isolate;
   width: min(1080px, calc(100% - 64px));
   min-height: min(660px, calc(100vh - 48px));
-  margin: 24px auto;
+  margin: 0 auto;
   grid-template-columns: minmax(0, 0.95fr) minmax(360px, 1.05fr);
   border: 1px solid rgba(210, 220, 220, 0.9);
   border-radius: 20px;
@@ -1884,6 +1962,10 @@ tbody tr:hover td { background: #fafbfb; }
 }
 
 @media (max-width: 560px) {
+  .auth-page {
+    padding: 0;
+  }
+
   .auth-shell {
     width: 100%;
     min-height: 100vh;

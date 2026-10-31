@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildDuplicateKey,
   canAccessRecord,
   isCrossManagerConflict,
   isValidVin,
@@ -23,6 +22,7 @@ import { canAccessCcmMonthlyData, classifyMonthlyRows, validateDatasetPeriod, va
 import { parseMonthlyCustomerDataFile } from '../src/utils/monthlyCustomerDataParser.js';
 import ExcelJS from 'exceljs';
 import { isValidUsername, normalizeUsername, validateOptionalPhone } from '../src/utils/userRules.js';
+import { buildRepairOrderKey, normalizeRepairOrderNo } from '../src/utils/repairOrderIdentity.js';
 
 test('normalizeVin strips whitespace and invalid characters', () => {
   assert.equal(normalizeVin(' 1hgbh41jxz '), '1HGBH41JXZ');
@@ -56,26 +56,35 @@ test('CRE access is limited to assigned records and same CCM', () => {
 });
 
 test('repair order import marks duplicate rows as skipped', () => {
-  const existing = [buildDuplicateKey('1HGBH41JXZ', 'RO-1001')];
+  const existing = new Set([buildRepairOrderKey('ccm-1', 'RO-1001')]);
   const result = evaluateRow({ vin: '1hgbh41jxz', roNumber: 'RO-1001', ccmId: 'ccm-1', ownerCcmId: 'ccm-1' }, existing);
 
   assert.equal(result.status, 'skipped');
   assert.equal(result.reason, 'Duplicate repair order number');
 });
 
-test('repair-order numbers are globally unique across different VINs', () => {
+test('repair-order duplicates are rejected within a CCM even when VINs differ', () => {
   const result = evaluateRow(
     { vin: 'VIN-2', roNumber: 'ro-1001', ccmId: 'ccm-2', ownerCcmId: 'ccm-2' },
-    new Map([['RO-1001', 'VIN-1']]),
+    new Map([[buildRepairOrderKey('ccm-2', 'RO-1001'), 'VIN-1']]),
   );
   assert.equal(result.status, 'rejected');
   assert.match(result.reason, /different VIN/i);
 });
 
-test('same repair order and VIN is treated as an existing global duplicate', () => {
+test('same normalized repair order under a different CCM is permitted', () => {
   const result = evaluateRow(
-    { vin: 'vin-1', roNumber: 'ro-1001' },
-    new Map([['RO-1001', 'VN1']]),
+    { vin: 'vin-1', roNumber: 'ro-1001', ccmId: 'ccm-2', ownerCcmId: 'ccm-2' },
+    new Map([[buildRepairOrderKey('ccm-1', 'RO-1001'), 'VN1']]),
+  );
+  assert.equal(result.status, 'processed');
+});
+
+test('repair-order identity ignores case and repeated or surrounding whitespace', () => {
+  assert.equal(normalizeRepairOrderNo('  ro \t  1001  '), 'RO 1001');
+  const result = evaluateRow(
+    { vin: 'vin-1', roNumber: 'ro \t 1001', ccmId: 'ccm-1' },
+    new Set([buildRepairOrderKey('ccm-1', 'RO 1001')]),
   );
   assert.equal(result.status, 'skipped');
 });
@@ -88,7 +97,7 @@ test('repair order import allows multiple repair orders for the same VIN', () =>
     ccmId: 'ccm-1',
     ownerCcmId: 'ccm-1',
   }, keys);
-  keys.add(buildDuplicateKey('1HGBH41JXZ', 'RO-1001'));
+  keys.add(buildRepairOrderKey('ccm-1', 'RO-1001'));
   const second = evaluateRow({
     vin: '1hgbh41jxz',
     roNumber: 'RO-1002',
@@ -169,8 +178,8 @@ test('cross-manager conflict helper works', () => {
 });
 
 test('repair-order duplicate rule accepts a Set for bulk import checks', () => {
-  const keys = new Set([buildDuplicateKey('1HGBH41JXZ', 'RO-1001')]);
-  const result = evaluateRow({ vin: '1hgbh41jxz', roNumber: 'RO-1001' }, keys);
+  const keys = new Set([buildRepairOrderKey('ccm-1', 'RO-1001')]);
+  const result = evaluateRow({ vin: '1hgbh41jxz', roNumber: 'RO-1001', ccmId: 'ccm-1' }, keys);
   assert.equal(result.status, 'skipped');
 });
 
@@ -218,6 +227,16 @@ test('customer validation normalizes vehicles and rejects repeated VINs', () => 
   assert.equal(result.value.email, 'asha@example.com');
   assert.equal(result.value.vehicles[0].vin, '1HGBH41JXZ');
   assert.equal(result.value.vehicles[0].model, 'Creta');
+
+  const mixedOwnership = validateCustomerPayload({
+    fullName: 'Asha',
+    vehicles: [
+      { vin: '1HGBH41JXZ', ccmId: ' ccm-a ' },
+      { vin: '2HGBH41JXZ', ccmId: 'ccm-b' },
+    ],
+  });
+  assert.equal(mixedOwnership.value.vehicles[0].ccmId, 'ccm-a');
+  assert.equal(mixedOwnership.value.vehicles[1].ccmId, 'ccm-b');
 
   assert.equal(validateCustomerPayload({
     fullName: 'Asha',

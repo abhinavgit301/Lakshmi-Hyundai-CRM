@@ -17,13 +17,10 @@ async function loadQuotaRows(ccmId, range) {
     ccmId,
     scopeWhere: {
       ccmId,
-      customer: { is: { ccmId } },
-      AND: [{
-        OR: [
-          { vehicleId: null },
-          { vehicle: { is: { ccmId } } },
-        ],
-      }],
+      OR: [
+        { vehicleId: null, customer: { is: { ccmId } } },
+        { vehicle: { is: { ccmId } } },
+      ],
     },
   });
   return buildQuotaRows(cres, counts);

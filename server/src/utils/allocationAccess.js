@@ -1,4 +1,12 @@
-export async function clearStaleMasterCallListOwner(transaction, { allocation, update, ccmId }) {
+import { recordCreAssignmentEvent } from './creAssignmentHistory.js';
+
+export async function clearStaleMasterCallListOwner(transaction, {
+  allocation,
+  update,
+  ccmId,
+  actorUserId = null,
+  reason = null,
+}) {
   if (update.creId || !update.status || allocation.status !== 'assigned' || update.status === 'assigned') return;
 
   const [activeAllocations, entry] = await Promise.all([
@@ -20,5 +28,14 @@ export async function clearStaleMasterCallListOwner(transaction, { allocation, u
   await transaction.masterCallList.updateMany({
     where: { vin: allocation.vehicle.vin, ccmId, ownerUserId: allocation.creId },
     data: { ownerUserId: nextOwnerId },
+  });
+  await recordCreAssignmentEvent(transaction, {
+    vehicleId: allocation.vehicleId,
+    masterCallListId: entry.id,
+    ccmId,
+    previousCreId: allocation.creId,
+    newCreId: nextOwnerId,
+    actorUserId,
+    reason,
   });
 }

@@ -10,6 +10,10 @@ import {
 } from '../utils/monthlyCustomerDataRules.js';
 import { parseMonthlyCustomerDataFile } from '../utils/monthlyCustomerDataParser.js';
 import { allocateUnassignedMasterCallListEntries, lockCcmAllocationTeam } from '../utils/customerAllocation.js';
+import { findCanonicalMasterCallListEntry } from '../utils/masterCallList.js';
+import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
+import { importSnapshot, recordImportChange } from '../utils/importChangeLog.js';
+import { collectImportBatchStats, importRollbackCompleteness } from '../utils/importBatchStats.js';
 
 const FILE_SIZE_LIMIT = 7_000_000;
 
@@ -96,20 +100,18 @@ async function loadMonthContext(req, res) {
   return { ccm, ...period.value };
 }
 
-async function persistLinkedEntities(transaction, ccmId, row) {
+async function persistLinkedEntities(transaction, ccmId, row, trackCreate) {
+  const physicalVehicle = row.vin ? await findOrCreatePhysicalVehicle(transaction, row.vin) : null;
   let vehicle = row.vin
-    ? await transaction.vehicle.findUnique({ where: { vin: row.vin }, include: { customer: true } })
+    ? await transaction.vehicle.findUnique({
+      where: { physicalVehicleId_ccmId: { physicalVehicleId: physicalVehicle.id, ccmId } },
+      include: { customer: true },
+    })
     : null;
   let customer = vehicle?.customer || null;
 
-  if (vehicle && (vehicle.ccmId !== ccmId || customer?.ccmId !== ccmId)) {
-    const conflict = new Error('This VIN does not have matching ownership for the selected CCM and cannot be added to this monthly dataset.');
-    conflict.code = 'MONTHLY_CCM_CONFLICT';
-    throw conflict;
-  }
-
   if (!customer) {
-    customer = await transaction.customer.create({
+    customer = await trackCreate({ entityType: 'Customer', ccmId }, () => transaction.customer.create({
       data: {
         customerCode: `CUS-${randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase()}`,
         fullName: row.customerName,
@@ -117,25 +119,23 @@ async function persistLinkedEntities(transaction, ccmId, row) {
         email: row.email,
         ccmId,
       },
-    });
+    }));
   }
 
   if (!vehicle && row.vin) {
-    const vinOwner = await transaction.vehicle.findUnique({ where: { vin: row.vin }, select: { id: true } });
-    if (!vinOwner) {
-      vehicle = await transaction.vehicle.create({
-        data: {
-          vin: row.vin,
-          registrationNumber: row.registrationNumber,
-          make: row.make,
-          model: row.model,
-          variant: row.variant,
-          year: row.vehicleYear,
-          ccmId,
-          customerId: customer.id,
-        },
-      });
-    }
+    vehicle = await trackCreate({ entityType: 'Vehicle', ccmId }, () => transaction.vehicle.create({
+      data: {
+        vin: row.vin,
+        physicalVehicleId: physicalVehicle.id,
+        registrationNumber: row.registrationNumber,
+        make: row.make,
+        model: row.model,
+        variant: row.variant,
+        year: row.vehicleYear,
+        ccmId,
+        customerId: customer.id,
+      },
+    }));
   }
 
   return { customer, vehicle };
@@ -143,20 +143,34 @@ async function persistLinkedEntities(transaction, ccmId, row) {
 
 // Makes a monthly-imported vehicle visible in the Master Call List and CCM allocation.
 // An existing entry is left untouched so its CRE assignment and status are preserved.
-async function ensureMasterCallListEntry(transaction, ccmId, links, row) {
+async function ensureMasterCallListEntry(transaction, ccmId, links, row, trackCreate, trackUpdate) {
   const { customer, vehicle } = links;
   if (!vehicle?.vin) return;
-  const existing = await transaction.masterCallList.findFirst({ where: { vin: vehicle.vin, ccmId }, select: { id: true } });
-  if (existing) return;
-  await transaction.masterCallList.create({
+  const existing = await findCanonicalMasterCallListEntry(transaction, vehicle.vin, ccmId);
+  if (existing) {
+    if (!existing.vehicleId) {
+      await trackUpdate({
+        entityType: 'MasterCallList',
+        entityId: existing.id,
+        ccmId,
+        before: { vehicleId: existing.vehicleId, updatedAt: existing.updatedAt },
+      }, () => transaction.masterCallList.update({ where: { id: existing.id }, data: { vehicleId: vehicle.id } }));
+    }
+    return;
+  }
+  await trackCreate({
+    entityType: 'MasterCallList',
+    ccmId,
+  }, () => transaction.masterCallList.create({
     data: {
       customerName: customer.fullName || row.customerName,
       mobileNumber: customer.mobileNumber || row.mobileNumber,
       vin: vehicle.vin,
+      vehicleId: vehicle.id,
       registrationNumber: vehicle.registrationNumber,
       ccmId,
     },
-  });
+  }));
 }
 
 function monthlyEntryData(datasetId, createdById, ccmId, row, links, source) {
@@ -234,8 +248,10 @@ export async function createMonthlyCustomerEntry(req, res) {
   try {
     const entry = await prisma.$transaction(async (transaction) => {
       await lockCcmAllocationTeam(transaction, context.ccm.ccmId);
-      const links = await persistLinkedEntities(transaction, context.ccm.ccmId, validation.value);
-      await ensureMasterCallListEntry(transaction, context.ccm.ccmId, links, validation.value);
+      const noTrackCreate = (_change, create) => create();
+      const noTrackUpdate = (_change, update) => update();
+      const links = await persistLinkedEntities(transaction, context.ccm.ccmId, validation.value, noTrackCreate);
+      await ensureMasterCallListEntry(transaction, context.ccm.ccmId, links, validation.value, noTrackCreate, noTrackUpdate);
       const createdEntry = await transaction.monthlyCustomerDataEntry.create({
         data: monthlyEntryData(dataset.id, req.user.id, context.ccm.ccmId, validation.value, links, 'manual'),
         include: {
@@ -312,28 +328,102 @@ export async function importMonthlyCustomerData(req, res) {
   if (!prepared) return;
 
   const dataset = prepared.dataset || await getDataset(prepared.context.ccm.id, prepared.context.year, prepared.context.month);
-
-  const importRecord = await prisma.monthlyCustomerDataImport.create({
-    data: {
-      datasetId: dataset.id,
-      importedById: req.user.id,
-      fileName: prepared.fileName,
-      totalRows: prepared.classification.rows.length,
-      status: 'processing',
-    },
+  const importBatchId = randomUUID();
+  const importRowProgressIds = new Map(prepared.classification.rows.map(({ rowNumber }) => [rowNumber, randomUUID()]));
+  const importRecord = await prisma.$transaction(async (transaction) => {
+    await transaction.importBatch.create({
+      data: {
+        id: importBatchId,
+        fileName: prepared.fileName,
+        importedByUserId: req.user.id,
+        ccmId: prepared.context.ccm.ccmId,
+        importType: 'monthly_customer_data',
+        processingStartedAt: new Date(),
+        totalRows: prepared.classification.rows.length,
+        status: 'processing',
+        rollbackSupported: false,
+        statsComplete: false,
+        rowProgress: {
+          create: prepared.classification.rows.map(({ rowNumber }) => ({
+            id: importRowProgressIds.get(rowNumber),
+            rowNumber,
+          })),
+        },
+      },
+    });
+    return transaction.monthlyCustomerDataImport.create({
+      data: {
+        datasetId: dataset.id,
+        importedById: req.user.id,
+        fileName: prepared.fileName,
+        totalRows: prepared.classification.rows.length,
+        status: 'processing',
+        importBatchId,
+      },
+    });
   });
 
   let addedRows = 0;
   let skippedRows = 0;
   let rejectedRows = 0;
+  let changeSequence = 0;
   const rowErrors = [];
   const seenKeys = await getExistingKeys(dataset.id);
+  const completeRow = async (transaction, rowProgressId, outcome, loggedChangeCount) => {
+    await transaction.importRowProgress.update({
+      where: { id: rowProgressId },
+      data: {
+        status: 'completed',
+        outcome,
+        mutationState: 'complete',
+        loggedChangeCount,
+      },
+    });
+  };
+  const trackCreate = async (transaction, rowProgressId, change, create) => {
+    const record = await create();
+    await recordImportChange(transaction, {
+      importBatchId,
+      rowProgressId,
+      sequence: ++changeSequence,
+      ...change,
+      entityId: record.id,
+      operation: 'CREATE',
+      before: {},
+      after: importSnapshot(record),
+    });
+    return record;
+  };
+  const trackUpdate = async (transaction, rowProgressId, change, update) => {
+    const record = await update();
+    const after = Object.fromEntries(Object.keys(change.before).map((field) => [field, record[field]]));
+    await recordImportChange(transaction, {
+      importBatchId,
+      rowProgressId,
+      sequence: ++changeSequence,
+      ...change,
+      operation: 'UPDATE',
+      after: importSnapshot(after),
+    });
+    return record;
+  };
 
+  let importFinalized = false;
   try {
     for (const item of prepared.classification.rows) {
+      const rowProgressId = importRowProgressIds.get(item.rowNumber);
       if (item.status === 'rejected' || item.status === 'skipped') {
         if (item.status === 'rejected') rejectedRows += 1;
         else skippedRows += 1;
+        await prisma.importRowProgress.update({
+          where: { id: rowProgressId },
+          data: {
+            status: 'completed',
+            outcome: item.status,
+            mutationState: 'complete',
+            loggedChangeCount: 0,
+          },
+        });
         rowErrors.push({
           importId: importRecord.id,
           rowNumber: item.rowNumber,
@@ -349,6 +439,10 @@ export async function importMonthlyCustomerData(req, res) {
       const key = monthlyEntryDuplicateKey(item.row);
       if (key && seenKeys.has(key)) {
         skippedRows += 1;
+        await prisma.importRowProgress.update({
+          where: { id: rowProgressId },
+          data: { status: 'completed', outcome: 'skipped', mutationState: 'complete', loggedChangeCount: 0 },
+        });
         rowErrors.push({
           importId: importRecord.id,
           rowNumber: item.rowNumber,
@@ -364,17 +458,40 @@ export async function importMonthlyCustomerData(req, res) {
       try {
         await prisma.$transaction(async (transaction) => {
           await lockCcmAllocationTeam(transaction, prepared.context.ccm.ccmId);
-          const links = await persistLinkedEntities(transaction, prepared.context.ccm.ccmId, item.row);
-          await ensureMasterCallListEntry(transaction, prepared.context.ccm.ccmId, links, item.row);
-          await transaction.monthlyCustomerDataEntry.create({
+          const trackRowCreate = (change, create) => trackCreate(transaction, rowProgressId, change, create);
+          const trackRowUpdate = (change, update) => trackUpdate(transaction, rowProgressId, change, update);
+          const links = await persistLinkedEntities(
+            transaction,
+            prepared.context.ccm.ccmId,
+            item.row,
+            trackRowCreate,
+          );
+          await ensureMasterCallListEntry(
+            transaction,
+            prepared.context.ccm.ccmId,
+            links,
+            item.row,
+            trackRowCreate,
+            trackRowUpdate,
+          );
+          await trackRowCreate({
+            entityType: 'MonthlyCustomerDataEntry',
+            ccmId: prepared.context.ccm.ccmId,
+          }, () => transaction.monthlyCustomerDataEntry.create({
             data: monthlyEntryData(dataset.id, req.user.id, prepared.context.ccm.ccmId, item.row, links, 'import'),
-          });
+          }));
+          const rowChangeCount = await transaction.importChangeLog.count({ where: { importBatchId, rowProgressId } });
+          await completeRow(transaction, rowProgressId, 'monthly_added', rowChangeCount);
         });
         if (key) seenKeys.add(key);
         addedRows += 1;
       } catch (error) {
         if (error?.code !== 'P2002' && error?.code !== 'MONTHLY_CCM_CONFLICT') throw error;
         skippedRows += 1;
+        await prisma.importRowProgress.update({
+          where: { id: rowProgressId },
+          data: { status: 'completed', outcome: 'skipped', mutationState: 'complete', loggedChangeCount: 0 },
+        });
         rowErrors.push({
           importId: importRecord.id,
           rowNumber: item.rowNumber,
@@ -388,10 +505,45 @@ export async function importMonthlyCustomerData(req, res) {
     }
 
     await prisma.$transaction(async (transaction) => {
-      await allocateUnassignedMasterCallListEntries(transaction, prepared.context.ccm.ccmId, req.user.id, { spreadAcrossTeam: true });
+      let allocationChangeCount = 0;
+      await allocateUnassignedMasterCallListEntries(transaction, prepared.context.ccm.ccmId, req.user.id, {
+        spreadAcrossTeam: true,
+        onMutation: async (change, update) => {
+          const record = await update();
+          const after = Object.fromEntries(Object.keys(change.before).map((field) => [field, record[field]]));
+          await recordImportChange(transaction, {
+            importBatchId,
+            sequence: ++changeSequence,
+            evidenceScope: 'batch',
+            rowProgressId: null,
+            ...change,
+            operation: 'UPDATE',
+            after: importSnapshot(after),
+          });
+          allocationChangeCount += 1;
+          return record;
+        },
+      });
       if (rowErrors.length) {
         await transaction.monthlyCustomerDataImportRowError.createMany({ data: rowErrors });
       }
+      const stats = await collectImportBatchStats(transaction, importBatchId);
+      await transaction.importBatch.update({
+        where: { id: importBatchId },
+        data: {
+          ...stats,
+          status: 'completed',
+          allocationEvidenceState: allocationChangeCount ? 'complete' : 'not_started',
+          allocationChangeCount,
+          rollbackSupported: false,
+          statsComplete: true,
+        },
+      });
+      const rollbackSupported = await importRollbackCompleteness(transaction, importBatchId, prepared.classification.rows.length);
+      await transaction.importBatch.update({
+        where: { id: importBatchId },
+        data: { rollbackSupported, affectedCountsComplete: rollbackSupported },
+      });
       await transaction.monthlyCustomerDataImport.update({
         where: { id: importRecord.id },
         data: { addedRows, skippedRows, rejectedRows, status: 'completed' },
@@ -406,13 +558,21 @@ export async function importMonthlyCustomerData(req, res) {
         },
       });
     });
-
-    const completedImport = await prisma.monthlyCustomerDataImport.findUnique({ where: { id: importRecord.id }, include: { rowErrors: true } });
-    return res.status(201).json({ import: completedImport });
+    importFinalized = true;
   } catch (error) {
-    await prisma.monthlyCustomerDataImport.update({ where: { id: importRecord.id }, data: { status: 'failed' } });
+    if (!importFinalized) {
+      await prisma.$transaction(async (transaction) => {
+        await transaction.monthlyCustomerDataImport.update({ where: { id: importRecord.id }, data: { status: 'failed' } });
+        await transaction.importBatch.updateMany({
+          where: { id: importBatchId, status: 'processing' },
+          data: { status: 'failed', rollbackSupported: false, affectedCountsComplete: false },
+        });
+      });
+    }
     throw error;
   }
+  const completedImport = await prisma.monthlyCustomerDataImport.findUnique({ where: { id: importRecord.id }, include: { rowErrors: true } });
+  return res.status(201).json({ import: completedImport });
 }
 
 export async function getMonthlyCustomerImportHistory(req, res) {

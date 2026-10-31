@@ -1,9 +1,36 @@
 import { Fragment, lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useNavigationType } from 'react-router-dom';
-import { Activity, ArrowLeft, BarChart3, CalendarCheck, CalendarClock, CalendarDays, CalendarPlus2, ChevronDown, ClipboardList, Clock3, Download, FileUp, Gift, LayoutDashboard, ListFilter, LogOut, PhoneCall, Plus, Save, ShieldCheck, Trash2, Upload, UserCog, UserRoundPlus, UsersRound, X } from 'lucide-react';
+import { Activity, ArrowLeft, BarChart3, CalendarDays, CalendarPlus2, ChevronDown, ClipboardList, Clock3, Download, Gift, LayoutDashboard, ListFilter, LogOut, Plus, Upload, UserCog, UserRoundPlus, UsersRound } from 'lucide-react';
 import api from './lib/api.js';
-import { getMasterRepairTypePresentation, MASTER_REPAIR_TYPE_ORDER } from './utils/repairTypes.js';
+import { listCache } from './lib/listCache.js';
+import { beginRequest, isCanceled } from './lib/requestControl.js';
 
+import { SectionSkeleton } from './components/Skeletons.jsx';
+import AccordionFilters from './components/AccordionFilters.jsx';
+import MasterCallTable from './components/MasterCallTable.jsx';
+import ServiceListTable from './components/ServiceListTable.jsx';
+import { useStableCallback } from './hooks/useStableCallback.js';
+import { monthOptions } from './utils/months.js';
+import { buildUserTree, dueViews, followUpViews, localDateKey, masterCsvLabels, masterListQuery } from './utils/crmHelpers.js';
+
+const UserManagementPanel = lazy(() => import('./components/UserManagementPanel.jsx'));
+const CcmProfilePanel = lazy(() => import('./components/CcmProfilePanel.jsx'));
+const PerformanceBoardPanel = lazy(() => import('./components/views/PerformanceBoardPanel.jsx'));
+const PerformancePanel = lazy(() => import('./components/views/PerformancePanel.jsx'));
+const AllocationsPanel = lazy(() => import('./components/views/AllocationsPanel.jsx'));
+const ReportsPanel = lazy(() => import('./components/views/ReportsPanel.jsx'));
+const ImportsPanel = lazy(() => import('./components/views/ImportsPanel.jsx'));
+const AppointmentsPanel = lazy(() => import('./components/views/AppointmentsPanel.jsx'));
+const MasterCallListPanel = lazy(() => import('./components/views/MasterCallListPanel.jsx'));
+const CustomerListsPanel = lazy(() => import('./components/views/CustomerListsPanel.jsx'));
+const FreeServiceCreDashboard = lazy(() => import('./components/views/FreeServiceCreDashboard.jsx'));
+const CreDashboard = lazy(() => import('./components/views/CreDashboard.jsx'));
+const CcmDashboard = lazy(() => import('./components/views/CcmDashboard.jsx'));
+const GmDashboard = lazy(() => import('./components/views/GmDashboard.jsx'));
+const AdminDashboard = lazy(() => import('./components/views/AdminDashboard.jsx'));
+const DefaultDashboard = lazy(() => import('./components/views/DefaultDashboard.jsx'));
+const CustomerProfilePage = lazy(() => import('./components/views/CustomerProfilePage.jsx'));
+const CustomerActionPanel = lazy(() => import('./components/views/CustomerActionPanel.jsx'));
 const WorkshopServicePerformance = lazy(() => import('./components/WorkshopServicePerformance.jsx'));
 
 const navItems = ['Dashboard', 'Customers', 'Follow-ups', 'Appointments', 'Allocations', 'Imports', 'Reports'];
@@ -152,171 +179,6 @@ const navIcons = {
 };
 
 // Customer lists under the Customers accordion. `kind` selects the data source; `callSource` tags the calls and follow-ups made from it.
-const dueViews = {
-  'Due 1-Year': { kind: 'due', window: '1y', label: '1-Year Due', icon: CalendarClock, callSource: 'SERVICE' },
-  'Due 6-Month': { kind: 'due', window: '6m', label: '6-Month Due', icon: Clock3, callSource: 'SERVICE' },
-  'Free Service': { kind: 'free', label: 'Free Service', icon: Gift, callSource: 'FREE_SERVICE' },
-  Warranty: { kind: 'warranty', label: 'Warranty', icon: ShieldCheck, callSource: 'WARRANTY' },
-};
-
-// Follow-up queues under the Follow-ups accordion; each shows only follow-ups created from its own list.
-const followUpViews = {
-  'Follow-up Service': { source: 'SERVICE', label: 'Service', icon: Clock3 },
-  'Follow-up Free Service': { source: 'FREE_SERVICE', label: 'Free Service', icon: Gift },
-  'Follow-up Warranty': { source: 'WARRANTY', label: 'Warranty', icon: ShieldCheck },
-};
-
-const dailyTargetLabels = { callsMade: 'Calls made', callsPickedUp: 'Calls picked up' };
-
-function formatDate(value) {
-  return value ? new Date(value).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
-}
-
-function sortRepairOrderVisits(visits = []) {
-  return [...visits].sort((left, right) => {
-    const leftDate = new Date(left.visitDate || left.importedDetails?.visitDate || left.importedDetails?.roDate || '').getTime();
-    const rightDate = new Date(right.visitDate || right.importedDetails?.visitDate || right.importedDetails?.roDate || '').getTime();
-    const leftHasDate = Number.isFinite(leftDate);
-    const rightHasDate = Number.isFinite(rightDate);
-    if (leftHasDate !== rightHasDate) return leftHasDate ? -1 : 1;
-    if (leftHasDate && leftDate !== rightDate) return rightDate - leftDate;
-    const leftRepairOrder = String(left.repairOrderNo || left.importedDetails?.roNumber || '').trim();
-    const rightRepairOrder = String(right.repairOrderNo || right.importedDetails?.roNumber || '').trim();
-    if (leftRepairOrder < rightRepairOrder) return -1;
-    if (leftRepairOrder > rightRepairOrder) return 1;
-    return String(left.vehicleId || '').localeCompare(String(right.vehicleId || ''));
-  });
-}
-
-function formatOutcome(outcome) {
-  return outcome ? outcome.replaceAll('_', ' ').toLowerCase() : '';
-}
-
-const monthOptions = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-];
-
-const masterCsvFields = [
-  ['serialNo', 'S NO', 'text'],
-  ['roNumber', 'Repair Order No', 'text'],
-  ['visitDate', 'R/O Date', 'date'],
-  ['closingDate', 'Closing Date', 'date'],
-  ['gpDate', 'G.P Date', 'date'],
-  ['workType', 'Work Type', 'text'],
-  ['serviceStatus', 'Status', 'text'],
-  ['serviceAdvisor', 'Service Advisor', 'text'],
-  ['vin', 'Vehicle VIN', 'text'],
-  ['registrationNumber', 'Reg No', 'text'],
-  ['model', 'Model', 'text'],
-  ['mileage', 'Mileage', 'number'],
-  ['saleDealer', 'Sale Dealer', 'text'],
-  ['saleDate', 'Sale Date', 'date'],
-  ['ucSaleDealer', 'UC Sale Dealer', 'text'],
-  ['ucSaleDate', 'UC Sale Date', 'date'],
-  ['customerName', 'Customer Name', 'text'],
-  ['address', 'Address', 'text'],
-  ['email', 'E-mail', 'email'],
-  ['city', 'City', 'text'],
-  ['pin', 'PIN', 'text'],
-  ['mobileNumber', 'Mobile', 'tel'],
-  ['office', 'Office', 'text'],
-  ['technician', 'Tech.', 'text'],
-  ['specialMessage', 'Special Msg.', 'text'],
-  ['visitType', 'Visit Type', 'text'],
-  ['demands', 'Demands', 'text'],
-];
-
-const masterCsvLabels = Object.fromEntries(masterCsvFields.map(([key, label]) => [key, label]));
-const manualEntryExcludedFields = ['serialNo', 'gpDate', 'ucSaleDate', 'specialMessage', 'visitType', 'demands'];
-
-function formatVehicleAge(totalMonths) {
-  if (totalMonths == null) return '—';
-  const years = Math.floor(totalMonths / 12);
-  const months = totalMonths % 12;
-  return `${years} yr ${months} mo`;
-}
-
-function getLatestImportedDetails(visits) {
-  return [...visits].reverse().reduce((details, visit) => {
-    Object.entries(visit.importedDetails || {}).forEach(([key, value]) => {
-      if (value != null && String(value).trim() !== '') details[key] = value;
-    });
-    return details;
-  }, {});
-}
-
-function getImportedDetail(details, ...keys) {
-  const wantedKeys = new Set(keys.map((key) => key.toLowerCase().replace(/[^a-z0-9]/g, '')));
-  const match = Object.entries(details).find(([key, value]) =>
-    wantedKeys.has(key.toLowerCase().replace(/[^a-z0-9]/g, '')) && value != null && String(value).trim() !== '',
-  );
-  return match?.[1];
-}
-
-function ImportErrors({ errors }) {
-  return (
-    <ul className="import-error-list">
-      {errors.map((error, index) => (
-        <li key={`${error.rowNumber}-${error.errorCode}-${index}`}>
-          <strong className={`import-status ${error.status || 'rejected'}`}>{error.status || error.errorCode}</strong>
-          <span>Row {error.rowNumber}{error.vin ? ` · ${error.vin}` : ''}: {error.errorMessage}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function localDateKey(value) {
-  const date = new Date(value);
-  const pad = (number) => String(number).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
-function buildUserTree(users) {
-  const gms = users.filter((user) => user.role === 'GM');
-  const ccms = users.filter((user) => user.role === 'CCM');
-  const cres = users.filter((user) => user.role === 'CRE');
-  const freeServiceCres = users.filter((user) => user.role === 'FREE_SERVICE_CRE');
-  const rows = [];
-  const placedCcms = new Set();
-  const placedCres = new Set();
-  const placedFreeServiceCres = new Set();
-
-  function addCcm(ccm, depth) {
-    placedCcms.add(ccm.id);
-    rows.push({ user: ccm, depth });
-    cres.filter((cre) => ccm.ccmId && cre.ccmId === ccm.ccmId).forEach((cre) => {
-      placedCres.add(cre.id);
-      rows.push({ user: cre, depth: depth + 1 });
-    });
-    freeServiceCres.filter((cre) => ccm.ccmId && cre.ccmId === ccm.ccmId).forEach((cre) => {
-      placedFreeServiceCres.add(cre.id);
-      rows.push({ user: cre, depth: depth + 1 });
-    });
-  }
-
-  gms.forEach((gm) => {
-    rows.push({ user: gm, depth: 0 });
-    ccms.filter((ccm) => ccm.gmId === gm.id).forEach((ccm) => addCcm(ccm, 1));
-  });
-  ccms.filter((ccm) => !placedCcms.has(ccm.id)).forEach((ccm) => addCcm(ccm, 0));
-  cres.filter((cre) => !placedCres.has(cre.id)).forEach((cre) => rows.push({ user: cre, depth: 0 }));
-  freeServiceCres.filter((cre) => !placedFreeServiceCres.has(cre.id)).forEach((cre) => rows.push({ user: cre, depth: 0 }));
-  users.filter((user) => !['GM', 'CCM', 'CRE', 'FREE_SERVICE_CRE'].includes(user.role)).forEach((user) => rows.push({ user, depth: 0 }));
-  return rows;
-}
-
-function masterListQuery(filters) {
-  const params = new URLSearchParams();
-  if (filters.search.trim()) params.set('search', filters.search.trim());
-  if (filters.creId) params.set('creId', filters.creId);
-  if (filters.dueCategory) params.set('dueCategory', filters.dueCategory);
-  if (filters.repairType) params.set('repairType', filters.repairType);
-  const query = params.toString();
-  return query ? `?${query}` : '';
-}
-
 function App() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -325,6 +187,8 @@ function App() {
   const activeView = activeRoute.view;
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
+  const currentRole = String(currentUser?.role || '').toUpperCase();
+  const currentUserId = currentUser?.id ?? null;
   const [authChecked, setAuthChecked] = useState(false);
   const [sessionVersion, setSessionVersion] = useState(0);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
@@ -333,6 +197,8 @@ function App() {
   const [summary, setSummary] = useState([]);
   const [calls, setCalls] = useState([]);
   const [masterListLoading, setMasterListLoading] = useState(false);
+  const [masterListLoadingMore, setMasterListLoadingMore] = useState(false);
+  const [masterListPageInfo, setMasterListPageInfo] = useState({ total: 0, hasMore: false, offset: 0 });
   const [masterListError, setMasterListError] = useState('');
   const [masterListMessage, setMasterListMessage] = useState('');
   const [masterListCres, setMasterListCres] = useState([]);
@@ -399,10 +265,17 @@ function App() {
   const [freeServiceCustomerMenuOpen, setFreeServiceCustomerMenuOpen] = useState(false);
   const [freeServiceFollowUpMenuOpen, setFreeServiceFollowUpMenuOpen] = useState(false);
   const [dueRecords, setDueRecords] = useState([]);
+  const [dueRecordsView, setDueRecordsView] = useState('');
+  const [duePageInfo, setDuePageInfo] = useState({});
+  const [dueLoadingMore, setDueLoadingMore] = useState({});
+  const [followUpPageInfo, setFollowUpPageInfo] = useState({});
+  const [followUpsLoadingMore, setFollowUpsLoadingMore] = useState({});
   const [dueLoading, setDueLoading] = useState(false);
   const [dueError, setDueError] = useState('');
   const [dueSearch, setDueSearch] = useState('');
+  const [dueAppliedFilters, setDueAppliedFilters] = useState({});
   const [followUpSearch, setFollowUpSearch] = useState('');
+  const [followUpAppliedFilters, setFollowUpAppliedFilters] = useState({});
   const [accordionDueCategoryFilter, setAccordionDueCategoryFilter] = useState('');
   const [accordionRepairTypeFilter, setAccordionRepairTypeFilter] = useState('');
   const [followUpListRecords, setFollowUpListRecords] = useState([]);
@@ -421,7 +294,15 @@ function App() {
   const [exportingPdf, setExportingPdf] = useState(false);
   const [masterListTeam, setMasterListTeam] = useState('');
   const masterListRequestRef = useRef(0);
+  const masterListControllerRef = useRef({});
+  const masterListLoadMoreRef = useRef(false);
+  const dueRequestRef = useRef({});
+  const dueLoadMoreRef = useRef({});
+  const followUpRequestRef = useRef({});
+  const followUpLoadMoreRef = useRef({});
   const masterListAppliedFiltersRef = useRef('');
+  const [initialDataLoading, setInitialDataLoading] = useState(true);
+  const [initialDataError, setInitialDataError] = useState('');
   const [wpYear, setWpYear] = useState(new Date().getFullYear());
   const [wpMonth, setWpMonth] = useState(new Date().getMonth() + 1);
   const [wpCcmId, setWpCcmId] = useState('');
@@ -442,6 +323,7 @@ function App() {
   const [performanceRange, setPerformanceRange] = useState('day');
   const [performanceCreId, setPerformanceCreId] = useState('');
   const [followUps, setFollowUps] = useState([]);
+  const [followUpsSource, setFollowUpsSource] = useState('');
   const [followUpsLoading, setFollowUpsLoading] = useState(false);
   const [followUpError, setFollowUpError] = useState('');
   const [appointmentsLoading, setAppointmentsLoading] = useState(false);
@@ -511,6 +393,7 @@ function App() {
   const customerCallModalRef = useRef(null);
   const userSavingRef = useRef(false);
   const importRequestKeyRef = useRef(null);
+  const initialLoadPromiseRef = useRef(null);
   const lastLoadedRouteKeyRef = useRef('');
 
   function setActiveView(view, options = {}) {
@@ -534,63 +417,70 @@ function App() {
   useEffect(() => {
     let isMounted = true;
 
-    async function loadDashboard() {
-      setLoading(true);
-      try {
+    if (!initialLoadPromiseRef.current) {
+      initialLoadPromiseRef.current = (async () => {
         const userResponse = await api.get('/auth/me');
-        if (!isMounted) return;
-        setCurrentUser(userResponse.data.user);
-
-        // Non-blocking: the dashboard renders without it if the notices cannot load.
-        if (String(userResponse.data.user?.role || '').toUpperCase() === 'CCM') {
-          api.get('/notifications/quota').then((response) => { if (isMounted) setQuotaNotices(response.data); }).catch(() => {});
-        } else {
-          setQuotaNotices(null);
-        }
-        const [summaryResponse, appointmentResponse] = await Promise.all([
+        const user = userResponse.data.user;
+        const role = String(user?.role || '').toUpperCase();
+        setCurrentUser(user);
+        const requests = [
           api.get('/dashboard/summary'),
-          ['CCM', 'CRE', 'FREE_SERVICE_CRE', 'GM', 'ADMIN'].includes(String(userResponse.data.user?.role || '').toUpperCase())
+          ['CCM', 'CRE', 'FREE_SERVICE_CRE', 'GM', 'ADMIN'].includes(role)
             ? api.get('/appointments')
             : Promise.resolve({ data: { appointments: [] } }),
-        ]);
-
-        if (!isMounted) {
-          return;
-        }
-
-        setDashboardData(summaryResponse.data);
-
-        const nextSummary = [
-          { label: 'Total customers', value: summaryResponse.data.totalCustomers, change: 'Current total' },
-          { label: 'Active vehicles', value: summaryResponse.data.activeVehicles, change: 'Current total' },
-          { label: 'Calls today', value: summaryResponse.data.todaysCalls, change: `${summaryResponse.data.pendingFollowUps} follow-ups pending` },
-          { label: 'Appointments', value: summaryResponse.data.appointmentCount, change: 'Today' },
         ];
-
-        setSummary(nextSummary);
-        setAppointments(appointmentResponse.data.appointments || []);
-      } catch (error) {
-        if (error.response?.status !== 401) {
-          console.error('Dashboard load failed.', error);
-          setSummary([
-            { label: 'Total customers', value: 0, change: 'Current total' },
-            { label: 'Active vehicles', value: 0, change: 'Current total' },
-            { label: 'Calls today', value: 0, change: 'Today' },
-            { label: 'Appointments', value: 0, change: 'Today' },
-          ]);
-          setCalls([]);
-          setAppointments([]);
-        }
-        setCurrentUser(null);
-      } finally {
-        if (isMounted) {
-          setAuthChecked(true);
-          setLoading(false);
-        }
-      }
+        if (['CCM', 'CRE'].includes(role)) requests.push(api.get('/call-list?limit=50&offset=0'));
+        if (role === 'CCM') requests.push(api.get('/teams'));
+        const [summaryResponse, appointmentResponse, masterResponse, teamResponse] = await Promise.all(requests);
+        return { user, role, summaryResponse, appointmentResponse, masterResponse, teamResponse };
+      })();
     }
-
-    loadDashboard();
+    initialLoadPromiseRef.current.then(({
+      user, role, summaryResponse, appointmentResponse, masterResponse, teamResponse,
+    }) => {
+      if (!isMounted) return;
+      setCurrentUser(user);
+      setDashboardData(summaryResponse.data);
+      if (masterResponse) {
+        setCalls(masterResponse.data.records || []);
+        setMasterListPageInfo({
+          total: masterResponse.data.total || 0,
+          hasMore: masterResponse.data.hasMore === true,
+          offset: masterResponse.data.offset || 0,
+        });
+      }
+      if (teamResponse) {
+        setAllocationCres(teamResponse.data.cres || []);
+        setMasterListCcms(teamResponse.data.ccms || []);
+      }
+      setSummary([
+        { label: 'Total customers', value: summaryResponse.data.totalCustomers, change: 'Current total' },
+        { label: 'Active vehicles', value: summaryResponse.data.activeVehicles, change: 'Current total' },
+        { label: 'Calls today', value: summaryResponse.data.todaysCalls, change: `${summaryResponse.data.pendingFollowUps} follow-ups pending` },
+        { label: 'Appointments', value: summaryResponse.data.appointmentCount, change: 'Today' },
+      ]);
+      setAppointments(appointmentResponse.data.appointments || []);
+      if (role === 'CCM') {
+        api.get('/notifications/quota').then((response) => {
+          if (isMounted) setQuotaNotices(response.data);
+        }).catch((error) => console.warn('Could not load CCM quota notices.', error));
+      } else {
+        setQuotaNotices(null);
+      }
+    }).catch((error) => {
+      if (!isMounted) return;
+      if (error.response?.status !== 401) {
+        console.error('Dashboard load failed.', error);
+        setInitialDataError(error.response?.data?.message || 'We could not load the data required to open your workspace.');
+      } else {
+        setCurrentUser(null);
+      }
+    }).finally(() => {
+      if (!isMounted) return;
+      setAuthChecked(true);
+      setInitialDataLoading(false);
+      setLoading(false);
+    });
 
     return () => {
       isMounted = false;
@@ -603,6 +493,9 @@ function App() {
     setLoginError('');
     try {
       await api.post('/auth/login', loginForm);
+      initialLoadPromiseRef.current = null;
+      setInitialDataLoading(true);
+      setInitialDataError('');
       setAuthChecked(false);
       setSessionVersion((version) => version + 1);
       setLoginForm((current) => ({ ...current, password: '' }));
@@ -621,6 +514,8 @@ function App() {
     } finally {
       setCurrentUser(null);
       setAuthChecked(true);
+      setInitialDataError('');
+      setInitialDataLoading(false);
       setLoading(false);
       navigate('/login', { replace: true });
       setCustomersMenuOpen(false);
@@ -707,23 +602,67 @@ function App() {
     loadReports(filter.year, filter.month, filter.ccmId, filter.creId);
   }
 
-  const refreshMasterList = useCallback(async (filters) => {
+  const refreshMasterList = useCallback(async (filters, { offset = 0, append = false } = {}) => {
     const requestId = masterListRequestRef.current + 1;
     masterListRequestRef.current = requestId;
     masterListAppliedFiltersRef.current = JSON.stringify(filters);
-    setMasterListLoading(true);
+    const cacheKey = `${currentUserId}|master|${JSON.stringify(filters)}`;
+    const cached = !append && offset === 0 ? listCache.get(cacheKey) : null;
+    if (cached) {
+      setCalls(cached.records);
+      setMasterListPageInfo(cached.pageInfo);
+      setMasterListError('');
+      setMasterListLoading(false);
+      setMasterListLoadingMore(false);
+      return;
+    }
+    const controller = beginRequest(masterListControllerRef.current, 'master');
+    const startedGeneration = listCache.generation();
+    if (append) setMasterListLoadingMore(true);
+    else setMasterListLoading(true);
     setMasterListError('');
     try {
-      const response = await api.get(`/call-list${masterListQuery(filters)}`);
-      if (requestId === masterListRequestRef.current) setCalls(response.data.records || []);
+      const response = await api.get(`/call-list${masterListQuery({ ...filters, offset })}`, { signal: controller.signal });
+      if (requestId === masterListRequestRef.current) {
+        const nextRecords = response.data.records || [];
+        const pageInfo = {
+          total: response.data.total || 0,
+          hasMore: response.data.hasMore === true,
+          offset: response.data.offset || 0,
+        };
+        setCalls((current) => append
+          ? [...current, ...nextRecords.filter((record) => !current.some((existing) => existing.id === record.id))]
+          : nextRecords);
+        setMasterListPageInfo(pageInfo);
+        if (!append && offset === 0) listCache.set(cacheKey, { records: nextRecords, pageInfo }, startedGeneration);
+      }
     } catch (error) {
+      if (isCanceled(error)) return;
       if (requestId === masterListRequestRef.current) {
         setMasterListError(error.response?.data?.message || 'Could not load the master call list.');
       }
     } finally {
-      if (requestId === masterListRequestRef.current) setMasterListLoading(false);
+      if (requestId === masterListRequestRef.current) {
+        setMasterListLoading(false);
+        setMasterListLoadingMore(false);
+      }
     }
-  }, []);
+  }, [currentUserId]);
+
+  async function loadMoreMasterList() {
+    if (masterListLoadMoreRef.current || !masterListPageInfo.hasMore) return;
+    masterListLoadMoreRef.current = true;
+    try {
+      await refreshMasterList({
+        search: masterListSearch,
+        creId: masterListCreFilter,
+        dueCategory: masterListDueFilter,
+        repairType: masterListRepairFilter,
+      }, { offset: masterListPageInfo.offset + 50, append: true });
+    } finally {
+      masterListLoadMoreRef.current = false;
+    }
+  }
 
   async function openMasterList() {
     setActiveView('Master list');
@@ -748,17 +687,25 @@ function App() {
     }
   }
 
-  async function changeMasterListAssignee(recordId, assigneeId) {
+  async function changeMasterListAssignee(recordId, assigneeId, record) {
     setMasterListSavingId(recordId);
     setMasterListError('');
     try {
-      const response = await api.patch(`/allocations/master-call-list/${recordId}/assignee`, { assigneeId });
+      const response = record?.allocationOnly
+        ? await api.patch(`/allocations/${record.allocationId}`, { creId: assigneeId })
+        : await api.patch(`/allocations/master-call-list/${recordId}/assignee`, { assigneeId });
+      const assignment = record?.allocationOnly
+        ? {
+          assigneeId: response.data.allocation.creId,
+          assigneeName: response.data.allocation.cre?.name || null,
+        }
+        : response.data.record;
       setCalls((current) => current.map((record) => record.id === recordId
-        ? { ...record, ...response.data.record }
+        ? { ...record, ...assignment }
         : record));
       // Due, Free Service and Warranty rows carry their master-list record id as `recordId` (or `id`).
       setDueRecords((current) => current.map((record) => (record.recordId || record.id) === recordId
-        ? { ...record, assigneeId: response.data.record.assigneeId, assigneeName: response.data.record.assigneeName }
+        ? { ...record, assigneeId: assignment.assigneeId, assigneeName: assignment.assigneeName }
         : record));
     } catch (error) {
       setMasterListError(error.response?.data?.message || 'Could not update the CRE assignment.');
@@ -1148,31 +1095,78 @@ function App() {
     startCall(customer, record.vehicleId, { callSource: 'SERVICE' });
   }
 
-  async function loadDueData(viewName) {
+  const loadDueData = useCallback(async (viewName, {
+    offset = 0,
+    append = false,
+    search = dueSearch,
+    dueCategory = accordionDueCategoryFilter,
+    repairType = accordionRepairTypeFilter,
+  } = {}) => {
     const view = dueViews[viewName];
-    setDueLoading(true);
+    if (append && dueLoadMoreRef.current[viewName]) return;
+    if (append) dueLoadMoreRef.current[viewName] = true;
+    const requestId = (dueRequestRef.current[viewName] || 0) + 1;
+    dueRequestRef.current[viewName] = requestId;
+    if (append) setDueLoadingMore((current) => ({ ...current, [viewName]: true }));
+    else {
+      setDueLoading(true);
+      setDueRecords([]);
+    }
     setDueError('');
     try {
-      const endpoint = view.kind === 'free' ? '/free-service' : view.kind === 'warranty' ? '/warranty' : `/call-list/due?window=${view.window}`;
-      const requests = [api.get(endpoint), api.get('/customers')];
-      if (currentRole === 'CCM') requests.push(api.get('/teams'));
-      const [dueResponse, customerResponse, teamResponse] = await Promise.all(requests);
-      setDueRecords(dueResponse.data.records || []);
+      const params = new URLSearchParams({ limit: '50', offset: String(offset) });
+      if (search.trim()) params.set('search', search.trim());
+      if (dueCategory) params.set('dueCategory', dueCategory);
+      if (repairType) params.set('repairType', repairType);
+      if (view.kind === 'due') params.set('window', view.window);
+      const endpoint = `${view.kind === 'free' ? '/free-service' : view.kind === 'warranty' ? '/warranty' : '/call-list/due'}?${params}`;
+      const requests = [api.get(endpoint)];
+      if (!append && currentRole === 'CCM') requests.push(api.get('/teams'));
+      const [dueResponse, teamResponse] = await Promise.all(requests);
+      if (requestId !== dueRequestRef.current[viewName]) return;
+      const nextRecords = dueResponse.data.records || [];
+      setDueRecordsView(viewName);
+      setDueRecords((current) => append
+        ? [...current, ...nextRecords.filter((record) => !current.some((existing) => existing.id === record.id))]
+        : nextRecords);
+      setDuePageInfo((current) => ({
+        ...current,
+        [viewName]: {
+          total: dueResponse.data.total || 0,
+          hasMore: dueResponse.data.hasMore === true,
+          offset: dueResponse.data.offset || 0,
+        },
+      }));
       setDueIssues(dueResponse.data.dataIssues || []);
-      setCustomers(customerResponse.data.customers || []);
       if (teamResponse) {
         setAllocationCres(teamResponse.data.cres || []);
         setMasterListCcms(teamResponse.data.ccms || []);
       }
     } catch (error) {
-      setDueError(error.response?.data?.message || 'Could not load this customer list.');
+      if (requestId === dueRequestRef.current[viewName]) {
+        setDueError(error.response?.data?.message || 'Could not load this customer list.');
+      }
     } finally {
-      setDueLoading(false);
+      if (requestId === dueRequestRef.current[viewName]) {
+        setDueLoading(false);
+        setDueLoadingMore((current) => ({ ...current, [viewName]: false }));
+      }
+      if (append) dueLoadMoreRef.current[viewName] = false;
     }
+  }, [currentRole, dueSearch, accordionDueCategoryFilter, accordionRepairTypeFilter]);
+
+  async function loadMoreDueData() {
+    const page = duePageInfo[activeView];
+    if (dueLoadingMore[activeView] || !page?.hasMore) return;
+    await loadDueData(activeView, {
+      offset: page.offset + 50,
+      append: true,
+    });
   }
 
-  async function openDueList(viewName) {
+  function openDueList(viewName) {
     if ((viewName === 'Free Service' && !canAccessFreeService) || (viewName === 'Warranty' && !canAccessWarranty)) return;
+    setDueAppliedFilters((current) => ({ ...current, [viewName]: '' }));
     setActiveView(viewName);
     setCustomersMenuOpen(true);
     setDueSearch('');
@@ -1180,16 +1174,27 @@ function App() {
     setAccordionRepairTypeFilter('');
     setDueRecords([]);
     setDueIssues([]);
+    setDuePageInfo((current) => ({ ...current, [viewName]: { total: 0, hasMore: false, offset: 0 } }));
     setCustomerPanel({ customerId: null, mode: 'options' });
     setCallError('');
     setCallMessage('');
-    await loadDueData(viewName);
   }
 
   async function openDueCustomer(record, mode) {
-    const customer = customers.find((entry) => entry.id === record.customerId);
+    let customer = customers.find((entry) => entry.id === record.customerId);
     setDueError('');
     if (mode === 'call') {
+      if (!customer) {
+        try {
+          const response = await api.get('/customers');
+          const records = response.data.customers || [];
+          setCustomers(records);
+          customer = records.find((entry) => entry.id === record.customerId);
+        } catch (error) {
+          setDueError(error.response?.data?.message || 'Could not load this customer.');
+          return;
+        }
+      }
       if (!customer) {
         setDueError('This customer is not available. Reload the list and try again.');
         return;
@@ -1199,7 +1204,6 @@ function App() {
         milestoneId: record.milestoneId || '',
       });
     } else await openCustomerProfile({ ...record, ...(customer || {}) });
-    setTimeout(() => document.querySelector('.customer-action-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
   }
 
   async function loadCustomerProfile(customerId) {
@@ -1382,31 +1386,67 @@ function App() {
     }
   }
 
-  async function loadFollowUps(source) {
-    setFollowUpsLoading(true);
+  const loadFollowUps = useCallback(async (source, { offset = 0, append = false, search = followUpSearch } = {}) => {
+    const requestKey = source;
+    if (append && followUpLoadMoreRef.current[requestKey]) return;
+    if (append) followUpLoadMoreRef.current[requestKey] = true;
+    const requestId = (followUpRequestRef.current[requestKey] || 0) + 1;
+    followUpRequestRef.current[requestKey] = requestId;
+    if (append) setFollowUpsLoadingMore((current) => ({ ...current, [requestKey]: true }));
+    else {
+      setFollowUpsLoading(true);
+      setFollowUps([]);
+    }
     setFollowUpError('');
     try {
-      const requests = [
-        api.get(`/follow-ups?source=${source}`),
-        api.get('/call-list'),
-        api.get('/customers'),
-      ];
-      if (source === 'FREE_SERVICE') requests.push(api.get('/free-service'));
-      if (source === 'WARRANTY') requests.push(api.get('/warranty'));
-      const [followUpResponse, recordsResponse, customerResponse, sourceListResponse] = await Promise.all(requests);
-      setFollowUps(followUpResponse.data.followUps || []);
-      setCalls(recordsResponse.data.records || []);
-      setCustomers(customerResponse.data.customers || []);
-      setFollowUpListRecords(sourceListResponse?.data.records || []);
+      const params = new URLSearchParams({ source, limit: '50', offset: String(offset) });
+      if (search.trim()) params.set('search', search.trim());
+      const requests = [api.get(`/follow-ups?${params}`)];
+      if (!append) {
+        requests.push(api.get('/call-list?limit=50&offset=0'));
+        if (source === 'FREE_SERVICE') requests.push(api.get('/free-service?limit=50&offset=0'));
+        if (source === 'WARRANTY') requests.push(api.get('/warranty?limit=50&offset=0'));
+      }
+      const [followUpResponse, recordsResponse, sourceListResponse] = await Promise.all(requests);
+      if (requestId !== followUpRequestRef.current[requestKey]) return;
+      const next = followUpResponse.data.followUps || [];
+      setFollowUpsSource(source);
+      setFollowUps((current) => append
+        ? [...current, ...next.filter((followUp) => !current.some((existing) => existing.id === followUp.id))]
+        : next);
+      setFollowUpPageInfo((current) => ({
+        ...current,
+        [requestKey]: {
+          total: followUpResponse.data.total || 0,
+          hasMore: followUpResponse.data.hasMore === true,
+          offset: followUpResponse.data.offset || 0,
+        },
+      }));
+      if (sourceListResponse) setFollowUpListRecords(sourceListResponse.data.records || []);
+      else if (recordsResponse) setFollowUpListRecords(recordsResponse.data.records || []);
     } catch (error) {
-      setFollowUpError(error.response?.data?.message || 'Could not load follow-ups. Sign in and try again.');
+      if (requestId === followUpRequestRef.current[requestKey]) {
+        setFollowUpError(error.response?.data?.message || 'Could not load follow-ups. Sign in and try again.');
+      }
     } finally {
-      setFollowUpsLoading(false);
+      if (requestId === followUpRequestRef.current[requestKey]) {
+        setFollowUpsLoading(false);
+        setFollowUpsLoadingMore((current) => ({ ...current, [requestKey]: false }));
+      }
+      if (append) followUpLoadMoreRef.current[requestKey] = false;
     }
+  }, [followUpSearch]);
+
+  async function loadMoreFollowUps() {
+    const key = followUpViews[activeView]?.source;
+    const page = followUpPageInfo[key];
+    if (followUpsLoadingMore[key] || !page?.hasMore) return;
+    await loadFollowUps(key, { offset: page.offset + 50, append: true });
   }
 
-  async function openFollowUpList(viewName) {
+  function openFollowUpList(viewName) {
     if ((viewName === 'Follow-up Free Service' && !canAccessFreeService) || (viewName === 'Follow-up Warranty' && !canAccessWarranty)) return;
+    setFollowUpAppliedFilters((current) => ({ ...current, [followUpViews[viewName].source]: '' }));
     setActiveView(viewName);
     setFollowUpMenuOpen(true);
     setFollowUps([]);
@@ -1417,7 +1457,6 @@ function App() {
     setCustomerPanel({ customerId: null, mode: 'options' });
     setCallError('');
     setCallMessage('');
-    await loadFollowUps(followUpViews[viewName].source);
   }
 
   async function openDashboard() {
@@ -1864,7 +1903,16 @@ function App() {
       deletionCommitted = response.data.status === 'permanently_deleted';
       if (!deletionCommitted) throw new Error('The server did not confirm permanent deletion.');
       setPermanentDeletion(null);
-      setImportMessage(`Import ${permanentDeletion.batch.fileName} and ${response.data.summary.totalRecordsDeleted} dependent records were permanently deleted.`);
+      const { summary } = response.data;
+      const recordsChanged = summary.totalRecordsDeleted
+        + summary.existingRecordsRestored
+        + summary.existingRecordsRebased;
+      const retainedPhysicalVehicleIds = summary.physicalVehicleIdentitiesRetained
+        .map(({ id, vin }) => vin || id)
+        .join(', ');
+      setImportMessage(recordsChanged === 0
+        ? `Import ${permanentDeletion.batch.fileName} was marked permanently deleted; no business records were changed.`
+        : `Import ${permanentDeletion.batch.fileName} reversed: ${summary.totalRecordsDeleted} records deleted, ${summary.existingRecordsRestored} restored, ${summary.existingRecordsRebased} rebased, ${summary.recordsPreserved} preserved. PhysicalVehicle identities retained: ${retainedPhysicalVehicleIds || 'none'}.`);
       const [, callListResponse, customersResponse] = await Promise.all([
         refreshImportHistory(),
         api.get('/call-list'),
@@ -2024,7 +2072,6 @@ function App() {
   })));
   const selectedAllocationVehicle = allocationVehicles.find((vehicle) => vehicle.id === allocationForm.vehicleId);
   const allocationTeamId = selectedAllocationVehicle?.ccmId || selectedAllocationVehicle?.customerCcmId;
-  const currentRole = String(currentUser?.role || '').toUpperCase();
   const canAccessFreeService = currentRole !== 'CRE' || currentUser?.freeServiceEnabled === true;
   const canAccessWarranty = currentRole !== 'CRE' || currentUser?.warrantyEnabled === true;
   const viewingFreeServicePerformance = currentRole === 'FREE_SERVICE_CRE' || freeServiceCres.some((user) => user.id === performanceCreId);
@@ -2162,9 +2209,39 @@ function App() {
     if (JSON.stringify(filters) === masterListAppliedFiltersRef.current) return undefined;
     const timeout = window.setTimeout(() => {
       refreshMasterList(filters);
-    }, 250);
+    }, 300);
     return () => window.clearTimeout(timeout);
   }, [activeView, currentRole, masterListSearch, masterListCreFilter, masterListDueFilter, masterListRepairFilter, refreshMasterList]);
+  useEffect(() => {
+    if (!(activeView in dueViews)) return undefined;
+    const signature = JSON.stringify({
+      viewName: activeView,
+      search: dueSearch,
+      dueCategory: accordionDueCategoryFilter,
+      repairType: accordionRepairTypeFilter,
+    });
+    if (signature === dueAppliedFilters[activeView]) return undefined;
+    const timeout = window.setTimeout(() => {
+      setDueAppliedFilters((current) => ({ ...current, [activeView]: signature }));
+      loadDueData(activeView, {
+        search: dueSearch,
+        dueCategory: accordionDueCategoryFilter,
+        repairType: accordionRepairTypeFilter,
+      });
+    }, 300);
+    return () => window.clearTimeout(timeout);
+  }, [activeView, dueSearch, accordionDueCategoryFilter, accordionRepairTypeFilter, loadDueData, dueAppliedFilters]);
+  useEffect(() => {
+    if (!(activeView in followUpViews)) return undefined;
+    const signature = JSON.stringify({ viewName: activeView, search: followUpSearch });
+    const source = followUpViews[activeView].source;
+    if (signature === followUpAppliedFilters[source]) return undefined;
+    const timeout = window.setTimeout(() => {
+      setFollowUpAppliedFilters((current) => ({ ...current, [source]: signature }));
+      loadFollowUps(source, { search: followUpSearch });
+    }, 300);
+    return () => window.clearTimeout(timeout);
+  }, [activeView, followUpSearch, loadFollowUps, followUpAppliedFilters]);
   const masterRecords = masterListTeam ? calls.filter((record) => record.ccmId === masterListTeam) : calls;
   const wpCres = masterListCres.filter((cre) => !wpCcmId || cre.ccmId === wpCcmId);
   const wpMaxDaily = Math.max(1, ...(wpData?.daily || []).map((entry) => Math.max(entry.calls, entry.appointments)));
@@ -2192,426 +2269,55 @@ function App() {
 
   function renderCustomerActionPanel() {
     if (!panelCustomer) return null;
-    const isCustomerCallModal = customerPanel.mode === 'call';
-    const panelContents = (
-      <section className="panel customer-action-panel">
-        <div className="panel-header">
-          <h3>{panelCustomer.name || panelCustomer.fullName}</h3>
-          {!isCustomerCallModal && <button
-            type="button"
-            className="outline-btn compact-btn"
-            data-call-modal-close
-            onClick={() => {
-              if (callSaving) return;
-              if (activeView === 'CustomerProfile') navigate(-1);
-              else setCustomerPanel({ customerId: null, mode: 'options' });
-            }}
-          >{activeView === 'CustomerProfile' ? 'Back' : 'Close'}</button>}
-        </div>
-        {customerPanel.mode === 'options' && (
-          <div className="customer-options">
-            {currentRole === 'CRE' && <button type="button" className="primary-btn" onClick={() => startCall(panelCustomer)}><PhoneCall size={16} aria-hidden="true" /> Call customer</button>}
-            <button type="button" className="outline-btn" onClick={() => openCustomerProfile(panelCustomer)}>View profile</button>
-          </div>
-        )}
-        {customerPanel.mode === 'call' && (
-          <form className="customer-form call-modal-form" onSubmit={submitCall}>
-            {callError && <p className="form-alert error" role="alert">{callError}</p>}
-            {callMessage && <p className="form-alert success" role="status">{callMessage}</p>}
-            <div className="call-modal-customer">
-              <span className="call-modal-customer-avatar" aria-hidden="true">
-                {(panelCustomer.name || panelCustomer.fullName || 'C').split(/\s+/).slice(0, 2).map((part) => part[0] || '').join('').toUpperCase()}
-              </span>
-              <div className="call-modal-customer-info">
-                <strong>{panelCustomer.name || panelCustomer.fullName || 'Customer'}</strong>
-                <span>{panelCustomer.mobile || panelCustomer.mobileNumber || 'No mobile number on file'}</span>
-              </div>
-              {(panelCustomer.mobile || panelCustomer.mobileNumber) && (
-                <a className="outline-btn call-modal-phone-link" href={`tel:${panelCustomer.mobile || panelCustomer.mobileNumber}`}>
-                  <PhoneCall size={16} aria-hidden="true" />Call now
-                </a>
-              )}
-            </div>
-            {callForm.callSource !== 'SERVICE' && (
-              <p className="performance-note call-modal-context">{callForm.callSource === 'WARRANTY' ? 'Warranty call: it is tracked separately and does not count toward your daily call targets.' : 'Free-service call: the follow-up you arrange will appear under Follow-ups · Free Service.'}</p>
-            )}
-            <div className="form-grid">
-              <label><span>Vehicle <span className="call-modal-optional">(Optional)</span></span>
-                <select value={callForm.vehicleId} onChange={(event) => setCallForm({ ...callForm, vehicleId: event.target.value })}>
-                  <option value="">No specific vehicle</option>
-                  {(panelCustomer.vehicles || []).map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{[vehicle.model, vehicle.registrationNumber, vehicle.vin].filter(Boolean).join(' / ')}</option>)}
-                </select>
-              </label>
-              <label>Call outcome
-                <select required value={callForm.outcome} onChange={(event) => setCallForm({ ...callForm, outcome: event.target.value })}>
-                  {['CONTACTED', 'NOT_INTERESTED', 'WRONG_NUMBER', 'NO_RESPONSE', 'OTHER'].map((outcome) => <option key={outcome} value={outcome}>{formatOutcome(outcome).replace(/\b\w/g, (letter) => letter.toUpperCase())}</option>)}
-                </select>
-              </label>
-              <label className="full-width-field"><span>Feedback <span className="call-modal-optional">(Required)</span></span><textarea required rows="3" maxLength="2000" value={callForm.notes} onChange={(event) => setCallForm({ ...callForm, notes: event.target.value })} placeholder="Summarize the conversation and any important customer feedback." /></label>
-              <fieldset className="full-width-field next-action call-modal-next-action">
-                <legend>What happens next?</legend>
-                {[['none', 'No further action'], ['followup', 'Arrange follow-up'], ['appointment', 'Arrange appointment']].map(([value, label]) => (
-                  <label key={value} className={`radio-option ${callForm.nextAction === value ? 'selected' : ''}`}><input type="radio" name="nextAction" value={value} checked={callForm.nextAction === value} onChange={() => setCallForm({ ...callForm, nextAction: value, scheduledAt: value === 'none' ? '' : callForm.scheduledAt })} /> <span>{label}</span></label>
-                ))}
-              </fieldset>
-              {callForm.nextAction !== 'none' && (
-                <label className="full-width-field">{callForm.nextAction === 'followup' ? 'Follow-up date and time' : 'Appointment date and time'}
-                  <input required type="datetime-local" value={callForm.scheduledAt} onChange={(event) => setCallForm({ ...callForm, scheduledAt: event.target.value })} />
-                </label>
-              )}
-            </div>
-            <div className="form-actions call-modal-actions">
-              <button
-                type="button"
-                className="outline-btn"
-                disabled={callSaving}
-                onClick={() => setCustomerPanel(isCustomerCallModal
-                  ? { customerId: null, mode: 'options' }
-                  : { customerId: panelCustomer.id, mode: 'options' })}
-              >{isCustomerCallModal ? 'Cancel' : 'Back'}</button>
-              <button type="submit" className="primary-btn" disabled={callSaving}>{callSaving ? 'Saving…' : 'Save call'}</button>
-            </div>
-          </form>
-        )}
-        {customerPanel.mode === 'profile' && (
-          <div className="customer-profile">
-            {callLogsLoading && <p className="performance-note" role="status">Loading customer history…</p>}
-            <dl className="master-detail-grid">
-              <div><dt>Name</dt><dd>{panelCustomer.name || panelCustomer.fullName}</dd></div>
-              <div><dt>Mobile</dt><dd>{panelCustomer.mobile || panelCustomer.mobileNumber || '—'}</dd></div>
-              <div><dt>Email</dt><dd>{panelCustomer.email || '—'}</dd></div>
-            </dl>
-            <h4>Vehicles</h4>
-            <div className="table-scroll"><table><thead><tr><th>Model</th><th>Reg. no.</th><th>VIN</th></tr></thead><tbody>
-              {(panelCustomer.vehicles || []).map((vehicle) => <tr key={vehicle.id}><td>{vehicle.model || '—'}</td><td>{vehicle.registrationNumber || '—'}</td><td>{vehicle.vin || '—'}</td></tr>)}
-              {!panelCustomer.vehicles?.length && <tr><td colSpan="3" className="empty-state">No vehicle details available.</td></tr>}
-            </tbody></table></div>
-            <h4>Repair history</h4>
-            {sortRepairOrderVisits(panelCustomer.visits || []).map((visit) => (
-              <div key={visit.repairOrderNo || visit.visitDate}>
-                <h4>Repair order {visit.repairOrderNo || '—'}{visit.visitDate ? ` · ${new Date(visit.visitDate).toLocaleDateString()}` : ''}</h4>
-                <dl className="master-detail-grid">
-                  <div><dt>Closing date</dt><dd>{visit.closingDate ? new Date(visit.closingDate).toLocaleDateString() : '—'}</dd></div>
-                  <div><dt>G.P. date</dt><dd>{visit.gpDate ? new Date(visit.gpDate).toLocaleDateString() : '—'}</dd></div>
-                  <div><dt>Repair total</dt><dd>{visit.totalAmount ?? '—'}</dd></div>
-                </dl>
-                <dl className="master-detail-grid">
-                  {Object.entries(visit.importedDetails || {}).map(([key, value]) => (
-                    <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{value == null || value === '' ? '—' : String(value)}</dd></div>
-                  ))}
-                </dl>
-              </div>
-            ))}
-            {!panelCustomer.visits?.length && !panelCustomer.importedDetails && <p className="empty-state">No repair history available.</p>}
-            {!panelCustomer.visits?.length && panelCustomer.importedDetails && (
-              <section className="master-visit-details">
-                <h4>Imported repair details</h4>
-                <dl className="master-detail-grid">
-                  {Object.entries(panelCustomer.importedDetails).map(([key, value]) => (
-                    <div key={key}><dt>{getMasterDetailLabel(key)}</dt><dd>{value == null || value === '' ? '—' : String(value)}</dd></div>
-                  ))}
-                </dl>
-              </section>
-            )}
-            <h4>Call history</h4>
-            <div className="table-scroll"><table><thead><tr><th>When</th><th>Outcome</th><th>CRE</th><th>Feedback</th></tr></thead><tbody>
-              {callLogs.filter((call) => call.customer?.id === panelCustomer.id || call.customerId === panelCustomer.id).map((call) => <tr key={call.id}><td>{new Date(call.createdAt).toLocaleString()}</td><td>{call.outcome.replaceAll('_', ' ')}</td><td>{call.assignee?.name || call.creator?.name || '—'}</td><td>{call.notes || '—'}</td></tr>)}
-              {!callLogsLoading && !callLogs.some((call) => call.customer?.id === panelCustomer.id || call.customerId === panelCustomer.id) && <tr><td colSpan="4" className="empty-state">No calls logged yet.</td></tr>}
-            </tbody></table></div>
-            <div className="form-actions">
-              {currentRole === 'CRE' && panelCustomer.customerId && (
-                <button type="button" className="primary-btn" onClick={() => startCall(
-                  panelCustomer,
-                  customerProfileVehicleId || panelCustomer.vehicles?.find((vehicle) => vehicle.allocations?.some((allocation) => allocation.creId === currentUser?.id))?.id,
-                )}><PhoneCall size={16} aria-hidden="true" /> Call customer</button>
-              )}
-              <button type="button" className="outline-btn" onClick={() => setCustomerPanel({ customerId: panelCustomer.id, mode: 'options' })}>Back</button>
-            </div>
-          </div>
-        )}
-      </section>
-    );
-    if (!isCustomerCallModal) return panelContents;
     return (
-      <div
-        className="modal-backdrop master-call-modal-backdrop"
-        role="presentation"
-        onMouseDown={(event) => {
-          if (event.target === event.currentTarget && !callSaving) setCustomerPanel({ customerId: null, mode: 'options' });
-        }}
-      >
-        <div
-          ref={customerCallModalRef}
-          className="modal-card master-call-modal-card"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="master-call-modal-title"
-          tabIndex={-1}
-        >
-          <div className="master-call-modal-heading">
-            <div>
-              <p className="eyebrow">Customer follow-up</p>
-              <h2 id="master-call-modal-title">Log a call</h2>
-            </div>
-            <button type="button" className="icon-btn" aria-label="Close call dialog" disabled={callSaving} onClick={() => setCustomerPanel({ customerId: null, mode: 'options' })}>
-              <X size={18} aria-hidden="true" />
-            </button>
-          </div>
-          {panelContents}
-        </div>
-      </div>
+      <Suspense fallback={<SectionSkeleton />}>
+        <CustomerActionPanel
+          activeView={activeView}
+          callError={callError}
+          callForm={callForm}
+          callLogs={callLogs}
+          callLogsLoading={callLogsLoading}
+          callMessage={callMessage}
+          callSaving={callSaving}
+          currentRole={currentRole}
+          currentUser={currentUser}
+          customerCallModalRef={customerCallModalRef}
+          customerPanel={customerPanel}
+          customerProfileVehicleId={customerProfileVehicleId}
+          getMasterDetailLabel={getMasterDetailLabel}
+          navigate={navigate}
+          openCustomerProfile={openCustomerProfile}
+          panelCustomer={panelCustomer}
+          setCallForm={setCallForm}
+          setCustomerPanel={setCustomerPanel}
+          startCall={startCall}
+          submitCall={submitCall}
+        />
+      </Suspense>
     );
   }
 
   function renderCustomerProfilePage() {
     if (!customerProfile) return null;
-    const profileName = customerProfile.name || customerProfile.fullName || customerProfile.customerName || 'Customer';
-    const profileMobile = customerProfile.mobile || customerProfile.mobileNumber || '';
-    const vehicles = customerProfile.vehicles || [];
-    const profileCalls = callLogs.filter((call) => call.customer?.id === customerProfile.id || call.customerId === customerProfile.id);
-    const serviceVisits = sortRepairOrderVisits(customerProfile.visits || customerProfile.workshopVisits || []);
-    const customerImportedDetails = getLatestImportedDetails(serviceVisits);
-    const profileEmail = getImportedDetail(customerImportedDetails, 'email', 'e-mail') || customerProfile.email;
-
     return (
-      <>
-        <section className="panel customer-profile-overview">
-          <div className="customer-profile-contact">
-            <span className="customer-profile-avatar" aria-hidden="true">
-              {profileName.split(/\s+/).slice(0, 2).map((part) => part[0] || '').join('').toUpperCase()}
-            </span>
-            <div className="customer-profile-contact-details">
-              <p className="eyebrow">Customer</p>
-              <h3>{profileName}</h3>
-              {profileMobile
-                ? <a className="customer-profile-phone" href={`tel:${profileMobile}`}><PhoneCall size={15} aria-hidden="true" />{profileMobile}</a>
-                : <span className="performance-note">No phone number on file</span>}
-              {profileEmail && <span className="customer-profile-email">{profileEmail}</span>}
-              <dl className="customer-profile-customer-details">
-                {[
-                  ['Address', getImportedDetail(customerImportedDetails, 'address')],
-                  ['City', getImportedDetail(customerImportedDetails, 'city')],
-                  ['PIN', getImportedDetail(customerImportedDetails, 'pin', 'pinCode')],
-                ].filter(([, value]) => value != null && value !== '').map(([label, value]) => (
-                  <div key={label}><dt>{label}</dt><dd>{String(value)}</dd></div>
-                ))}
-              </dl>
-              {currentRole === 'CRE' && (
-                <button
-                  type="button"
-                  className="primary-btn customer-profile-call-btn"
-                  disabled={!customerProfile.customerId || !profileMobile}
-                  onClick={() => startCall(
-                    customerProfile,
-                    customerProfileVehicleId || vehicles.find((vehicle) => vehicle.allocations?.some((allocation) => allocation.creId === currentUser?.id))?.id,
-                  )}
-                ><PhoneCall size={16} aria-hidden="true" />Call customer</button>
-              )}
-            </div>
-          </div>
-          <div className="customer-profile-vehicles">
-            <h4>Vehicle details</h4>
-            {vehicles.map((vehicle) => {
-              const vehicleVisits = serviceVisits.filter((visit) => visit.vehicleId === vehicle.id && visit.importedDetails);
-              const details = getLatestImportedDetails(vehicleVisits);
-              const allocations = vehicle.allocations || [];
-              const canonicalVehicleField = (key) => {
-                const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
-                const aliases = {
-                  addressline: 'address',
-                  advisorname: 'serviceadvisor',
-                  customeraddress: 'address',
-                  customercity: 'city',
-                  customeremail: 'email',
-                  customername: 'name',
-                  customerpin: 'pin',
-                  emailaddress: 'email',
-                  emailid: 'email',
-                  mobilenumber: 'mobile',
-                  modelname: 'model',
-                  phone: 'mobile',
-                  pincode: 'pin',
-                  regno: 'registration',
-                  registrationnumber: 'registration',
-                  repairorderno: 'repairorderno',
-                  ronumber: 'repairorderno',
-                  saledealer: 'saledealer',
-                  sellingdealer: 'saledealer',
-                  serviceadvisorname: 'serviceadvisor',
-                  servicestatus: 'status',
-                  tech: 'technician',
-                  vehiclemake: 'make',
-                  vehiclemileage: 'mileage',
-                  vehiclemodel: 'model',
-                  vehicleregistrationnumber: 'registration',
-                  vehiclesaledate: 'saledate',
-                  vehiclesaledealer: 'saledealer',
-                  vehicleserviceadvisor: 'serviceadvisor',
-                  vehiclestatus: 'status',
-                  vehiclevariant: 'variant',
-                  vehiclevin: 'vin',
-                  vehicleyear: 'year',
-                };
-                return aliases[normalized] || normalized;
-              };
-              const vehicleFields = [
-                ['Make', getImportedDetail(details, 'make') || vehicle.make],
-                ['Model', getImportedDetail(details, 'model') || vehicle.model],
-                ['Variant', getImportedDetail(details, 'variant') || vehicle.variant],
-                ['Registration', getImportedDetail(details, 'registrationNumber', 'regNo') || vehicle.registrationNumber],
-                ['VIN', getImportedDetail(details, 'vin') || vehicle.vin],
-                ['Vehicle age', formatVehicleAge(vehicle.vehicleAgeMonths)],
-                ['Free services remaining', vehicle.freeServicesRemaining == null ? '—' : `${vehicle.freeServicesRemaining} / 3`],
-                ['Status', vehicle.status],
-                ['Sale date', getImportedDetail(details, 'saleDate') || (vehicle.saleDate ? formatDate(vehicle.saleDate) : '')],
-                ['Mileage', getImportedDetail(details, 'mileage') || getImportedDetail(customerImportedDetails, 'mileage')],
-                ['Sale dealer', getImportedDetail(details, 'saleDealer', 'sellingDealer') || getImportedDetail(customerImportedDetails, 'saleDealer', 'sellingDealer')],
-                ['UC sale dealer', getImportedDetail(details, 'ucSaleDealer') || getImportedDetail(customerImportedDetails, 'ucSaleDealer')],
-                ['UC sale date', getImportedDetail(details, 'ucSaleDate') || getImportedDetail(customerImportedDetails, 'ucSaleDate')],
-                ['Assigned CRE', allocations.map((allocation) => allocation.cre?.name || allocation.cre?.username || allocation.creId).filter(Boolean).join(', ')],
-                ['CCM', allocations.map((allocation) => allocation.ccm?.name || allocation.ccmId).filter(Boolean).join(', ')],
-              ].filter(([, value]) => value != null && value !== '');
-              const profileContactFields = ['Name', 'Mobile', 'Email', 'Address', 'City', 'PIN'];
-              const vehicleFieldKeys = new Set([
-                ...vehicleFields.map(([label]) => canonicalVehicleField(label)),
-                ...profileContactFields.map(canonicalVehicleField),
-                'email',
-                'city',
-                'pin',
-              ]);
-              const excludedImportedFieldKeys = new Set(['gpdate', 'technician', 'visitdate', 'rodate', 'closingdate', 'year', 'worktype']);
-              excludedImportedFieldKeys.add('name');
-              excludedImportedFieldKeys.add('status');
-              excludedImportedFieldKeys.add('repairorderno');
-              const importedVehicleFields = Object.entries(details)
-                .filter(([key]) => {
-                  const canonicalKey = canonicalVehicleField(key);
-                  return !excludedImportedFieldKeys.has(canonicalKey) && !vehicleFieldKeys.has(canonicalKey);
-                })
-                .map(([key, value]) => [getMasterDetailLabel(key), value]);
-              const allVehicleFields = [...vehicleFields, ...importedVehicleFields];
-              return (
-                <article className="customer-profile-vehicle" key={vehicle.id}>
-                  <header className="customer-profile-vehicle-header">
-                    <div>
-                      <p className="eyebrow">{[vehicle.make, vehicle.model, vehicle.variant].filter(Boolean).join(' ') || 'Registered vehicle'}</p>
-                      <strong className="customer-profile-registration">{vehicle.registrationNumber || 'Registration not recorded'}</strong>
-                    </div>
-                    {vehicle.status && <span className={`badge ${vehicle.status === 'ACTIVE' ? 'badge-success' : 'badge-neutral'}`}>{vehicle.status.replaceAll('_', ' ')}</span>}
-                  </header>
-                  <dl className="customer-profile-vehicle-details">
-                    {allVehicleFields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value == null || value === '' ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}
-                  </dl>
-                  {allocations.length > 0 && (
-                    <div className="customer-profile-allocation-list">
-                      <h5>Assignments</h5>
-                      {allocations.map((allocation) => (
-                        <div className="customer-profile-allocation" key={allocation.id}>
-                          <strong>{allocation.cre?.name || allocation.cre?.username || 'Unassigned'}</strong>
-                          <span>{[allocation.serviceType, allocation.category, allocation.status].filter(Boolean).join(' · ')}</span>
-                          {allocation.notes && <small>{allocation.notes}</small>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </article>
-              );
-            })}
-            {!vehicles.length && <p className="empty-state">No vehicle details available.</p>}
-          </div>
-        </section>
-
-        <section className="panel customer-profile-history">
-          <div className="customer-profile-tabs" role="tablist" aria-label="Customer history">
-            <button type="button" role="tab" aria-selected={customerProfileTab === 'service'} className={`customer-profile-tab ${customerProfileTab === 'service' ? 'active' : ''}`} onClick={() => setCustomerProfileTab('service')}>
-              <ClipboardList size={16} aria-hidden="true" />Service history
-            </button>
-            <button type="button" role="tab" aria-selected={customerProfileTab === 'calls'} className={`customer-profile-tab ${customerProfileTab === 'calls' ? 'active' : ''}`} onClick={() => setCustomerProfileTab('calls')}>
-              <PhoneCall size={16} aria-hidden="true" />Call history
-            </button>
-          </div>
-          {customerProfileTab === 'service' ? (
-            <div role="tabpanel" className="table-scroll">
-              <table>
-                <thead><tr><th>Date</th><th>Repair order</th><th>Type</th><th>Service advisor</th><th>Mileage</th><th>Amount</th><th>Details</th></tr></thead>
-                <tbody>
-                  {serviceVisits.map((visit, index) => {
-                    const details = visit.importedDetails || {};
-                    const visitId = `${visit.repairOrderNo || 'repair'}-${visit.visitDate || index}`;
-                    const detailEntries = [
-                      ['G.P. Date', visit.gpDate || getImportedDetail(details, 'gpDate')],
-                      ['R/O Date', visit.visitDate || getImportedDetail(details, 'visitDate', 'roDate')],
-                      ['Closing Date', visit.closingDate || getImportedDetail(details, 'closingDate')],
-                      ['Tech.', getImportedDetail(details, 'technician', 'tech')],
-                      ['Status', getImportedDetail(details, 'serviceStatus', 'status')],
-                    ];
-                    return (
-                      <Fragment key={visitId}>
-                        <tr>
-                          <td>{visit.visitDate ? formatDate(visit.visitDate) : '—'}</td>
-                          <td>{visit.repairOrderNo || '—'}</td>
-                          <td>{details.workType || details.serviceType || '—'}</td>
-                          <td>{details.serviceAdvisor || details.advisorName || '—'}</td>
-                          <td>{details.mileage || '—'}</td>
-                          <td>{visit.totalAmount ?? '—'}</td>
-                          <td>
-                            <button
-                              type="button"
-                              className="text-link customer-profile-details-toggle"
-                              aria-expanded={expandedServiceVisit === visitId}
-                              aria-controls={`service-details-${index}`}
-                              onClick={() => setExpandedServiceVisit((current) => current === visitId ? null : visitId)}
-                            >{expandedServiceVisit === visitId ? 'Hide details' : 'View details'}</button>
-                          </td>
-                        </tr>
-                        {expandedServiceVisit === visitId && (
-                          <tr className="customer-profile-expanded-row">
-                            <td colSpan="7">
-                              <section className="customer-profile-expanded-details" id={`service-details-${index}`} aria-label={`Imported details for repair order ${visit.repairOrderNo || ''}`}>
-                                <div className="customer-profile-expanded-heading">
-                                  <div>
-                                    <p className="eyebrow">Repair order details</p>
-                                    <h4>{visit.repairOrderNo || 'Service visit'}</h4>
-                                  </div>
-                                </div>
-                                <dl className="customer-profile-import-grid">
-                                  {detailEntries.map(([key, value]) => (
-                                    <div key={key}><dt>{key}</dt><dd>{value == null || value === '' ? '—' : String(value)}</dd></div>
-                                  ))}
-                                </dl>
-                              </section>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                  {!serviceVisits.length && <tr><td colSpan="7" className="empty-state">No service history available.</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div role="tabpanel" className="table-scroll">
-              {callLogsLoading && <p className="performance-note" role="status">Loading call history…</p>}
-              <table>
-                <thead><tr><th>Date and time</th><th>Outcome</th><th>Next action</th><th>Feedback</th></tr></thead>
-                <tbody>
-                  {profileCalls.map((call) => (
-                    <tr key={call.id}>
-                      <td>{new Date(call.createdAt).toLocaleString()}</td>
-                      <td>{call.outcome.replaceAll('_', ' ')}</td>
-                      <td>{call.followUpAt || call.outcome === 'FOLLOW_UP_LATER' ? 'Follow-up' : call.outcome === 'APPOINTMENT_SET' ? 'Appointment' : '—'}</td>
-                      <td>{call.notes || '—'}</td>
-                    </tr>
-                  ))}
-                  {!callLogsLoading && !profileCalls.length && <tr><td colSpan="4" className="empty-state">No calls logged yet.</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-        {customerPanel.mode === 'call' && renderCustomerActionPanel()}
-      </>
+      <Suspense fallback={<SectionSkeleton />}>
+        <CustomerProfilePage
+          callLogs={callLogs}
+          callLogsLoading={callLogsLoading}
+          currentRole={currentRole}
+          currentUser={currentUser}
+          customerPanel={customerPanel}
+          customerProfile={customerProfile}
+          customerProfileTab={customerProfileTab}
+          customerProfileVehicleId={customerProfileVehicleId}
+          expandedServiceVisit={expandedServiceVisit}
+          getMasterDetailLabel={getMasterDetailLabel}
+          renderCustomerActionPanel={renderCustomerActionPanel}
+          setCustomerProfileTab={setCustomerProfileTab}
+          setExpandedServiceVisit={setExpandedServiceVisit}
+          startCall={startCall}
+        />
+      </Suspense>
     );
   }
 
@@ -2677,7 +2383,9 @@ function App() {
   const dueSearchTerm = dueSearch.trim().toLowerCase();
   const visibleDueRecords = dueRecords.filter((record) => matchesAccordionFilters(record, dueSearchTerm));
   const allocationSearchTerm = allocationSearch.trim().toLowerCase();
-  const allocationRecords = currentRole === 'CCM' ? masterRecords.filter((record) => Boolean(record.assigneeId)) : masterRecords;
+  const allocationRecords = currentRole === 'CCM'
+    ? masterRecords.filter((record) => Boolean(record.assigneeId) || record.allocationQueue)
+    : masterRecords;
   const visibleAllocationRecords = allocationSearchTerm
     ? allocationRecords.filter((record) => [record.type, record.dueDate, record.name, record.mobile, record.model, record.vin, record.registrationNumber, record.status, record.assigneeName]
       .some((value) => String(value || '').toLowerCase().includes(allocationSearchTerm)))
@@ -2747,25 +2455,6 @@ function App() {
   const dayAppointments = appointments.filter((appointment) => localDateKey(appointment.scheduledAt) === selectedDay);
   const userTree = buildUserTree(managedUsers);
 
-  function renderAssigneeSelect(record, recordId, loading) {
-    return (
-      <select
-        className="status-select master-list-assignee"
-        aria-label={`Allocated CRE for ${record.name || record.customerName}`}
-        value={record.assigneeId || ''}
-        disabled={masterListSavingId === recordId || loading}
-        onChange={(event) => changeMasterListAssignee(recordId, event.target.value)}
-      >
-        {record.assigneeId && !allocationCres.some((cre) => cre.id === record.assigneeId) && (
-          <option value={record.assigneeId}>{record.assigneeName || 'Former CRE'} (inactive)</option>
-        )}
-        {allocationCres.filter((cre) => cre.ccmId === record.ccmId).map((cre) => (
-          <option key={cre.id} value={cre.id}>{cre.name}</option>
-        ))}
-      </select>
-    );
-  }
-
   function matchesAccordionFilters(record, search) {
     if (accordionDueCategoryFilter) {
       const dueCategory = record.dueCategory;
@@ -2798,223 +2487,50 @@ function App() {
 
   function renderAccordionFilters(search, setSearch, ariaLabel) {
     return (
-      <div className="master-list-filters accordion-list-filters" aria-label={ariaLabel}>
-        <label className="master-list-search">
-          Search customers
-          <span className="master-list-search-control">
-            <input
-              type="search"
-              value={search}
-              placeholder="Name, mobile, VIN, registration or RO"
-              aria-label="Search by customer name, mobile, VIN, registration number, or repair order"
-              onChange={(event) => setSearch(event.target.value)}
-            />
-            {search && (
-              <button type="button" className="master-list-clear-search" aria-label="Clear search" onClick={() => setSearch('')}>
-                <X size={15} aria-hidden="true" />
-              </button>
-            )}
-          </span>
-        </label>
-        <label>
-          Due category
-          <select value={accordionDueCategoryFilter} onChange={(event) => setAccordionDueCategoryFilter(event.target.value)}>
-            <option value="">All customers</option>
-            <option value="6m">6 Months Due</option>
-            <option value="1y">1 Year Due</option>
-            <option value="allDue">All Due Customers</option>
-          </select>
-        </label>
-        <label>
-          Repair type
-          <select value={accordionRepairTypeFilter} onChange={(event) => setAccordionRepairTypeFilter(event.target.value)}>
-            <option value="">All repair types</option>
-            {MASTER_REPAIR_TYPE_ORDER.map((type) => (
-              <option key={type} value={type}>{type === 'Free' ? 'Free Service' : type === 'Paid' ? 'Paid Service' : type}</option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="button"
-          className="outline-btn master-list-clear-filters"
-          disabled={!search && !accordionDueCategoryFilter && !accordionRepairTypeFilter}
-          onClick={() => {
-            setSearch('');
-            setAccordionDueCategoryFilter('');
-            setAccordionRepairTypeFilter('');
-          }}
-        >Clear filters</button>
-      </div>
+      <AccordionFilters
+        search={search}
+        onSearchChange={setSearch}
+        ariaLabel={ariaLabel}
+        dueCategory={accordionDueCategoryFilter}
+        onDueCategoryChange={setAccordionDueCategoryFilter}
+        repairType={accordionRepairTypeFilter}
+        onRepairTypeChange={setAccordionRepairTypeFilter}
+      />
     );
   }
 
-  // Free Service and Warranty lists. CREs get a call icon; CCMs see/assign the allocated CRE.
   function renderServiceListTable(kind, records = visibleDueRecords, followUpQueue = false, emptyMessage) {
-    const isFree = kind === 'free';
-    const lastColumn = currentRole === 'CCM' ? 'Allocated CRE' : 'Call';
-    const columnCount = 11;
     return (
-      <div className="table-scroll">
-        <table className="master-call-list-table service-list-table">
-          <thead>
-            <tr>
-              <th>Customer</th>
-              <th>Number</th>
-              <th>Regd no.</th>
-              <th>VIN</th>
-              <th>Sale date</th>
-              {isFree ? (
-                <>
-                  <th>Milestone</th>
-                  <th>Due date</th>
-                  <th>Calling from</th>
-                  <th>Call status</th>
-                </>
-              ) : (
-                <>
-                  <th>Warranty expiry</th>
-                  <th>Calling month</th>
-                  <th>Previous call</th>
-                  <th>Contact status</th>
-                </>
-              )}
-              <th>Follow-up</th>
-              <th>{lastColumn}</th>
-              {followUpQueue && <th>Action</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {records.map((record) => (
-              <tr key={record.id}>
-                <td><button type="button" className="text-link" onClick={() => openDueCustomer(record, 'profile')}>{record.name || '—'}</button></td>
-                <td>{record.mobile || '—'}</td>
-                <td>{record.registrationNumber || '—'}</td>
-                <td>{record.vin || '—'}</td>
-                <td>{formatDate(record.saleDate)}</td>
-                {isFree ? (
-                  <>
-                    <td>{record.milestoneName}</td>
-                    <td>{formatDate(record.dueDate)}</td>
-                    <td>{formatDate(record.callingStartDate)}</td>
-                    <td>{record.lastCall ? `${formatDate(record.lastCall.createdAt)} · ${formatOutcome(record.lastCall.outcome)}` : record.callStatus}</td>
-                  </>
-                ) : (
-                  <>
-                    <td>{formatDate(record.warrantyExpiryDate)}</td>
-                    <td>{record.callingWindow?.start ? new Date(record.callingWindow.start).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) : '—'}</td>
-                    <td>{record.lastCall ? `${formatDate(record.lastCall.createdAt)} · ${formatOutcome(record.lastCall.outcome)}` : '—'}</td>
-                    <td><span className={`badge ${record.contactStatus === 'Contacted' ? 'badge-blue' : 'badge-neutral'}`}>{record.contactStatus}</span></td>
-                  </>
-                )}
-                <td>{record.followUp ? `Scheduled ${new Date(record.followUp.followUpAt).toLocaleString()}` : '—'}</td>
-                <td>
-                  {currentRole === 'CCM' ? record.assigneeName || 'Unassigned' : (
-                    <button type="button" className="icon-btn call-icon-btn" aria-label={`Call ${record.name}`} title="Call customer" disabled={!record.customerId} onClick={() => openDueCustomer({ ...record, callSource: isFree ? 'FREE_SERVICE' : 'WARRANTY' }, 'call')}>
-                      <PhoneCall size={17} aria-hidden="true" />
-                    </button>
-                  )}
-                </td>
-                {followUpQueue && <td>
-                  <div className="inline-actions">
-                    <button type="button" className="outline-btn compact-btn" onClick={() => changeFollowUpStatus(record.followUpId, 'completed')}>Complete</button>
-                    <button type="button" className="outline-btn compact-btn" onClick={() => changeFollowUpStatus(record.followUpId, 'cancelled')}>Cancel</button>
-                  </div>
-                </td>}
-              </tr>
-            ))}
-            {!dueLoading && records.length === 0 && (
-              <tr><td colSpan={columnCount + (followUpQueue ? 1 : 0)} className="empty-state">{emptyMessage || (followUpQueue ? `No ${isFree ? 'free service' : 'warranty'} follow-ups scheduled.` : isFree ? 'No free-service customers are ready to call.' : 'No warranties are in their calling month.')}</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <ServiceListTable
+        kind={kind}
+        records={records}
+        followUpQueue={followUpQueue}
+        emptyMessage={emptyMessage}
+        loading={dueLoading}
+        currentRole={currentRole}
+        onOpenCustomer={stableOpenDueCustomer}
+        onChangeFollowUpStatus={stableChangeFollowUpStatus}
+      />
     );
   }
 
-  function renderMasterRepairTypeBadge(type) {
-    const presentation = getMasterRepairTypePresentation(type);
+  function renderMasterCallTable(records, loading, { assignable = false, dueMode = false, emptyMessage } = {}) {
     return (
-      <span className={`repair-type-badge ${presentation.className}`} title={type || 'Others'}>
-        {presentation.short}
-      </span>
-    );
-  }
-
-  function renderMasterRepairTypeLegend() {
-    return (
-      <div className="repair-type-legend" aria-label="Repair type color legend">
-        <span className="repair-type-legend-title">Repair types:</span>
-        {MASTER_REPAIR_TYPE_ORDER.map((type) => {
-          const presentation = getMasterRepairTypePresentation(type);
-          return (
-            <span className="repair-type-legend-item" key={type}>
-              <span className={`repair-type-dot ${presentation.className}`} aria-hidden="true" />
-              <span><strong>{presentation.short}</strong> {type}</span>
-            </span>
-          );
-        })}
-      </div>
-    );
-  }
-
-  function renderMasterCallTable(records, loading, { assignable = false, emptyMessage } = {}) {
-    const showCallColumn = currentRole === 'CRE' && activeView === 'Master list' && !assignable;
-    return (
-      <div className="master-list-table-wrap">
-        {renderMasterRepairTypeLegend()}
-        <div className="table-scroll">
-          <table className="master-call-list-table">
-            <thead>
-              <tr>
-                <th>Type</th>
-                <th>Due</th>
-                <th>Name</th>
-                <th>Number</th>
-                <th>Model name</th>
-                <th>VIN</th>
-                <th>Veh age</th>
-                <th>Regd no.</th>
-                <th>Status</th>
-                <th>Scheduled apt</th>
-                <th>{showCallColumn ? 'Call' : 'Allocated CRE'}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {records.map((record) => (
-                <tr key={record.id}>
-                  <td>{renderMasterRepairTypeBadge(record.type)}</td>
-                  <td className={record.dueDate && new Date(record.dueDate) < new Date() ? 'due-overdue' : undefined}>{record.dueDate ? new Date(record.dueDate).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}</td>
-                  <td>{['CCM', 'CRE'].includes(currentRole) ? (
-                    <button type="button" className="text-link" onClick={() => openCustomerProfile(record)}>
-                      {record.name || record.customerName || '—'}
-                    </button>
-                  ) : record.name || record.customerName || '—'}</td>
-                  <td>{record.mobile || '—'}</td>
-                  <td>{record.model || '—'}</td>
-                  <td>{record.vin || '—'}</td>
-                  <td>{formatVehicleAge(record.vehicleAgeMonths)}</td>
-                  <td>{record.registrationNumber || '—'}</td>
-                  <td><span className="badge badge-neutral">{record.status || 'pending'}</span></td>
-                  <td>{record.scheduledAppointment ? new Date(record.scheduledAppointment.scheduledAt).toLocaleString() : '—'}</td>
-                  <td>{assignable ? renderAssigneeSelect(record, record.id, loading) : showCallColumn ? (
-                    <button
-                      type="button"
-                      className="icon-btn call-icon-btn"
-                      aria-label={`Call ${record.name || record.customerName || 'customer'}`}
-                      title={record.assigneeId === currentUser?.id ? 'Call customer' : 'This customer is not assigned to you'}
-                      disabled={loading || !record.customerId || record.assigneeId !== currentUser?.id}
-                      onClick={() => startCallFromMasterRecord(record)}
-                    >
-                      <PhoneCall size={17} aria-hidden="true" />
-                    </button>
-                  ) : record.assigneeName || 'Unassigned'}</td>
-                </tr>
-              ))}
-              {!loading && records.length === 0 && <tr><td colSpan="11" className="empty-state">{emptyMessage || 'No master call list records found.'}</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <MasterCallTable
+        records={records}
+        loading={loading}
+        assignable={assignable}
+        dueMode={dueMode}
+        emptyMessage={emptyMessage}
+        currentRole={currentRole}
+        currentUserId={currentUser?.id}
+        activeView={activeView}
+        allocationCres={allocationCres}
+        savingId={masterListSavingId}
+        onOpenProfile={dueMode ? stableOpenDueProfile : stableOpenCustomerProfile}
+        onStartCall={dueMode ? stableOpenDueCall : stableStartCallFromMasterRecord}
+        onChangeAssignee={stableChangeMasterListAssignee}
+      />
     );
   }
 
@@ -3026,17 +2542,19 @@ function App() {
       Allocations: openAllocations,
       Imports: openImports,
       Reports: openReports,
-      'Master list': openMasterList,
+      'Master list': () => {
+        if (calls.length === 0 && masterListPageInfo.total === 0) openMasterList();
+      },
       Performance: openPerformance,
       'Performance Board': openPerformanceBoard,
       'User Management': openUserManagement,
-      'Due 1-Year': () => openDueList('Due 1-Year'),
-      'Due 6-Month': () => openDueList('Due 6-Month'),
-      'Free Service': () => openDueList('Free Service'),
-      Warranty: () => openDueList('Warranty'),
-      'Follow-up Service': () => openFollowUpList('Follow-up Service'),
-      'Follow-up Free Service': () => openFollowUpList('Follow-up Free Service'),
-      'Follow-up Warranty': () => openFollowUpList('Follow-up Warranty'),
+      'Due 1-Year': () => { if (dueRecordsView !== 'Due 1-Year' || !dueRecords.length) openDueList('Due 1-Year'); },
+      'Due 6-Month': () => { if (dueRecordsView !== 'Due 6-Month' || !dueRecords.length) openDueList('Due 6-Month'); },
+      'Free Service': () => { if (dueRecordsView !== 'Free Service' || !dueRecords.length) openDueList('Free Service'); },
+      Warranty: () => { if (dueRecordsView !== 'Warranty' || !dueRecords.length) openDueList('Warranty'); },
+      'Follow-up Service': () => { if (followUpsSource !== 'SERVICE' || !followUps.length) openFollowUpList('Follow-up Service'); },
+      'Follow-up Free Service': () => { if (followUpsSource !== 'FREE_SERVICE' || !followUps.length) openFollowUpList('Follow-up Free Service'); },
+      'Follow-up Warranty': () => { if (followUpsSource !== 'WARRANTY' || !followUps.length) openFollowUpList('Follow-up Warranty'); },
       CcmProfile: (ccmId) => {
         if (currentRole === 'CCM') {
           openOwnMonthlyData();
@@ -3103,28 +2621,59 @@ function App() {
     return () => document.removeEventListener('keydown', handleCallModalKeyDown);
   }, [activeView, callSaving, customerPanel.mode]);
 
+  const stableOpenDueCustomer = useStableCallback(openDueCustomer);
+  const stableOpenDueProfile = useStableCallback((record) => openDueCustomer(record, 'profile'));
+  const stableOpenDueCall = useStableCallback((record) => openDueCustomer(record, 'call'));
+  const stableChangeFollowUpStatus = useStableCallback(changeFollowUpStatus);
+  const stableOpenCustomerProfile = useStableCallback(openCustomerProfile);
+  const stableStartCallFromMasterRecord = useStableCallback(startCallFromMasterRecord);
+  const stableChangeMasterListAssignee = useStableCallback(changeMasterListAssignee);
+
   if (!authChecked) {
-    return <main className="auth-loading" aria-live="polite">Checking session…</main>;
+    return (
+      <main className="auth-loading" aria-live="polite">
+        <div className="initial-progress" aria-hidden="true"><span /></div>
+        <p>{initialDataLoading && currentUser ? 'Preparing your workspace…' : 'Checking session…'}</p>
+      </main>
+    );
+  }
+
+  if (initialDataError) {
+    return (
+      <main className="auth-loading initial-load-error" role="alert">
+        <h1>Workspace could not be loaded</h1>
+        <p>{initialDataError}</p>
+        <button type="button" className="primary-btn" onClick={() => {
+          setInitialDataError('');
+          setInitialDataLoading(true);
+          initialLoadPromiseRef.current = null;
+          setAuthChecked(false);
+          setSessionVersion((version) => version + 1);
+        }}>Retry</button>
+      </main>
+    );
   }
 
   if (!currentUser) {
     return (
-      <main className="auth-shell">
-        <section className="auth-brand-panel">
-          <img className="brand-mark" src="/favicon.png" alt="Lakshmi Hyundai logo" />
-          <p className="eyebrow">Workshop CRM</p>
-          <h1>Lakshmi Hyundai</h1>
-          <p className="auth-caption">Service operations</p>
-        </section>
-        <form className="auth-form" onSubmit={submitLogin}>
-          <p className="eyebrow">Team access</p>
-          <h2>Sign in</h2>
-          <p className="auth-intro">Enter your credentials to access your service workspace.</p>
-          {loginError && <p className="form-alert error" role="alert">{loginError}</p>}
-          <label>Username<input required autoComplete="username" value={loginForm.username} onChange={(event) => setLoginForm({ ...loginForm, username: event.target.value.toLowerCase() })} /></label>
-          <label>Password<input required type="password" autoComplete="current-password" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} /></label>
-          <button type="submit" className="primary-btn" disabled={loginBusy}>{loginBusy ? 'Signing in…' : 'Sign in'}</button>
-        </form>
+      <main className="auth-page">
+        <div className="auth-shell">
+          <section className="auth-brand-panel">
+            <img className="brand-mark" src="/logo-256.webp" width="46" height="46" alt="Lakshmi Hyundai logo" />
+            <p className="eyebrow">Workshop CRM</p>
+            <h1>Lakshmi Hyundai</h1>
+            <p className="auth-caption">Service operations</p>
+          </section>
+          <form className="auth-form" onSubmit={submitLogin}>
+            <p className="eyebrow">Team access</p>
+            <h2>Sign in</h2>
+            <p className="auth-intro">Enter your credentials to access your service workspace.</p>
+            {loginError && <p className="form-alert error" role="alert">{loginError}</p>}
+            <label>Username<input required autoComplete="username" value={loginForm.username} onChange={(event) => setLoginForm({ ...loginForm, username: event.target.value.toLowerCase() })} /></label>
+            <label>Password<input required type="password" autoComplete="current-password" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} /></label>
+            <button type="submit" className="primary-btn" disabled={loginBusy}>{loginBusy ? 'Signing in…' : 'Sign in'}</button>
+          </form>
+        </div>
       </main>
     );
   }
@@ -3133,7 +2682,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-block">
-          <img className="brand-mark" src="/favicon.png" alt="Lakshmi Hyundai logo" />
+          <img className="brand-mark" src="/logo-256.webp" width="46" height="46" alt="Lakshmi Hyundai logo" />
           <div>
             <p className="eyebrow">Workshop CRM</p>
             <h1>Lakshmi Hyundai</h1>
@@ -3353,98 +2902,34 @@ function App() {
         </header>
 
         {activeView === 'User Management' ? (
-          <section className="customer-workspace">
-            {!userFormOpen && managedUsersError && <p className="form-alert error" role="alert">{managedUsersError}</p>}
-            {managedUsersMessage && <p className="form-alert success" role="status">{managedUsersMessage}</p>}
-            {userFormOpen && (
-              <div
-                className={`user-modal-backdrop${userFormClosing ? ' is-closing' : ''}`}
-                onMouseDown={(event) => {
-                  if (event.target === event.currentTarget && !userSaving) closeUserForm();
-                }}
-              >
-                <section
-                  className="user-modal-dialog"
-                  role="dialog"
-                  aria-modal="true"
-                  aria-labelledby="user-form-dialog-title"
-                  aria-describedby="user-form-dialog-description"
-                  tabIndex={-1}
-                  ref={userFormDialogRef}
-                >
-                  <form className="user-modal-form" onSubmit={submitManagedUser}>
-                    <header className="user-modal-header">
-                      <div>
-                        <h3 id="user-form-dialog-title">{editingUserId ? 'Edit User' : 'Create New Account'}</h3>
-                        <p id="user-form-dialog-description">Admin, GM, CCM, CRE, and Free-Service CRE accounts</p>
-                      </div>
-                      <button
-                        ref={userFormCloseButtonRef}
-                        type="button"
-                        className="user-modal-close"
-                        aria-label="Close user form"
-                        title="Close"
-                        disabled={userSaving}
-                        onClick={() => closeUserForm()}
-                      >
-                        <X size={19} aria-hidden="true" />
-                      </button>
-                    </header>
-                    {managedUsersError && <p className="form-alert error user-modal-error" role="alert">{managedUsersError}</p>}
-                    <fieldset className="user-modal-fields" disabled={userSaving}>
-                      <div className="form-grid">
-                  <label>Full name<input required maxLength="200" value={userForm.name} onChange={(event) => setUserForm({ ...userForm, name: event.target.value })} /></label>
-                  <label>Username<input required minLength="3" maxLength="40" autoComplete="off" name="managed-username" value={userForm.username} onChange={(event) => setUserForm({ ...userForm, username: event.target.value.toLowerCase().replace(/[^a-z0-9@._-]/g, '') })} /></label>
-                  <label>Password<input required={!editingUserId} minLength="8" type="password" autoComplete="new-password" name="managed-password" readOnly={!passwordUnlocked} onFocus={() => setPasswordUnlocked(true)} value={userForm.password} onChange={(event) => setUserForm({ ...userForm, password: event.target.value })} placeholder={editingUserId ? 'Leave empty to keep current password' : 'At least 8 characters'} /></label>
-                  <label><span>Phone no. <span className="field-optional">(Optional)</span></span><input inputMode="tel" value={userForm.phone} onChange={(event) => setUserForm({ ...userForm, phone: event.target.value })} /></label>
-                  <label>Role<select value={userForm.role} onChange={(event) => setUserForm({ ...userForm, role: event.target.value, ccmId: '', gmId: '' })}><option value="ADMIN">ADMIN</option><option value="GM">GM</option><option value="CCM">CCM</option><option value="CRE">CRE</option><option value="FREE_SERVICE_CRE">Free-Service CRE</option></select></label>
-                  <label>Dealer code<input value={userForm.dealerCode} onChange={(event) => setUserForm({ ...userForm, dealerCode: event.target.value })} /></label>
-                  {userForm.role === 'CCM' && <label>GM team<select required value={userForm.gmId} onChange={(event) => setUserForm({ ...userForm, gmId: event.target.value })}><option value="">Select GM</option>{managedTeams.gms.map((gm) => <option key={gm.id} value={gm.id}>{gm.name}{gm.dealerCode ? ` · ${gm.dealerCode}` : ''}</option>)}</select></label>}
-                  {['CRE', 'FREE_SERVICE_CRE'].includes(userForm.role) && <label>CCM team<select required value={userForm.ccmId} onChange={(event) => setUserForm({ ...userForm, ccmId: event.target.value })}><option value="">Select CCM</option>{managedTeams.ccms.map((ccm) => <option key={ccm.id} value={ccm.ccmId}>{ccm.name}{ccm.dealerCode ? ` · ${ccm.dealerCode}` : ''}</option>)}</select></label>}
-                  {userForm.role === 'CRE' && (
-                    <fieldset className="full-width-field service-permissions">
-                      <legend>Service list access</legend>
-                      <div className="service-permission-toggle">
-                        <span>Free Service</span>
-                        <button type="button" role="switch" aria-checked={userForm.freeServiceEnabled} aria-label="Free Service access" className={`permission-switch ${userForm.freeServiceEnabled ? 'is-on' : ''}`} onClick={() => setUserForm((current) => ({ ...current, freeServiceEnabled: !current.freeServiceEnabled }))}>
-                          <span />
-                        </button>
-                      </div>
-                      <div className="service-permission-toggle">
-                        <span>Warranty</span>
-                        <button type="button" role="switch" aria-checked={userForm.warrantyEnabled} aria-label="Warranty access" className={`permission-switch ${userForm.warrantyEnabled ? 'is-on' : ''}`} onClick={() => setUserForm((current) => ({ ...current, warrantyEnabled: !current.warrantyEnabled }))}>
-                          <span />
-                        </button>
-                      </div>
-                    </fieldset>
-                  )}
-                      </div>
-                    </fieldset>
-                    <div className="form-actions user-modal-actions">
-                      <button type="button" className="outline-btn" disabled={userSaving} onClick={() => closeUserForm()}>Cancel</button>
-                      <button type="submit" className="primary-btn" disabled={userSaving}>
-                        <Save size={16} aria-hidden="true" />
-                        {userSaving ? 'Saving…' : editingUserId ? 'Save account' : 'Create account'}
-                      </button>
-                    </div>
-                  </form>
-                </section>
-              </div>
-            )}
-            <section className="panel customer-list-panel">
-              <div className="panel-header"><h3>Managed accounts</h3><span>{managedUsersLoading ? 'Loading…' : `${managedUsers.length} accounts`}</span></div>
-              <div className="table-scroll"><table><thead><tr><th>Name</th><th>Username</th><th>Phone</th><th>Role</th><th>Dealer code</th><th>Reports to</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-                {userTree.map(({ user, depth }) => <tr key={user.id} className={`user-row depth-${depth}`}>
-                  <td><span className="user-name-cell">{depth > 0 && <span className="tree-branch" aria-hidden="true">└</span>}{user.role === 'CCM' ? <button type="button" className="text-link" onClick={() => openCcmProfile(user)}>{user.name}</button> : user.name}</span></td>
-                  <td>{user.username}</td><td>{user.phone || '—'}</td><td>{user.role === 'FREE_SERVICE_CRE' ? 'Free-Service CRE' : user.role}</td><td>{user.dealerCode || '—'}</td>
-                  <td>{user.role === 'CCM' ? managedTeams.gms.find((gm) => gm.id === user.gmId)?.name || '—' : ['CRE', 'FREE_SERVICE_CRE'].includes(user.role) ? managedTeams.ccms.find((ccm) => ccm.ccmId === user.ccmId)?.name || '—' : '—'}</td>
-                  <td><span className={`badge ${user.status === 'active' ? 'badge-blue' : 'badge-neutral'}`}>{user.status}</span></td>
-                  <td><div className="inline-actions"><button type="button" className="outline-btn compact-btn" onClick={() => startUserEdit(user)}>Edit</button>{!(currentRole === 'ADMIN' && user.id === currentUser.id) && <><button type="button" className="outline-btn compact-btn" onClick={() => toggleManagedUserStatus(user)}>{user.status === 'active' ? 'Deactivate' : 'Activate'}</button><button type="button" className="danger-outline-btn compact-btn" onClick={() => deleteManagedAccount(user)}>Delete</button></>}</div></td>
-                </tr>)}
-                {!managedUsersLoading && managedUsers.length === 0 && <tr><td colSpan="8" className="empty-state">No managed accounts found.</td></tr>}
-              </tbody></table></div>
-            </section>
-          </section>
+          <Suspense fallback={<p className="panel service-empty">Loading…</p>}>
+            <UserManagementPanel
+              closeUserForm={closeUserForm}
+              currentRole={currentRole}
+              currentUser={currentUser}
+              deleteManagedAccount={deleteManagedAccount}
+              editingUserId={editingUserId}
+              managedTeams={managedTeams}
+              managedUsers={managedUsers}
+              managedUsersError={managedUsersError}
+              managedUsersLoading={managedUsersLoading}
+              managedUsersMessage={managedUsersMessage}
+              openCcmProfile={openCcmProfile}
+              passwordUnlocked={passwordUnlocked}
+              setPasswordUnlocked={setPasswordUnlocked}
+              setUserForm={setUserForm}
+              startUserEdit={startUserEdit}
+              submitManagedUser={submitManagedUser}
+              toggleManagedUserStatus={toggleManagedUserStatus}
+              userForm={userForm}
+              userFormCloseButtonRef={userFormCloseButtonRef}
+              userFormClosing={userFormClosing}
+              userFormDialogRef={userFormDialogRef}
+              userFormOpen={userFormOpen}
+              userSaving={userSaving}
+              userTree={userTree}
+            />
+          </Suspense>
         ) : activeView === 'CustomerProfile' ? (
           <section className="customer-workspace">
             {customerProfileLoading && <p className="performance-note" role="status">Loading customer profile…</p>}
@@ -3455,357 +2940,107 @@ function App() {
             {renderCustomerProfilePage()}
           </section>
         ) : activeView === 'CcmProfile' ? (
-          <section className="customer-workspace">
-            {monthlyError && <p className="form-alert error" role="alert">{monthlyError}</p>}
-            {monthlyMessage && <p className="form-alert success" role="status">{monthlyMessage}</p>}
-            {ccmProfile && <section className="stats-grid profile-stats">
-              {[['CCM', ccmProfile.ccm.name], ['Customers', ccmProfile.customerCount], ['Vehicles', ccmProfile.vehicleCount], ['Saved months', ccmProfile.monthlyDatasets.length]].map(([label, value]) => <article key={label} className="stat-card"><p>{label}</p><strong>{value}</strong></article>)}
-            </section>}
-            <section className="panel customer-list-panel">
-              <div className="panel-header"><h3>Monthly Customer Data</h3><span>{monthlyLoading ? 'Loading…' : `${monthlyEntries.length} records`}</span></div>
-              <div className="period-controls">
-                <label>Month<select value={monthlyMonth} onChange={(event) => changeMonthlyPeriod(monthlyYear, Number(event.target.value))}>{monthOptions.map((month, index) => <option key={month} value={index + 1}>{month}</option>)}</select></label>
-                <label>Year<select value={monthlyYear} onChange={(event) => changeMonthlyPeriod(Number(event.target.value), monthlyMonth)}>{Array.from({ length: 7 }, (_, index) => new Date().getFullYear() - 5 + index).map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
-              </div>
-              <div className="table-scroll"><table><thead><tr><th>Customer</th><th>Mobile</th><th>VIN</th><th>Vehicle</th><th>Service</th><th>Last visit</th><th>Next due</th><th>Source</th></tr></thead><tbody>
-                {monthlyEntries.map((entry) => <tr key={entry.id}><td>{entry.customerName}</td><td>{entry.mobileNumber}</td><td>{entry.vin || '—'}</td><td>{[entry.model, entry.registrationNumber].filter(Boolean).join(' / ') || '—'}</td><td>{entry.serviceType || '—'}</td><td>{entry.lastVisitDate ? new Date(entry.lastVisitDate).toLocaleDateString() : '—'}</td><td>{entry.nextServiceDueDate ? new Date(entry.nextServiceDueDate).toLocaleDateString() : '—'}</td><td>{entry.source}</td></tr>)}
-                {!monthlyLoading && monthlyEntries.length === 0 && <tr><td colSpan="8" className="empty-state">No customer data for this month yet.</td></tr>}
-              </tbody></table></div>
-            </section>
-            <form className="panel customer-form" onSubmit={submitMonthlyEntry}>
-              <div className="panel-header"><h3>Manual entry</h3><span>Added to {monthOptions[monthlyMonth - 1]} {monthlyYear}</span></div>
-              <div className="form-grid">
-                <label>Customer name<input required maxLength="200" value={monthlyForm.customerName} onChange={(event) => setMonthlyForm({ ...monthlyForm, customerName: event.target.value })} /></label>
-                <label>Mobile number<input required inputMode="tel" value={monthlyForm.mobileNumber} onChange={(event) => setMonthlyForm({ ...monthlyForm, mobileNumber: event.target.value })} /></label>
-                <label>Email<input type="email" value={monthlyForm.email} onChange={(event) => setMonthlyForm({ ...monthlyForm, email: event.target.value })} /></label>
-                <label>VIN<input value={monthlyForm.vin} onChange={(event) => setMonthlyForm({ ...monthlyForm, vin: event.target.value })} /></label>
-                <label>Registration<input value={monthlyForm.registrationNumber} onChange={(event) => setMonthlyForm({ ...monthlyForm, registrationNumber: event.target.value })} /></label>
-                <label>Model<input value={monthlyForm.model} onChange={(event) => setMonthlyForm({ ...monthlyForm, model: event.target.value })} /></label>
-                <label>Vehicle year<input type="number" min="1950" max={new Date().getFullYear() + 1} value={monthlyForm.vehicleYear} onChange={(event) => setMonthlyForm({ ...monthlyForm, vehicleYear: event.target.value })} /></label>
-                <label>Service type<input value={monthlyForm.serviceType} onChange={(event) => setMonthlyForm({ ...monthlyForm, serviceType: event.target.value })} /></label>
-                <label>Last visit<input type="date" value={monthlyForm.lastVisitDate} onChange={(event) => setMonthlyForm({ ...monthlyForm, lastVisitDate: event.target.value })} /></label>
-                <label>Next service due<input type="date" value={monthlyForm.nextServiceDueDate} onChange={(event) => setMonthlyForm({ ...monthlyForm, nextServiceDueDate: event.target.value })} /></label>
-                <label className="full-width-field">Notes<textarea rows="2" maxLength="2000" value={monthlyForm.notes} onChange={(event) => setMonthlyForm({ ...monthlyForm, notes: event.target.value })} /></label>
-              </div>
-              <div className="form-actions"><button type="submit" className="primary-btn" disabled={monthlyBusy}><Save size={16} aria-hidden="true" />{monthlyBusy ? 'Saving…' : 'Add to month'}</button></div>
-            </form>
-            <form className="panel import-form" onSubmit={previewMonthlyImport}>
-              <div className="panel-header"><h3>CSV / Excel import</h3><span>CSV or XLSX, up to 7 MB</span></div>
-              <p className="import-columns">Required columns: Customer Name and Mobile. Optional: Email, VIN, Registration, Make, Model, Year, Service Type, Last Visit Date, Next Service Due Date, Notes.</p>
-              <div className="upload-row"><label className="file-picker"><FileUp size={18} aria-hidden="true" /><span>{monthlyFile?.name || 'Choose CSV or XLSX file'}</span><input type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { setMonthlyFile(event.target.files?.[0] || null); setMonthlyPreview(null); }} /></label><button type="submit" className="outline-btn" disabled={!monthlyFile || monthlyBusy}>{monthlyBusy ? 'Validating…' : 'Preview import'}</button></div>
-              {monthlyPreview && <div className="monthly-preview">
-                <div className="import-counts"><div><span>Total</span><strong>{monthlyPreview.totalRows}</strong></div><div><span>Ready</span><strong>{monthlyPreview.addedRows}</strong></div><div><span>Duplicates</span><strong>{monthlyPreview.skippedRows}</strong></div><div><span>Invalid</span><strong>{monthlyPreview.rejectedRows}</strong></div></div>
-                <div className="table-scroll"><table><thead><tr><th>Row</th><th>Customer</th><th>Mobile</th><th>VIN</th><th>Result</th><th>Validation</th></tr></thead><tbody>{monthlyPreview.rows.map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td><td>{row.row.customerName || '—'}</td><td>{row.row.mobileNumber || '—'}</td><td>{row.row.vin || '—'}</td><td>{row.status}</td><td>{row.error || 'Ready to import'}</td></tr>)}</tbody></table></div>
-                <div className="form-actions"><button type="button" className="primary-btn" disabled={monthlyBusy || monthlyPreview.addedRows === 0} onClick={commitMonthlyImport}>{monthlyBusy ? 'Importing…' : `Import ${monthlyPreview.addedRows} rows`}</button></div>
-              </div>}
-            </form>
-            <section className="panel customer-list-panel">
-              <div className="panel-header"><h3>Import history</h3><span>{monthlyImports.length} files this month</span></div>
-              <div className="table-scroll"><table><thead><tr><th>File</th><th>Imported by</th><th>Date</th><th>Total</th><th>Added</th><th>Skipped</th><th>Rejected</th><th>State</th></tr></thead><tbody>
-                {monthlyImports.map((item) => <tr key={item.id}><td>{item.fileName}{item.rowErrors?.length > 0 && <details className="row-error-details"><summary>{item.rowErrors.length} row issues</summary><ImportErrors errors={item.rowErrors.map((error) => ({ ...error, status: error.errorCode === 'DUPLICATE' ? 'skipped' : 'rejected' }))} /></details>}</td><td>{item.importedBy?.name || 'Deleted account'}</td><td>{new Date(item.createdAt).toLocaleString()}</td><td>{item.totalRows}</td><td>{item.addedRows}</td><td>{item.skippedRows}</td><td>{item.rejectedRows}</td><td>{item.status}</td></tr>)}
-                {!monthlyLoading && monthlyImports.length === 0 && <tr><td colSpan="8" className="empty-state">No imports for this month.</td></tr>}
-              </tbody></table></div>
-            </section>
-          </section>
+          <Suspense fallback={<p className="panel service-empty">Loading…</p>}>
+            <CcmProfilePanel
+              ccmProfile={ccmProfile}
+              changeMonthlyPeriod={changeMonthlyPeriod}
+              commitMonthlyImport={commitMonthlyImport}
+              monthlyBusy={monthlyBusy}
+              monthlyEntries={monthlyEntries}
+              monthlyError={monthlyError}
+              monthlyFile={monthlyFile}
+              monthlyForm={monthlyForm}
+              monthlyImports={monthlyImports}
+              monthlyLoading={monthlyLoading}
+              monthlyMessage={monthlyMessage}
+              monthlyMonth={monthlyMonth}
+              monthlyPreview={monthlyPreview}
+              monthlyYear={monthlyYear}
+              previewMonthlyImport={previewMonthlyImport}
+              setMonthlyFile={setMonthlyFile}
+              setMonthlyForm={setMonthlyForm}
+              setMonthlyPreview={setMonthlyPreview}
+              submitMonthlyEntry={submitMonthlyEntry}
+            />
+          </Suspense>
         ) : activeView === 'Performance Board' ? (
-          <section className="customer-workspace" aria-busy={boardLoading}>
-            {boardError && <p className="form-alert error" role="alert">{boardError}</p>}
-            <section className="panel customer-list-panel">
-              <div className="panel-header">
-                <h3>Daily quota · {board?.date ? formatDate(`${board.date}T12:00:00`) : '—'}</h3>
-                <span>{boardLoading ? 'Loading…' : `${board?.rows?.length ?? 0} CREs`}</span>
-              </div>
-              <div className="table-scroll">
-                <table className="performance-board-table">
-                  <thead>
-                    <tr>
-                      <th>CRE</th>
-                      <th>{dailyTargetLabels.callsMade}</th>
-                      <th>{dailyTargetLabels.callsPickedUp}</th>
-                      <th>Calls-made target</th>
-                      <th>Calls-picked-up target</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(board?.rows || []).map((row) => (
-                      <tr key={row.creId}>
-                        <td>{row.creName}</td>
-                        <td>{row.callsMade} / {row.callsMadeTarget}</td>
-                        <td>{row.callsPickedUp} / {row.callsPickedUpTarget}</td>
-                        <td><span className={`badge ${row.callsMadeMet ? 'badge-blue' : 'badge-danger'}`}>{row.callsMadeMet ? 'Target met' : `${row.callsMadeShortfall} short`}</span></td>
-                        <td><span className={`badge ${row.callsPickedUpMet ? 'badge-blue' : 'badge-danger'}`}>{row.callsPickedUpMet ? 'Target met' : `${row.callsPickedUpShortfall} short`}</span></td>
-                      </tr>
-                    ))}
-                    {!boardLoading && (board?.rows || []).length === 0 && <tr><td colSpan="5" className="empty-state">No active CREs report to you yet.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-              <p className="performance-note">Warranty calls are not counted. A call is picked up when the customer answered.</p>
-            </section>
-          </section>
+          <Suspense fallback={<SectionSkeleton />}>
+            <PerformanceBoardPanel
+              board={board}
+              boardError={boardError}
+              boardLoading={boardLoading}
+            />
+          </Suspense>
         ) : activeView === 'Performance' ? (
-          <section className="performance-workspace" aria-busy={performanceLoading}>
-            {performanceError && <p className="form-alert error" role="alert">{performanceError}</p>}
-            {currentRole === 'CCM' && !performanceCreId ? (
-              <p className="form-alert info" role="status">Select a CRE above to view their performance.</p>
-            ) : viewingFreeServicePerformance ? (
-              <>
-                <section className="performance-kpis" aria-label="Free-Service CRE performance metrics">
-                  {[
-                    [`Calls made · ${performanceDateLabel}`, performance?.dailyTargets?.callsMade, 120],
-                    [`Pickups · ${performanceDateLabel}`, performance?.dailyTargets?.callsPickedUp, 80],
-                  ].map(([label, metric, target]) => {
-                    const actual = metric?.actual ?? 0;
-                    const percent = Math.min(100, Math.round((actual / target) * 100));
-                    return <article key={label} className="performance-kpi teal">
-                      <div className="performance-kpi-heading"><span>{label}</span><PhoneCall size={17} aria-hidden="true" /></div>
-                      <strong>{performanceRange === 'month' ? actual : `${actual} / ${target}`}</strong>
-                      <small>{performanceRange === 'month' ? 'Total for selected month' : `${percent}% of daily target`}</small>
-                      {performanceRange === 'day' && <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>}
-                    </article>;
-                  })}
-                  {performanceRange === 'day' && <article className="performance-kpi coral">
-                    <div className="performance-kpi-heading"><span>Calls this month</span><Activity size={17} aria-hidden="true" /></div>
-                    <strong>{performance?.callsThisMonth ?? 0}</strong>
-                    <small>Persisted Free-Service call activity</small>
-                  </article>}
-                </section>
-                <section className="panel customer-list-panel">
-                  <div className="panel-header"><h3>Historical daily activity</h3><span>{monthOptions[performanceMonth - 1]} {performanceYear}</span></div>
-                  <div className="table-scroll"><table><thead><tr><th>Date</th><th>Calls made</th><th>Pickups achieved</th></tr></thead><tbody>
-                    {(performance?.dailyPerformance || []).map((entry) => <tr key={entry.date} className={performanceRange === 'day' && entry.date === performanceDate ? 'performance-selected-day' : undefined}><td>{formatDate(`${entry.date}T12:00:00`)}</td><td>{entry.callsMade}</td><td>{entry.callsPickedUp}</td></tr>)}
-                    {!performanceLoading && !(performance?.dailyPerformance || []).length && <tr><td colSpan="3" className="empty-state">No Free-Service call activity is recorded for this month.</td></tr>}
-                  </tbody></table></div>
-                </section>
-              </>
-            ) : (
-            <>
-            <section className="performance-kpis" aria-label="Performance metrics">
-              {[
-                { label: `Calls made · ${performanceDateLabel}`, value: performance?.dailyTargets ? (performanceRange === 'month' ? performance.dailyTargets.callsMade.actual : `${performance.dailyTargets.callsMade.actual} / ${performance.dailyTargets.callsMade.target}`) : performance ? 'N/A' : '—', detail: performanceRange === 'month' ? 'Total for selected month' : performance?.dailyTargets ? (performance.dailyTargets.callsMade.actual >= performance.dailyTargets.callsMade.target ? 'Daily target met' : `${performance.dailyTargets.callsMade.target - performance.dailyTargets.callsMade.actual} short of the daily target`) : 'Daily call activity', icon: PhoneCall, tone: 'coral' },
-                { label: `Calls picked up · ${performanceDateLabel}`, value: performance?.dailyTargets ? (performanceRange === 'month' ? performance.dailyTargets.callsPickedUp.actual : `${performance.dailyTargets.callsPickedUp.actual} / ${performance.dailyTargets.callsPickedUp.target}`) : performance ? 'N/A' : '—', detail: performanceRange === 'month' ? 'Total for selected month' : performance?.dailyTargets ? (performance.dailyTargets.callsPickedUp.actual >= performance.dailyTargets.callsPickedUp.target ? 'Daily target met' : `${performance.dailyTargets.callsPickedUp.target - performance.dailyTargets.callsPickedUp.actual} short of the daily target`) : 'Daily call activity', icon: PhoneCall, tone: 'teal' },
-                ...(performanceRange === 'day' ? [{
-                  label: 'Calls this month',
-                  value: performance?.callsThisMonth ?? '—',
-                  detail: 'Since latest monthly-data load',
-                  icon: Activity,
-                  tone: 'teal',
-                }] : []),
-                ...(currentRole === 'CRE' ? [{
-                  label: 'Appointment Conversion Rate',
-                  value: performance?.appointmentConversionRatePercent == null ? '—' : `${performance.appointmentConversionRatePercent}%`,
-                  detail: performance
-                    ? `${performance.lifetimeAppointments} appointments from ${performance.lifetimeCalls} calls ever logged`
-                    : 'Lifetime totals',
-                  icon: CalendarCheck,
-                  tone: 'green',
-                }] : []),
-                { label: 'Assigned customers', value: performance?.assignedCustomerCount ?? '—', detail: performance?.assignedBreakdown ? [
-                  `${performance.assignedBreakdown.oneYear} 1-year`,
-                  `${performance.assignedBreakdown.sixMonth} 6-month`,
-                  ...(performance.assignedBreakdown.freeService == null ? [] : [`${performance.assignedBreakdown.freeService} free service`]),
-                ].join(' · ') : `1-Year, 6-Month${canAccessFreeService ? ' and Free Service' : ''}`, icon: UsersRound, tone: 'gold' },
-                { label: 'Follow-ups pending', value: performance?.pendingFollowUps ?? '—', detail: 'Still needing action', icon: Clock3, tone: 'green' },
-                { label: 'Due services', value: performance?.dueServicesCount ?? '—', detail: 'Overdue on the master call list now', icon: CalendarClock, tone: 'coral' },
-                ...(canAccessWarranty ? [{ label: 'Missed warranty customers', value: performance?.missedWarrantyCount ?? '—', detail: 'Warranty lapsed this month with no contact', icon: ShieldCheck, tone: 'gold' }] : []),
-              ].map(({ label, value, detail, icon: MetricIcon, tone }) => (
-                <article key={label} className={`performance-kpi ${tone}`}>
-                  <div className="performance-kpi-heading"><span>{label}</span><MetricIcon size={17} aria-hidden="true" /></div>
-                  <strong>{value}</strong>
-                  <small>{detail}</small>
-                </article>
-              ))}
-            </section>
-
-            <section className="performance-detail-grid">
-              <article className="panel reach-panel">
-                <div className="panel-header"><h3>Customer reach this month</h3><span>{performance?.customerReachPercent ?? 0}%</span></div>
-                <div className="reach-count"><strong>{performance?.customersReachedThisMonth ?? '—'}</strong><span>of {performance?.assignedCustomerCount ?? '—'} assigned customers called</span></div>
-                <div className="progress-track" role="progressbar" aria-label="Assigned customers reached this month" aria-valuemin="0" aria-valuemax="100" aria-valuenow={performance?.customerReachPercent ?? 0}>
-                  <span style={{ width: `${performance?.customerReachPercent ?? 0}%` }} />
-                </div>
-                <p className="performance-note">Each customer is counted once. This cycle starts with the latest monthly-data import that added customers, or on the first day of the month when there is no import yet.</p>
-              </article>
-              <article className="panel appointment-performance">
-                <div className="panel-header"><h3>Appointments set</h3><CalendarDays size={18} aria-hidden="true" /></div>
-                <strong>{performance?.appointmentsSetThisMonth ?? '—'}</strong>
-                <span>from calls logged this month</span>
-              </article>
-            </section>
-
-            <section className="panel customer-list-panel performance-activity">
-              <div className="panel-header"><h3>{performanceRange === 'month' ? `Calls during ${performanceDateLabel}` : `Calls on ${performanceDateLabel}`}</h3><span>{performanceLoading ? 'Loading…' : `${(performance?.recentCalls || []).length} calls`}</span></div>
-              <div className="table-scroll"><table><thead><tr><th>Customer</th><th>Vehicle</th><th>Outcome</th><th>When</th></tr></thead><tbody>
-                {(performance?.recentCalls || []).map((call) => <tr key={call.id}>
-                  <td>{call.customer?.id ? (
-                    <button type="button" className="text-link" onClick={() => openCustomerProfile({
-                      customerId: call.customer.id,
-                      vehicleId: call.vehicle?.id,
-                      name: call.customer.fullName,
-                      mobile: call.customer.mobileNumber,
-                    })}>{call.customer.fullName || 'Customer'}</button>
-                  ) : call.customer?.fullName || 'Customer'}</td>
-                  <td>{call.vehicle?.model || call.vehicle?.registrationNumber || call.vehicle?.vin || '—'}</td>
-                  <td><span className="badge badge-neutral">{call.outcome.replaceAll('_', ' ')}</span></td>
-                  <td>{new Date(call.createdAt).toLocaleString()}</td>
-                </tr>)}
-                {!performanceLoading && !performanceError && (performance?.recentCalls || []).length === 0 && <tr><td colSpan="4" className="empty-state">{performanceRange === 'month' ? 'No calls were logged during this month.' : 'No calls were logged on this date.'}</td></tr>}
-              </tbody></table></div>
-            </section>
-            </>
-            )}
-          </section>
+          <Suspense fallback={<SectionSkeleton />}>
+            <PerformancePanel
+              performance={performance}
+              canAccessFreeService={canAccessFreeService}
+              canAccessWarranty={canAccessWarranty}
+              currentRole={currentRole}
+              openCustomerProfile={openCustomerProfile}
+              performanceCreId={performanceCreId}
+              performanceDate={performanceDate}
+              performanceDateLabel={performanceDateLabel}
+              performanceError={performanceError}
+              performanceLoading={performanceLoading}
+              performanceMonth={performanceMonth}
+              performanceRange={performanceRange}
+              performanceYear={performanceYear}
+              viewingFreeServicePerformance={viewingFreeServicePerformance}
+            />
+          </Suspense>
         ) : activeView === 'Allocations' ? (
-          <section className="customer-workspace">
-            {allocationError && <p className="form-alert error" role="alert">{allocationError}</p>}
-            {allocationMessage && <p className="form-alert success" role="status">{allocationMessage}</p>}
-            {allocationFormOpen && ['ADMIN', 'GM'].includes(currentRole) && (
-              <form className="panel customer-form" onSubmit={submitAllocation}>
-                <div className="panel-header"><h3>Assign vehicle to CRE</h3><span>Assignments are limited to the vehicle&apos;s CCM team</span></div>
-                <div className="form-grid">
-                  <label>Vehicle
-                    <select required value={allocationForm.vehicleId} onChange={(event) => setAllocationForm({ ...allocationForm, vehicleId: event.target.value })}>
-                      <option value="">Choose vehicle</option>
-                      {allocationVehicles.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{[vehicle.customerName, vehicle.model, vehicle.registrationNumber || vehicle.vin].filter(Boolean).join(' · ')}</option>)}
-                    </select>
-                  </label>
-                  <label>CRE
-                    <select required value={allocationForm.creId} onChange={(event) => setAllocationForm({ ...allocationForm, creId: event.target.value })}>
-                      <option value="">Choose CRE</option>
-                      {allocationCres.filter((cre) => allocationTeamId ? cre.ccmId === allocationTeamId : currentUser.role !== 'CCM' || cre.ccmId === currentUser.ccmId).map((cre) => <option key={cre.id} value={cre.id}>{cre.name}</option>)}
-                    </select>
-                  </label>
-                  <label>Service type<input required maxLength="100" value={allocationForm.serviceType} onChange={(event) => setAllocationForm({ ...allocationForm, serviceType: event.target.value })} placeholder="Periodic service" /></label>
-                  <label>Category<input maxLength="100" value={allocationForm.category} onChange={(event) => setAllocationForm({ ...allocationForm, category: event.target.value })} placeholder="Due service" /></label>
-                </div>
-                <div className="form-actions"><button type="button" className="outline-btn" onClick={() => setAllocationFormOpen(false)}>Cancel</button><button type="submit" className="primary-btn" disabled={allocationSaving || !customers.some((customer) => customer.vehicles?.length) || allocationCres.length === 0}>{allocationSaving ? 'Assigning…' : 'Assign vehicle'}</button></div>
-              </form>
-            )}
-            {masterListError && <p className="form-alert error" role="alert">{masterListError}</p>}
-            <section className="panel customer-list-panel">
-              <div className="panel-header">
-                <h3>{currentRole === 'CCM' ? 'Allocated customers' : 'Allocation queue'}</h3>
-                {['ADMIN', 'GM'].includes(currentRole) && (
-                  <label className="inline-filter">Team
-                    <select value={masterListTeam} onChange={(event) => setMasterListTeam(event.target.value)}>
-                      <option value="">All teams</option>
-                      {masterListCcms.map((ccm) => <option key={ccm.ccmId} value={ccm.ccmId}>{ccm.name}{ccm.dealerCode ? ` · ${ccm.dealerCode}` : ''}</option>)}
-                    </select>
-                  </label>
-                )}
-                <label className="inline-filter">Search
-                  <input type="search" value={allocationSearch} placeholder="Name, number, VIN, model or reg. no." onChange={(event) => setAllocationSearch(event.target.value)} />
-                </label>
-                <span>{allocationsLoading ? 'Loading…' : `${visibleAllocationRecords.length} records`}</span>
-              </div>
-              {renderMasterCallTable(visibleAllocationRecords, allocationsLoading, { assignable: currentRole === 'CCM' })}
-            </section>
-            {callError && <p className="form-alert error" role="alert">{callError}</p>}
-            {customerPanel.mode === 'call' && renderCustomerActionPanel()}
-          </section>
+          <Suspense fallback={<SectionSkeleton />}>
+            <AllocationsPanel
+              allocationCres={allocationCres}
+              allocationError={allocationError}
+              allocationForm={allocationForm}
+              allocationFormOpen={allocationFormOpen}
+              allocationMessage={allocationMessage}
+              allocationSaving={allocationSaving}
+              allocationSearch={allocationSearch}
+              allocationTeamId={allocationTeamId}
+              allocationVehicles={allocationVehicles}
+              allocationsLoading={allocationsLoading}
+              callError={callError}
+              currentRole={currentRole}
+              currentUser={currentUser}
+              customerPanel={customerPanel}
+              customers={customers}
+              masterListCcms={masterListCcms}
+              masterListError={masterListError}
+              masterListTeam={masterListTeam}
+              renderCustomerActionPanel={renderCustomerActionPanel}
+              renderMasterCallTable={renderMasterCallTable}
+              setAllocationForm={setAllocationForm}
+              setAllocationFormOpen={setAllocationFormOpen}
+              setAllocationSearch={setAllocationSearch}
+              setMasterListTeam={setMasterListTeam}
+              submitAllocation={submitAllocation}
+              visibleAllocationRecords={visibleAllocationRecords}
+            />
+          </Suspense>
         ) : activeView === 'Reports' ? (
-          <section className="customer-workspace">
-            {wpError && <p className="form-alert error" role="alert">{wpError}</p>}
-            <section className="panel wp-filters">
-              <label>Month
-                <select value={wpMonth} onChange={(event) => changeWorkshopFilter({ month: Number(event.target.value) })}>
-                  {monthOptions.map((name, index) => <option key={name} value={index + 1} disabled={wpYear === wpNow.getFullYear() && index > wpNow.getMonth()}>{name}</option>)}
-                </select>
-              </label>
-              <label>Year
-                <select value={wpYear} onChange={(event) => {
-                  const year = Number(event.target.value);
-                  changeWorkshopFilter({ year, month: year === wpNow.getFullYear() ? Math.min(wpMonth, wpNow.getMonth() + 1) : wpMonth });
-                }}>
-                  {wpYears.map((year) => <option key={year} value={year}>{year}</option>)}
-                </select>
-              </label>
-              <label>Team (CCM + CREs)
-                <select value={wpCcmId} onChange={(event) => changeWorkshopFilter({ ccmId: event.target.value, creId: '' })}>
-                  <option value="">All teams</option>
-                  {masterListCcms.map((ccm) => <option key={ccm.ccmId} value={ccm.ccmId}>{ccm.name}</option>)}
-                </select>
-              </label>
-              <label>Individual CRE
-                <select value={wpCreId} onChange={(event) => changeWorkshopFilter({ creId: event.target.value })}>
-                  <option value="">{wpCcmId ? 'Whole Team (All CREs)' : 'Whole workshop'}</option>
-                  {wpCcmId && wpCres.length === 0 && <option disabled value="__none__">No CREs assigned to this CCM</option>}
-                  {wpCres.map((cre) => <option key={cre.id} value={cre.id}>{cre.name}</option>)}
-                </select>
-              </label>
-            </section>
-
-            {wpData && (
-              <>
-                <p className="wp-scope">Showing <strong>{wpData.scope.name}</strong> · {monthOptions[wpData.period.month - 1]} {wpData.period.year}{wpLoading ? ' · Updating…' : ''}</p>
-                <section className="stats-grid">
-                  {[
-                    ['Calls made', wpData.totals.calls],
-                    ['Customers reached', wpData.totals.customersReached],
-                    ['Appointments booked', wpData.totals.appointmentsBooked],
-                    ['Call-to-appointment', `${wpData.totals.conversionPercent}%`],
-                    ['Assigned records', wpData.totals.assignedRecords],
-                    ['Reach of assigned', `${wpData.totals.reachPercent}%`],
-                  ].map(([label, value]) => <article key={label} className="stat-card"><p>{label}</p><strong>{value}</strong></article>)}
-                </section>
-
-                <section className="panel">
-                  <div className="panel-header"><h3>Daily activity</h3><span className="wp-legend"><i className="swatch calls" />Calls <i className="swatch appts" />Appointments</span></div>
-                  <div className="wp-daily-chart" role="img" aria-label="Daily calls and appointments">
-                    {wpData.daily.map((entry) => (
-                      <div key={entry.date} className="wp-day" title={`${entry.date}: ${entry.calls} calls, ${entry.appointments} appointments`}>
-                        <div className="wp-bars">
-                          <span className="bar calls" style={{ height: `${(entry.calls / wpMaxDaily) * 100}%` }} />
-                          <span className="bar appts" style={{ height: `${(entry.appointments / wpMaxDaily) * 100}%` }} />
-                        </div>
-                        <small>{Number(entry.date.slice(8))}</small>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="content-grid">
-                  <article className="panel">
-                    <div className="panel-header"><h3>Call outcomes</h3><span>{wpData.totals.calls} calls</span></div>
-                    <div className="wp-hbars">
-                      {wpData.outcomes.map((entry) => (
-                        <div key={entry.outcome} className="wp-hbar">
-                          <span>{entry.outcome.replaceAll('_', ' ')}</span>
-                          <div className="track"><div className="fill" style={{ width: `${(entry.count / wpMaxOutcome) * 100}%` }} /></div>
-                          <strong>{entry.count}</strong>
-                        </div>
-                      ))}
-                      {wpData.outcomes.length === 0 && <p className="empty-state">No calls logged this month.</p>}
-                    </div>
-                  </article>
-
-                  {wpData.breakdown.length > 0 && (
-                    <article className="panel">
-                      <div className="panel-header"><h3>{wpData.scope.type === 'all' ? 'Team comparison' : 'CCM and CRE comparison'}</h3><span>Calls this month</span></div>
-                      <div className="wp-hbars">
-                        {wpData.breakdown.map((entry) => (
-                          <div key={entry.id} className="wp-hbar">
-                            <span>{entry.name} <small>{entry.kind}</small></span>
-                            <div className="track"><div className="fill alt" style={{ width: `${(entry.calls / wpMaxBreakdown) * 100}%` }} /></div>
-                            <strong>{entry.calls}</strong>
-                          </div>
-                        ))}
-                      </div>
-                    </article>
-                  )}
-                </section>
-
-                {wpData.breakdown.length > 0 && (
-                  <section className="panel customer-list-panel">
-                    <div className="panel-header"><h3>Detailed breakdown</h3><span>Select a team or CRE above to drill down</span></div>
-                    <div className="table-scroll"><table><thead><tr><th>Name</th><th>Role</th><th>Calls</th><th>Customers reached</th><th>Appointments booked</th><th>Assigned</th><th>Reach</th></tr></thead><tbody>
-                      {wpData.breakdown.map((entry) => <tr key={entry.id}><td>{entry.name}</td><td>{entry.kind}</td><td>{entry.calls}</td><td>{entry.customersReached}</td><td>{entry.appointmentsBooked}</td><td>{entry.assignedRecords}</td><td>{entry.reachPercent}%</td></tr>)}
-                    </tbody></table></div>
-                  </section>
-                )}
-              </>
-            )}
-          </section>
+          <Suspense fallback={<SectionSkeleton />}>
+            <ReportsPanel
+              changeWorkshopFilter={changeWorkshopFilter}
+              masterListCcms={masterListCcms}
+              wpCcmId={wpCcmId}
+              wpCreId={wpCreId}
+              wpCres={wpCres}
+              wpData={wpData}
+              wpError={wpError}
+              wpLoading={wpLoading}
+              wpMaxBreakdown={wpMaxBreakdown}
+              wpMaxDaily={wpMaxDaily}
+              wpMaxOutcome={wpMaxOutcome}
+              wpMonth={wpMonth}
+              wpNow={wpNow}
+              wpYear={wpYear}
+              wpYears={wpYears}
+            />
+          </Suspense>
         ) : activeView === 'Workshop Performance' ? (
           <Suspense fallback={<p className="panel service-empty">Loading Workshop Performance…</p>}>
             <WorkshopServicePerformance role={currentRole} ccmId={currentUser?.ccmId} />
@@ -3820,1263 +3055,236 @@ function App() {
             </section>
           </section>
         ) : activeView === 'Imports' ? (
-          <section className="customer-workspace">
-            {importError && <p className="form-alert error" role="alert">{importError}</p>}
-            {importMessage && <p className="form-alert success" role="status">{importMessage}</p>}
-            {importResult && (
-              <section className="panel import-result" role="status">
-                <div className="panel-header"><h3>Import completed</h3><span>{importResult.batch.fileName}</span></div>
-                <div className="import-counts">
-                  {[['Rows', importResult.batch.totalRows], ['Created', importResult.batch.createdRows], ['Appended', importResult.batch.appendedRows], ['Skipped', importResult.batch.skippedRows], ['Rejected', importResult.batch.rejectedRows], ['Flagged', importResult.batch.flaggedRows]].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
-                </div>
-              </section>
-            )}
-            {canImport ? (
-              <form className="panel import-form" onSubmit={submitImport}>
-                <div className="panel-header"><h3>Upload repair orders</h3><span>CSV file, up to 1.8 MB</span></div>
-                <p className="import-columns">Each row must include Repair Order No, Vehicle VIN, and Registration No. Other fields are optional; missing values are shown as “-”.</p>
-                {currentRole !== 'CCM' && (
-                  <label className="import-team-select">Import customer records under CCM
-                    <select required disabled={importUploading} value={importCcmId} onChange={(event) => {
-                      importRequestKeyRef.current = null;
-                      setImportMessage('');
-                      setImportCcmId(event.target.value);
-                    }}>
-                      <option value="">Select CCM team</option>
-                      {masterListCcms.map((ccm) => <option key={ccm.ccmId} value={ccm.ccmId}>{ccm.name}{ccm.dealerCode ? ` · ${ccm.dealerCode}` : ''}</option>)}
-                    </select>
-                  </label>
-                )}
-                <div className="upload-row">
-                  <label className="file-picker"><FileUp size={18} aria-hidden="true" /><span>{importFile?.name || 'Choose CSV file'}</span><input type="file" accept=".csv,text/csv" disabled={importUploading} onChange={(event) => {
-                    importRequestKeyRef.current = null;
-                    setImportMessage('');
-                    setImportFile(event.target.files?.[0] || null);
-                  }} /></label>
-                  <button type="submit" className="primary-btn" disabled={!importFile || importUploading}>{importUploading ? 'Importing…' : 'Import file'}</button>
-                </div>
-              </form>
-            ) : <p className="form-alert error">Import access is limited to Admin, GM, and CCM accounts.</p>}
-            <section className="panel customer-list-panel">
-              <div className="panel-header import-history-header">
-                <h3>Import history</h3>
-                {currentRole === 'ADMIN' && (
-                  <label className="import-history-filter">
-                    <span>CCM</span>
-                    <select aria-label="Filter import history by CCM" value={importHistoryCcmId} disabled={importsLoading} onChange={(event) => changeImportHistoryCcm(event.target.value)}>
-                      <option value="">All CCMs</option>
-                      {importHistoryCcms.map((ccm) => (
-                        <option key={ccm.ccmId} value={ccm.ccmId}>
-                          {ccm.name}{ccm.dealerCode ? ` · ${ccm.dealerCode}` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                <span aria-live="polite">{importsLoading ? 'Loading…' : `${displayedImports.length} batches`}</span>
-              </div>
-              <div className="table-scroll">
-                <table className="import-history-table">
-                  <thead><tr><th>Import ID</th><th>File</th><th>Imported by</th><th>CCM</th><th>Imported</th><th>Status</th><th>Row progress</th><th>Changed records</th><th>Created</th><th>Appended</th><th>Skipped</th><th>Rejected</th><th>Flagged</th>{currentRole === 'ADMIN' && <th>Rollback / recovery</th>}</tr></thead>
-                  <tbody>
-                    {displayedImports.map((batch) => {
-                      const changedRecords = (batch.affectedCustomers || 0)
-                        + (batch.affectedVehicles || 0)
-                        + (batch.affectedRepairOrders || 0)
-                        + (batch.affectedCallListEntries || 0)
-                        + (batch.affectedAllocations || 0);
-                      const legacyStoredOutcomes = batch.rowOutcomesProvenance === 'legacy-stored-unverified';
-                      const rowOutcomesAvailable = batch.statsComplete || legacyStoredOutcomes;
-                      const rowOutcomeSuffix = legacyStoredOutcomes ? '†' : '';
-                      const ccm = importHistoryCcms.find((item) => item.ccmId === batch.ccmId);
-                      return (
-                        <tr key={batch.id}>
-                          <td><code className="import-batch-id" title={batch.id}>{batch.id}</code></td>
-                          <td>{batch.fileName}{batch.rowErrors?.length > 0 && <details className="row-error-details"><summary>{batch.rowErrors.length} row issues</summary><ImportErrors errors={batch.rowErrors.map((row) => ({ ...row, status: row.errorCode.toLowerCase().includes('conflict') ? 'flagged' : row.errorCode.toLowerCase().includes('duplicate') ? 'skipped' : 'rejected' }))} /></details>}</td>
-                          <td title={batch.importedBy?.id || batch.importedByUserId || undefined}>
-                            {batch.importedBy?.name || (batch.importedByUserId ? 'Deleted account' : 'Unknown')}
-                            {batch.importedBy?.role && <small className="import-history-subtext">{batch.importedBy.role}</small>}
-                          </td>
-                          <td title={batch.ccmId || undefined}>{ccm?.name || batch.ccmId || '—'}</td>
-                          <td>{new Date(batch.createdAt).toLocaleString()}</td>
-                          <td title={batch.recoveryBlockedReason || undefined}>
-                            {batch.status === 'rolled_back' ? 'Rolled back' : batch.status === 'permanently_deleted' ? 'Permanently deleted' : batch.status === 'completed' ? 'Completed' : batch.status}
-                            {batch.permanentDeletion && (
-                              <details className="import-invalidation-note">
-                                <summary>
-                                  {batch.permanentDeletion.invalidatedChanges} changes invalidated
-                                  {batch.permanentDeletion.invalidatedRows.length > 0
-                                    ? ` · ${batch.permanentDeletion.invalidatedRows.length} rows`
-                                    : ''}
-                                </summary>
-                                <span>Rows: {batch.permanentDeletion.invalidatedRows.join(', ') || '—'}</span>
-                                <span>Caused by import: {batch.permanentDeletion.causedByImportIds.join(', ') || 'Unknown'}</span>
-                              </details>
-                            )}
-                          </td>
-                          <td>{batch.processedRows == null ? `Unknown / ${batch.totalRows} (unverified)` : `${batch.processedRows} / ${batch.totalRows}${batch.statsComplete ? '' : legacyStoredOutcomes ? ' (legacy status; row details unverified)' : ' (partial)'}`}</td>
-                          <td title={batch.affectedCountsComplete ? 'Distinct affected records verified from durable change logs.' : batch.processingStartedAt ? 'Distinct records currently represented in durable change logs; completeness is not verified.' : 'No verified change-log count is available for this historical import.'}>
-                            {batch.processingStartedAt ? `${changedRecords}${batch.affectedCountsComplete ? '' : ' logged (partial)'}` : 'Unavailable'}
-                          </td>
-                          <td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.createdRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.appendedRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.skippedRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.rejectedRows}${rowOutcomeSuffix}` : '—'}</td><td title={legacyStoredOutcomes ? 'Stored historical count; row-level completeness is unverified.' : undefined}>{rowOutcomesAvailable ? `${batch.flaggedRows}${rowOutcomeSuffix}` : '—'}</td>
-                          {currentRole === 'ADMIN' && <td>
-                            {['completed', 'failed'].includes(batch.status) && batch.rollbackSupported ? (
-                              <>
-                                <button type="button" className="outline-btn import-rollback-trigger" disabled={importRollbackSaving} onClick={() => {
-                                  setImportRollbackBatch(batch);
-                                  setImportRollbackError('');
-                                }}>Roll back</button>
-                                <button type="button" className="danger-btn import-rollback-trigger" disabled={permanentDeletionPreviewLoading || permanentDeletionSaving} onClick={() => openPermanentDeletionPreview(batch)}>
-                                  Permanently delete
-                                </button>
-                              </>
-                            ) : batch.status === 'rolled_back' ? (
-                              <span className="import-rollback-unavailable">Already rolled back</span>
-                            ) : batch.status === 'permanently_deleted' ? (
-                              <span className="import-rollback-unavailable">Already permanently deleted</span>
-                            ) : ['processing', 'failed'].includes(batch.status) && !batch.rollbackSupported ? (
-                              <button type="button" className="outline-btn import-rollback-trigger" disabled={importRecoverySaving} onClick={() => recoverImport(batch)}>
-                                {importRecoverySaving ? 'Checking…' : 'Recover'}
-                              </button>
-                            ) : batch.status === 'recovery_blocked' ? (
-                              <span className="import-rollback-unavailable" title={batch.recoveryBlockedReason}>Blocked</span>
-                            ) : (
-                              <span className="import-rollback-unavailable" title="This batch has no verified snapshots or is not in a completed state.">Unavailable</span>
-                            )}
-                          </td>}
-                        </tr>
-                      );
-                    })}
-                    {!importsLoading && displayedImports.length === 0 && <tr><td colSpan={currentRole === 'ADMIN' ? 14 : 13} className="empty-state">{importHistoryCcmId ? 'No imports recorded for this CCM.' : 'No imports recorded.'}</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-            {permanentDeletionPreviewLoading && <p className="form-alert" role="status">Preparing permanent-deletion preview…</p>}
-            {importRollbackBatch && (
-              <div className="modal-backdrop" onMouseDown={(event) => {
-                if (event.target === event.currentTarget && !importRollbackSaving) setImportRollbackBatch(null);
-              }}>
-                <section className="modal-card import-rollback-modal" role="dialog" aria-modal="true" aria-labelledby="import-rollback-title" aria-describedby="import-rollback-description">
-                  <h3 id="import-rollback-title">Roll back repair-order import?</h3>
-                  <p id="import-rollback-description">This will reverse only the recorded changes from this import. Any records that have changed since the import or have later dependencies will be preserved and block the rollback.</p>
-                  <dl className="import-rollback-details">
-                    <div><dt>File</dt><dd>{importRollbackBatch.fileName}</dd></div>
-                    <div><dt>Batch ID</dt><dd>{importRollbackBatch.id}</dd></div>
-                    <div><dt>Imported</dt><dd>{new Date(importRollbackBatch.createdAt).toLocaleString()}</dd></div>
-                    <div><dt>Status</dt><dd>{importRollbackBatch.status}</dd></div>
-                    <div><dt>Recorded changes</dt><dd>{importRollbackBatch._count?.changes ?? 'Unknown'}</dd></div>
-                    <div><dt>Affected records</dt><dd>{importRollbackBatch.affectedCountsComplete ? <>
-                      Customers {importRollbackBatch.affectedCustomers ?? 0}, Vehicles {importRollbackBatch.affectedVehicles ?? 0},
-                      Repair orders {importRollbackBatch.affectedRepairOrders ?? 0}, Call list {importRollbackBatch.affectedCallListEntries ?? 0},
-                      Allocations {importRollbackBatch.affectedAllocations ?? 0}
-                    </> : 'Incomplete; recovery verification is required before rollback.'}</dd></div>
-                  </dl>
-                  <p className="modal-warning">This action cannot be undone. A rollback conflict will leave the import and its data unchanged.</p>
-                  {importRollbackError && <p className="form-alert error" role="alert">{importRollbackError}</p>}
-                  <div className="form-actions">
-                    <button type="button" className="outline-btn" disabled={importRollbackSaving} onClick={() => setImportRollbackBatch(null)}>Cancel</button>
-                    <button type="button" className="danger-btn" disabled={importRollbackSaving} onClick={() => rollbackImport(importRollbackBatch)}>{importRollbackSaving ? 'Rolling back…' : 'Confirm rollback'}</button>
-                  </div>
-                </section>
-              </div>
-            )}
-            {permanentDeletionError && !permanentDeletion && <p className="form-alert error" role="alert">{permanentDeletionError}</p>}
-            {permanentDeletion && (
-              <div className="modal-backdrop" onMouseDown={(event) => {
-                if (event.target === event.currentTarget && !permanentDeletionSaving) {
-                  setPermanentDeletion(null);
-                  setPermanentDeletionError('');
-                }
-              }}>
-                <section className="modal-card import-rollback-modal" role="dialog" aria-modal="true" aria-labelledby="permanent-deletion-title" aria-describedby="permanent-deletion-description">
-                  <h3 id="permanent-deletion-title">Permanently delete import and dependencies?</h3>
-                  <p id="permanent-deletion-description">This separate action permanently removes records created by this import and dependent records from later imports. Later repair orders, calls, appointments, and call-list records may also be deleted. Pre-existing records updated by this import will be restored where their recorded state can be verified.</p>
-                  {permanentDeletionPreviewLoading ? <p role="status">Preparing deletion preview…</p> : (
-                    <dl className="import-rollback-details">
-                      <div><dt>Original file</dt><dd>{permanentDeletion.preview.fileName}</dd></div>
-                      <div><dt>Import ID</dt><dd>{permanentDeletion.preview.importId}</dd></div>
-                      <div><dt>Imported</dt><dd>{new Date(permanentDeletion.preview.importedAt).toLocaleString()}</dd></div>
-                      <div><dt>Directly affected records</dt><dd>{permanentDeletion.preview.directlyAffectedRecords}</dd></div>
-                      <div><dt>Dependent records</dt><dd>{permanentDeletion.preview.dependentRecords}</dd></div>
-                      <div><dt>Later import batches affected</dt><dd>{permanentDeletion.preview.laterImportBatchesAffected}</dd></div>
-                      <div><dt>Total records to delete</dt><dd>{permanentDeletion.preview.totalRecordsDeleted}</dd></div>
-                      <div><dt>Existing records to restore</dt><dd>{permanentDeletion.preview.existingRecordsRestored}</dd></div>
-                      <div><dt>Customers / vehicles</dt><dd>{permanentDeletion.preview.counts.customers} / {permanentDeletion.preview.counts.vehicles}</dd></div>
-                      <div><dt>Repair orders / call-list records</dt><dd>{permanentDeletion.preview.counts.repairOrders} / {permanentDeletion.preview.counts.callListRecords}</dd></div>
-                      <div><dt>Calls / appointments / follow-ups</dt><dd>{permanentDeletion.preview.counts.calls} / {permanentDeletion.preview.counts.appointments} / {permanentDeletion.preview.counts.followUps}</dd></div>
-                      <div><dt>Allocations / ownership / milestones</dt><dd>{permanentDeletion.preview.counts.allocations} / {permanentDeletion.preview.counts.ownershipRecords} / {permanentDeletion.preview.counts.freeServiceMilestones}</dd></div>
-                      <div><dt>Appointment events / VIN reviews</dt><dd>{permanentDeletion.preview.counts.appointmentEvents} / {permanentDeletion.preview.counts.vinConflictReviews}</dd></div>
-                      <div><dt>Monthly data entries retained and detached</dt><dd>{permanentDeletion.preview.counts.monthlyEntriesDetached}</dd></div>
-                    </dl>
-                  )}
-                  {permanentDeletion.preview.affectedImportBatches.length > 0 && (
-                    <div className="permanent-deletion-batches">
-                      <strong>Later batches affected</strong>
-                      <ul>{permanentDeletion.preview.affectedImportBatches.map((affected) => <li key={affected.id}>{affected.fileName} — {affected.invalidatedChanges} changes, {affected.invalidatedRows.length} rows invalidated</li>)}</ul>
-                    </div>
-                  )}
-                  {permanentDeletion.preview.recordsAlreadyAbsent?.length > 0 && (
-                    <div className="permanent-deletion-batches">
-                      <strong>Already absent (will be skipped)</strong>
-                      <ul>{permanentDeletion.preview.recordsAlreadyAbsent.map((record) => (
-                        <li key={`${record.entityType}:${record.entityId}:${record.operation}`}>
-                          {record.entityType} · {record.entityId} ({record.operation})
-                        </li>
-                      ))}</ul>
-                    </div>
-                  )}
-                  <p className="modal-warning">This action cannot be undone. Import history and audit records will be retained, but deleted records cannot be recovered.</p>
-                  {permanentDeletionError && <p className="form-alert error" role="alert">{permanentDeletionError}</p>}
-                  <div className="form-actions">
-                    <button type="button" className="outline-btn" disabled={permanentDeletionSaving} onClick={() => {
-                      setPermanentDeletion(null);
-                      setPermanentDeletionError('');
-                    }}>Cancel</button>
-                    <button type="button" className="danger-btn" disabled={permanentDeletionSaving || permanentDeletionPreviewLoading || permanentDeletion.preview.alreadyDeleted} onClick={confirmPermanentDeletion}>
-                      {permanentDeletionSaving ? 'Deleting permanently…' : 'Confirm permanent deletion'}
-                    </button>
-                  </div>
-                </section>
-              </div>
-            )}
-          </section>
+          <Suspense fallback={<SectionSkeleton />}>
+            <ImportsPanel
+              canImport={canImport}
+              changeImportHistoryCcm={changeImportHistoryCcm}
+              confirmPermanentDeletion={confirmPermanentDeletion}
+              currentRole={currentRole}
+              displayedImports={displayedImports}
+              importCcmId={importCcmId}
+              importError={importError}
+              importFile={importFile}
+              importHistoryCcmId={importHistoryCcmId}
+              importHistoryCcms={importHistoryCcms}
+              importMessage={importMessage}
+              importRecoverySaving={importRecoverySaving}
+              importRequestKeyRef={importRequestKeyRef}
+              importResult={importResult}
+              importRollbackBatch={importRollbackBatch}
+              importRollbackError={importRollbackError}
+              importRollbackSaving={importRollbackSaving}
+              importUploading={importUploading}
+              importsLoading={importsLoading}
+              masterListCcms={masterListCcms}
+              openPermanentDeletionPreview={openPermanentDeletionPreview}
+              permanentDeletion={permanentDeletion}
+              permanentDeletionError={permanentDeletionError}
+              permanentDeletionPreviewLoading={permanentDeletionPreviewLoading}
+              permanentDeletionSaving={permanentDeletionSaving}
+              recoverImport={recoverImport}
+              rollbackImport={rollbackImport}
+              setImportCcmId={setImportCcmId}
+              setImportFile={setImportFile}
+              setImportMessage={setImportMessage}
+              setImportRollbackBatch={setImportRollbackBatch}
+              setImportRollbackError={setImportRollbackError}
+              setPermanentDeletion={setPermanentDeletion}
+              setPermanentDeletionError={setPermanentDeletionError}
+              submitImport={submitImport}
+            />
+          </Suspense>
         ) : activeView === 'Appointments' ? (
-          <section className="customer-workspace">
-            {appointmentError && <p className="form-alert error" role="alert">{appointmentError}</p>}
-            {appointmentMessage && <p className="form-alert success" role="status">{appointmentMessage}</p>}
-            {appointmentFormOpen && (
-              <form className="panel customer-form" onSubmit={submitAppointment}>
-                <div className="panel-header"><h3>Book appointment</h3><span>{currentRole === 'FREE_SERVICE_CRE' ? 'Enter appointment details; no customer record will be created.' : 'Select a customer, vehicle, and service time'}</span></div>
-                <div className="form-grid">
-                  {currentRole === 'FREE_SERVICE_CRE' ? (
-                    <>
-                      <label>Customer name<input required maxLength="200" value={appointmentForm.customerName} onChange={(event) => setAppointmentForm({ ...appointmentForm, customerName: event.target.value })} /></label>
-                      <label>Vehicle details<input maxLength="200" value={appointmentForm.vehicleName} onChange={(event) => setAppointmentForm({ ...appointmentForm, vehicleName: event.target.value })} placeholder="Optional" /></label>
-                    </>
-                  ) : <>
-                  <label>Customer
-                    <select required value={appointmentForm.customerId} onChange={(event) => setAppointmentForm({ ...appointmentForm, customerId: event.target.value, vehicleId: '' })}>
-                      <option value="">Choose customer</option>
-                      {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name || customer.fullName}</option>)}
-                    </select>
-                  </label>
-                  <label>Vehicle
-                    <select value={appointmentForm.vehicleId} onChange={(event) => setAppointmentForm({ ...appointmentForm, vehicleId: event.target.value })}>
-                      <option value="">Vehicle to be confirmed</option>
-                      {(customers.find((customer) => customer.id === appointmentForm.customerId)?.vehicles || []).map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{[vehicle.model, vehicle.registrationNumber, vehicle.vin].filter(Boolean).join(' / ')}</option>)}
-                    </select>
-                  </label>
-                  </>}
-                  <label>Date and time<input required type="datetime-local" value={appointmentForm.scheduledAt} onChange={(event) => setAppointmentForm({ ...appointmentForm, scheduledAt: event.target.value })} /></label>
-                </div>
-                <div className="form-actions">
-                  <button type="button" className="outline-btn" onClick={() => setAppointmentFormOpen(false)}>Cancel</button>
-                  <button type="submit" className="primary-btn" disabled={appointmentSaving || (currentRole !== 'FREE_SERVICE_CRE' && customers.length === 0)}>{appointmentSaving ? 'Booking…' : 'Book appointment'}</button>
-                </div>
-              </form>
-            )}
-            <section className="panel customer-list-panel">
-              <div className="panel-header"><h3>Appointment schedule</h3><span>{appointmentsLoading ? 'Loading…' : `${dayAppointments.length} on selected day`}</span></div>
-              <div className="day-strip" role="tablist" aria-label="Next seven days">
-                {weekDays.map((day) => {
-                  const count = appointments.filter((appointment) => localDateKey(appointment.scheduledAt) === day.key).length;
-                  return (
-                    <button key={day.key} type="button" role="tab" aria-selected={selectedDay === day.key} className={`day-chip ${selectedDay === day.key ? 'active' : ''}`} onClick={() => setSelectedDay(day.key)}>
-                      <span>{day.weekday}</span>
-                      <strong>{day.label}</strong>
-                      <small>{count} appt{count === 1 ? '' : 's'}</small>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="table-scroll">
-                <table>
-                  <thead><tr><th>Customer</th><th>Vehicle</th><th>Time</th><th>CRE</th><th>Status</th><th>Action</th></tr></thead>
-                  <tbody>
-                    {dayAppointments.map((appointment) => (
-                      <tr key={appointment.id}>
-                        <td>{appointment.customerId ? (
-                          <button type="button" className="text-link" onClick={() => openCustomerProfile({
-                            customerId: appointment.customerId,
-                            vehicleId: appointment.vehicleId,
-                            name: appointment.customer,
-                          })}>{appointment.customer}</button>
-                        ) : appointment.customer}</td>
-                        <td>{appointment.vehicle}</td>
-                        <td>{new Date(appointment.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                        <td>{appointment.assigneeName || '—'}</td>
-                        <td><select className="status-select" aria-label={`Appointment status for ${appointment.customer}`} value={String(appointment.status).toUpperCase()} onChange={(event) => changeAppointmentStatus(appointment.id, event.target.value)}>
-                          {['PENDING', 'CONFIRMED', 'RESCHEDULED', 'CANCELLED', 'NO_SHOW'].map((status) => <option key={status} value={status}>{status.replace('_', ' ')}</option>)}
-                        </select></td>
-                        <td><button type="button" className="icon-btn compact-delete-btn" aria-label={`Delete appointment for ${appointment.customer}`} title="Delete appointment" disabled={appointmentDeletingId === appointment.id} onClick={() => deleteAppointment(appointment)}><Trash2 size={17} aria-hidden="true" /></button></td>
-                      </tr>
-                    ))}
-                    {!appointmentsLoading && dayAppointments.length === 0 && <tr><td colSpan="6" className="empty-state">No appointments on this day.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-            {callError && <p className="form-alert error" role="alert">{callError}</p>}
-            {customerPanel.mode === 'call' && renderCustomerActionPanel()}
-          </section>
+          <Suspense fallback={<SectionSkeleton />}>
+            <AppointmentsPanel
+              appointmentDeletingId={appointmentDeletingId}
+              appointmentError={appointmentError}
+              appointmentForm={appointmentForm}
+              appointmentFormOpen={appointmentFormOpen}
+              appointmentMessage={appointmentMessage}
+              appointmentSaving={appointmentSaving}
+              appointments={appointments}
+              appointmentsLoading={appointmentsLoading}
+              callError={callError}
+              changeAppointmentStatus={changeAppointmentStatus}
+              currentRole={currentRole}
+              customerPanel={customerPanel}
+              customers={customers}
+              dayAppointments={dayAppointments}
+              deleteAppointment={deleteAppointment}
+              openCustomerProfile={openCustomerProfile}
+              renderCustomerActionPanel={renderCustomerActionPanel}
+              selectedDay={selectedDay}
+              setAppointmentForm={setAppointmentForm}
+              setAppointmentFormOpen={setAppointmentFormOpen}
+              setSelectedDay={setSelectedDay}
+              submitAppointment={submitAppointment}
+              weekDays={weekDays}
+            />
+          </Suspense>
         ) : activeView === 'Master list' ? (
-          <section className="customer-workspace">
-            {masterListError && <p className="form-alert error" role="alert">{masterListError}</p>}
-            {masterListMessage && <p className="form-alert success" role="status">{masterListMessage}</p>}
-            {masterEntryFormOpen && (
-              <form className="panel customer-form" onSubmit={submitMasterEntry}>
-                <div className="panel-header">
-                  <h3>Add customer to master list</h3>
-                  <span>Fields match the service repair-order CSV</span>
-                </div>
-                <div className="form-grid">
-                  {masterCsvFields.filter(([key]) => !manualEntryExcludedFields.includes(key)).map(([key, label, type]) => (
-                    <label key={key}>
-                      {label}{['roNumber', 'vin', 'customerName', 'mobileNumber'].includes(key) ? ' *' : ''}
-                      <input
-                        required={['roNumber', 'vin', 'customerName', 'mobileNumber'].includes(key)}
-                        maxLength={key === 'vin' ? 17 : undefined}
-                        type={type}
-                        min={type === 'number' ? '0' : undefined}
-                        value={masterEntryForm[key]}
-                        onChange={(event) => setMasterEntryForm({
-                          ...masterEntryForm,
-                          [key]: key === 'vin' || key === 'registrationNumber' ? event.target.value.toUpperCase() : event.target.value,
-                        })}
-                      />
-                    </label>
-                  ))}
-                  {currentRole !== 'CCM' && (
-                    <label>CCM ID<select required value={masterEntryForm.ccmId} onChange={(event) => setMasterEntryForm({ ...masterEntryForm, ccmId: event.target.value })}>
-                      <option value="">Select CCM</option>
-                      {masterListCcms.map((ccm) => <option key={ccm.ccmId} value={ccm.ccmId}>{ccm.name}{ccm.dealerCode ? ` · ${ccm.dealerCode}` : ''}</option>)}
-                    </select></label>
-                  )}
-                </div>
-                <div className="form-actions">
-                  <button type="button" className="outline-btn" onClick={() => setMasterEntryFormOpen(false)}>Cancel</button>
-                  <button type="submit" className="primary-btn" disabled={masterEntrySaving || masterListLoading || (currentRole !== 'CCM' && masterListCcms.length === 0)}>
-                    <Save size={16} aria-hidden="true" />{masterEntrySaving ? 'Saving…' : 'Add customer'}
-                  </button>
-                </div>
-              </form>
-            )}
-            <section className="panel customer-list-panel master-list-panel">
-              <div className="panel-header">
-                <h3>Master call list</h3>
-                {['ADMIN', 'GM'].includes(currentRole) && (
-                  <label className="inline-filter">Team
-                    <select value={masterListTeam} onChange={(event) => setMasterListTeam(event.target.value)}>
-                      <option value="">All teams</option>
-                      {masterListCcms.map((ccm) => <option key={ccm.ccmId} value={ccm.ccmId}>{ccm.name}{ccm.dealerCode ? ` · ${ccm.dealerCode}` : ''}</option>)}
-                    </select>
-                  </label>
-                )}
-                <span>{masterListLoading ? 'Loading…' : `${masterRecords.length} records`}</span>
-              </div>
-              {['CCM', 'CRE'].includes(currentRole) && (
-                <div className="master-list-filters" aria-label="Master Call List filters">
-                  <label className="master-list-search">
-                    Search customers
-                    <span className="master-list-search-control">
-                      <input
-                        type="search"
-                        value={masterListSearch}
-                        placeholder="Name, mobile, VIN, registration or RO"
-                        aria-label="Search by customer name, mobile, VIN, registration number, or repair order"
-                        onChange={(event) => setMasterListSearch(event.target.value)}
-                      />
-                      {masterListSearch && (
-                        <button type="button" className="master-list-clear-search" aria-label="Clear search" onClick={() => setMasterListSearch('')}>
-                          <X size={15} aria-hidden="true" />
-                        </button>
-                      )}
-                    </span>
-                  </label>
-                  {currentRole === 'CCM' && (
-                    <label>
-                      CRE
-                      <select value={masterListCreFilter} onChange={(event) => setMasterListCreFilter(event.target.value)}>
-                        <option value="">All CREs</option>
-                        <option value="unassigned">Unassigned customers</option>
-                        {masterListCres.map((cre) => <option key={cre.id} value={cre.id}>{cre.name || cre.username}</option>)}
-                      </select>
-                    </label>
-                  )}
-                  <label>
-                    Due category
-                    <select value={masterListDueFilter} onChange={(event) => setMasterListDueFilter(event.target.value)}>
-                      <option value="">All customers</option>
-                      <option value="6m">6 Months Due</option>
-                      <option value="1y">1 Year Due</option>
-                      <option value="allDue">All Due Customers</option>
-                    </select>
-                  </label>
-                  <label>
-                    Repair type
-                    <select value={masterListRepairFilter} onChange={(event) => setMasterListRepairFilter(event.target.value)}>
-                      <option value="">All repair types</option>
-                      {MASTER_REPAIR_TYPE_ORDER.map((type) => (
-                        <option key={type} value={type}>
-                          {type === 'Free' ? 'Free Service' : type === 'Paid' ? 'Paid Service' : type}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    className="outline-btn master-list-clear-filters"
-                    disabled={!masterListSearch && !masterListCreFilter && !masterListDueFilter && !masterListRepairFilter}
-                    onClick={() => {
-                      setMasterListSearch('');
-                      setMasterListCreFilter('');
-                      setMasterListDueFilter('');
-                      setMasterListRepairFilter('');
-                    }}
-                  >Clear filters</button>
-                </div>
-              )}
-              {renderMasterCallTable(masterRecords, masterListLoading, {
-                emptyMessage: 'No matching customers found. Try adjusting or clearing the active filters.',
-              })}
-            </section>
-            {callError && customerPanel.mode !== 'call' && <p className="form-alert error" role="alert">{callError}</p>}
-            {callMessage && customerPanel.mode !== 'call' && <p className="form-alert success" role="status">{callMessage}</p>}
-            {renderCustomerActionPanel()}
-          </section>
+          <Suspense fallback={<SectionSkeleton />}>
+            <MasterCallListPanel
+              callError={callError}
+              callMessage={callMessage}
+              currentRole={currentRole}
+              customerPanel={customerPanel}
+              loadMoreMasterList={loadMoreMasterList}
+              masterEntryForm={masterEntryForm}
+              masterEntryFormOpen={masterEntryFormOpen}
+              masterEntrySaving={masterEntrySaving}
+              masterListCcms={masterListCcms}
+              masterListCreFilter={masterListCreFilter}
+              masterListCres={masterListCres}
+              masterListDueFilter={masterListDueFilter}
+              masterListError={masterListError}
+              masterListLoading={masterListLoading}
+              masterListLoadingMore={masterListLoadingMore}
+              masterListMessage={masterListMessage}
+              masterListPageInfo={masterListPageInfo}
+              masterListRepairFilter={masterListRepairFilter}
+              masterListSearch={masterListSearch}
+              masterListTeam={masterListTeam}
+              masterRecords={masterRecords}
+              renderCustomerActionPanel={renderCustomerActionPanel}
+              renderMasterCallTable={renderMasterCallTable}
+              setMasterEntryForm={setMasterEntryForm}
+              setMasterEntryFormOpen={setMasterEntryFormOpen}
+              setMasterListCreFilter={setMasterListCreFilter}
+              setMasterListDueFilter={setMasterListDueFilter}
+              setMasterListRepairFilter={setMasterListRepairFilter}
+              setMasterListSearch={setMasterListSearch}
+              setMasterListTeam={setMasterListTeam}
+              submitMasterEntry={submitMasterEntry}
+            />
+          </Suspense>
         ) : activeView === 'Customers' || activeView in followUpViews || activeView in dueViews ? (
-          <section className="customer-workspace">
-            {activeView in followUpViews && followUpError && <p className="form-alert error" role="alert">{followUpError}</p>}
-            {activeView in followUpViews && dueError && <p className="form-alert error" role="alert">{dueError}</p>}
-            {customerError && <p className="form-alert error" role="alert">{customerError}</p>}
-            {customerMessage && <p className="form-alert success" role="status">{customerMessage}</p>}
-            {callError && <p className="form-alert error" role="alert">{callError}</p>}
-            {callMessage && <p className="form-alert success" role="status">{callMessage}</p>}
-
-            {activeView === 'Customers' && customerFormOpen && canCreateCustomer && (
-              <form className="panel customer-form" onSubmit={submitCustomer}>
-                <div className="panel-header">
-                  <h3>New customer</h3>
-                  <span>Customer details and registered vehicles</span>
-                </div>
-                <div className="form-grid">
-                  <label>Full name<input required maxLength="200" value={customerForm.fullName} onChange={(event) => updateCustomerField('fullName', event.target.value)} /></label>
-                  <label>Mobile number<input inputMode="tel" value={customerForm.mobileNumber} onChange={(event) => updateCustomerField('mobileNumber', event.target.value)} /></label>
-                  <label>Email<input type="email" value={customerForm.email} onChange={(event) => updateCustomerField('email', event.target.value)} /></label>
-                  {['ADMIN', 'GM'].includes(String(currentUser?.role || '').toUpperCase()) && <label>CCM ID<input required placeholder="Required team assignment" value={customerForm.ccmId} onChange={(event) => updateCustomerField('ccmId', event.target.value)} /></label>}
-                </div>
-
-                <div className="vehicle-form-list">
-                  <div className="panel-header">
-                    <h3>Vehicles</h3>
-                    <button type="button" className="outline-btn compact-btn" onClick={() => setCustomerForm((current) => ({ ...current, vehicles: [...current.vehicles, { vin: '', registrationNumber: '', model: '', year: '' }] }))}>
-                      <Plus size={16} aria-hidden="true" /> Add vehicle
-                    </button>
-                  </div>
-                  {customerForm.vehicles.map((vehicle, index) => (
-                    <div className="vehicle-form-row" key={`vehicle-${index}`}>
-                      <label>VIN<input value={vehicle.vin} onChange={(event) => updateVehicleField(index, 'vin', event.target.value)} /></label>
-                      <label>Registration<input value={vehicle.registrationNumber} onChange={(event) => updateVehicleField(index, 'registrationNumber', event.target.value)} /></label>
-                      <label>Model<input value={vehicle.model} onChange={(event) => updateVehicleField(index, 'model', event.target.value)} /></label>
-                      <label>Year<input type="number" min="1950" max={new Date().getFullYear() + 1} value={vehicle.year} onChange={(event) => updateVehicleField(index, 'year', event.target.value)} /></label>
-                      <button type="button" className="icon-btn" aria-label="Remove vehicle" title="Remove vehicle" disabled={customerForm.vehicles.length === 1} onClick={() => setCustomerForm((current) => ({ ...current, vehicles: current.vehicles.filter((_, vehicleIndex) => vehicleIndex !== index) }))}>
-                        <Trash2 size={17} aria-hidden="true" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <div className="form-actions">
-                  <button type="button" className="outline-btn" onClick={() => setCustomerFormOpen(false)}>Cancel</button>
-                  <button type="submit" className="primary-btn" disabled={customerSaving}>{customerSaving ? 'Saving…' : 'Create customer'}</button>
-                </div>
-              </form>
-            )}
-
-            {activeView in followUpViews ? (
-              <section className="panel customer-list-panel">
-                <div className="panel-header">
-                  <h3>Follow-up queue · {followUpViews[activeView].label}</h3>
-                  <span>{followUpsLoading ? 'Loading…' : `${followUpServiceKind ? visibleFollowUpTableRecords.length : visibleFollowUps.length} records`}</span>
-                </div>
-                {renderAccordionFilters(followUpSearch, setFollowUpSearch, 'Follow-up filters')}
-                {followUpServiceKind ? renderServiceListTable(
-                  followUpServiceKind,
-                  visibleFollowUpTableRecords,
-                  true,
-                  followUps.length ? 'No follow-ups match the active filters.' : undefined,
-                ) : <div className="table-scroll">
-                  <table className="master-call-list-table">
-                    <thead>
-                      <tr>
-                        <th>Type</th>
-                        <th>Due</th>
-                        <th>Name</th>
-                        <th>Number</th>
-                        <th>Model name</th>
-                        <th>VIN</th>
-                        <th>Veh age</th>
-                        <th>Regd no.</th>
-                        <th>Status</th>
-                        <th>Scheduled apt</th>
-                        <th>Allocated CRE</th>
-                        <th>Call on</th>
-                        <th>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visibleFollowUps.map((followUp) => {
-                        const record = (followUp.vehicleId && calls.find((entry) => entry.vehicleId === followUp.vehicleId))
-                          || calls.find((entry) => entry.customerId === followUp.customer.id);
-                        const dueValue = followUp.source === 'FREE_SERVICE' ? followUp.milestone?.dueDate : followUp.source === 'WARRANTY' ? null : record?.dueDate;
-                        const typeLabel = followUp.source === 'FREE_SERVICE' ? `Free service ${followUp.milestone?.milestone ?? ''}`.trim() : followUp.source === 'WARRANTY' ? 'Warranty' : record?.type;
-                        return (
-                          <tr key={followUp.id}>
-                            <td>{typeLabel || '—'}</td>
-                            <td className={dueValue && new Date(dueValue) < new Date() ? 'due-overdue' : undefined}>{dueValue ? new Date(dueValue).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}</td>
-                            <td><button type="button" className="text-link" onClick={() => openDueCustomer({ customerId: followUp.customer.id, vehicleId: record?.vehicleId }, 'profile')}>{followUp.customer.fullName}</button></td>
-                            <td>{followUp.customer.mobileNumber || '—'}</td>
-                            <td>{followUp.vehicle?.model || record?.model || '—'}</td>
-                            <td>{followUp.vehicle?.vin || record?.vin || '—'}</td>
-                            <td>{formatVehicleAge(record?.vehicleAgeMonths)}</td>
-                            <td>{followUp.vehicle?.registrationNumber || record?.registrationNumber || '—'}</td>
-                            <td><span className="badge badge-neutral">{record?.status || 'pending'}</span></td>
-                            <td>{record?.scheduledAppointment ? new Date(record.scheduledAppointment.scheduledAt).toLocaleString() : '—'}</td>
-                            <td>{followUp.cre?.name || record?.assigneeName || 'Unassigned'}</td>
-                            <td>{new Date(followUp.followUpAt).toLocaleString()}</td>
-                            <td>
-                              <div className="inline-actions">
-                                {currentRole === 'CRE' && (
-                                  <button type="button" className="icon-btn call-icon-btn" aria-label={`Call ${followUp.customer.fullName}`} title="Call customer" onClick={() => callFromFollowUp(followUp, record?.vehicleId)}>
-                                    <PhoneCall size={17} aria-hidden="true" />
-                                  </button>
-                                )}
-                                <button type="button" className="outline-btn compact-btn" onClick={() => changeFollowUpStatus(followUp.id, 'completed')}>Complete</button>
-                                <button type="button" className="outline-btn compact-btn" onClick={() => changeFollowUpStatus(followUp.id, 'cancelled')}>Cancel</button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                      {!followUpsLoading && visibleFollowUps.length === 0 && <tr><td colSpan="13" className="empty-state">{followUps.length === 0 ? `No ${followUpViews[activeView].label.toLowerCase()} follow-ups scheduled.` : 'No follow-ups match the active filters.'}</td></tr>}
-                    </tbody>
-                  </table>
-                </div>}
-              </section>
-            ) : activeView in dueViews ? (
-              <section className="panel customer-list-panel">
-                <div className="panel-header">
-                  <h3>{dueViews[activeView].label}</h3>
-                  <span>{dueLoading ? 'Loading…' : `${visibleDueRecords.length} records`}</span>
-                </div>
-                {renderAccordionFilters(dueSearch, setDueSearch, 'Customer filters')}
-                {dueError && <p className="form-alert error" role="alert">{dueError}</p>}
-                {dueIssues.length > 0 && (
-                  <details className="form-alert info data-issues">
-                    <summary>{dueIssues.length} vehicle{dueIssues.length === 1 ? ' is' : 's are'} excluded because the sale date is missing or invalid</summary>
-                    <ul>{dueIssues.map((issue) => <li key={issue.vehicleId}>{issue.name} · {issue.registrationNumber || issue.vin}</li>)}</ul>
-                  </details>
-                )}
-                {dueViews[activeView].kind !== 'due' ? renderServiceListTable(
-                  dueViews[activeView].kind,
-                  visibleDueRecords,
-                  false,
-                  dueRecords.length ? 'No customers match the active filters.' : undefined,
-                ) : currentRole === 'CCM' ? renderMasterCallTable(visibleDueRecords, dueLoading, {
-                  emptyMessage: dueRecords.length ? 'No customers match the active filters.' : 'No customers are due in this list.',
-                }) : (
-                <>
-                {renderMasterRepairTypeLegend()}
-                <div className="table-scroll">
-                  <table className="master-call-list-table">
-                    <thead>
-                      <tr>
-                        <th>Type</th>
-                        <th>Due</th>
-                        <th>Name</th>
-                        <th>Number</th>
-                        <th>Model name</th>
-                        <th>VIN</th>
-                        <th>Veh age</th>
-                        <th>Regd no.</th>
-                        <th>Status</th>
-                        <th>Scheduled apt</th>
-                        <th>Call</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visibleDueRecords.map((record) => (
-                        <tr key={record.id}>
-                          <td>{renderMasterRepairTypeBadge(record.type)}</td>
-                          <td className={record.dueDate && new Date(record.dueDate) < new Date() ? 'due-overdue' : undefined}>{record.dueDate ? new Date(record.dueDate).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}</td>
-                          <td><button type="button" className="text-link" onClick={() => openDueCustomer(record, 'profile')}>{record.name || record.customerName || '—'}</button></td>
-                          <td>{record.mobile || '—'}</td>
-                          <td>{record.model || '—'}</td>
-                          <td>{record.vin || '—'}</td>
-                          <td>{formatVehicleAge(record.vehicleAgeMonths)}</td>
-                          <td>{record.registrationNumber || '—'}</td>
-                          <td><span className="badge badge-neutral">{record.status || 'pending'}</span></td>
-                          <td>{record.scheduledAppointment ? new Date(record.scheduledAppointment.scheduledAt).toLocaleString() : '—'}</td>
-                          <td>
-                            <button type="button" className="icon-btn call-icon-btn" aria-label={`Call ${record.name || record.customerName}`} title="Call customer" disabled={!record.customerId} onClick={() => openDueCustomer(record, 'call')}>
-                              <PhoneCall size={17} aria-hidden="true" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                      {!dueLoading && visibleDueRecords.length === 0 && <tr><td colSpan="11" className="empty-state">{dueRecords.length ? 'No customers match the active filters.' : 'No customers are due in this list.'}</td></tr>}
-                    </tbody>
-                  </table>
-                </div>
-                </>
-                )}
-              </section>
-            ) : (
-            <section className="panel customer-list-panel">
-              <div className="panel-header">
-                <h3>Customer directory</h3>
-                <span>{customersLoading ? 'Loading…' : `${customers.length} records`}</span>
-              </div>
-              <div className="table-scroll">
-                <table>
-                  <thead><tr><th>Customer</th><th>Mobile</th><th>Email</th><th>Vehicles</th></tr></thead>
-                  <tbody>
-                    {customers.map((customer) => (
-                      <tr key={customer.id}>
-                        <td><button type="button" className="text-link" onClick={() => openCustomerProfile(customer)}>{customer.name || customer.customerName || customer.fullName}</button></td>
-                        <td>{customer.mobile || customer.mobileNumber || '—'}</td>
-                        <td>{customer.email || '—'}</td>
-                        <td>{customer.vehicleCount ?? customer.vehicles?.length ?? 0}</td>
-                      </tr>
-                    ))}
-                    {!customersLoading && customers.length === 0 && <tr><td colSpan="4" className="empty-state">No customer records found.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-            )}
-
-            {renderCustomerActionPanel()}
-          </section>
+          <Suspense fallback={<SectionSkeleton />}>
+            <CustomerListsPanel
+              activeView={activeView}
+              callError={callError}
+              callFromFollowUp={callFromFollowUp}
+              callMessage={callMessage}
+              calls={calls}
+              canCreateCustomer={canCreateCustomer}
+              changeFollowUpStatus={changeFollowUpStatus}
+              currentRole={currentRole}
+              currentUser={currentUser}
+              customerError={customerError}
+              customerForm={customerForm}
+              customerFormOpen={customerFormOpen}
+              customerMessage={customerMessage}
+              customerSaving={customerSaving}
+              customers={customers}
+              customersLoading={customersLoading}
+              dueError={dueError}
+              dueIssues={dueIssues}
+              dueLoading={dueLoading}
+              dueLoadingMore={dueLoadingMore}
+              duePageInfo={duePageInfo}
+              dueRecords={dueRecords}
+              dueSearch={dueSearch}
+              followUpError={followUpError}
+              followUpPageInfo={followUpPageInfo}
+              followUpSearch={followUpSearch}
+              followUpServiceKind={followUpServiceKind}
+              followUps={followUps}
+              followUpsLoading={followUpsLoading}
+              followUpsLoadingMore={followUpsLoadingMore}
+              loadMoreDueData={loadMoreDueData}
+              loadMoreFollowUps={loadMoreFollowUps}
+              openCustomerProfile={openCustomerProfile}
+              openDueCustomer={openDueCustomer}
+              renderAccordionFilters={renderAccordionFilters}
+              renderCustomerActionPanel={renderCustomerActionPanel}
+              renderMasterCallTable={renderMasterCallTable}
+              renderServiceListTable={renderServiceListTable}
+              setCustomerForm={setCustomerForm}
+              setCustomerFormOpen={setCustomerFormOpen}
+              setDueSearch={setDueSearch}
+              setFollowUpSearch={setFollowUpSearch}
+              submitCustomer={submitCustomer}
+              updateCustomerField={updateCustomerField}
+              updateVehicleField={updateVehicleField}
+              visibleDueRecords={visibleDueRecords}
+              visibleFollowUpTableRecords={visibleFollowUpTableRecords}
+              visibleFollowUps={visibleFollowUps}
+            />
+          </Suspense>
         ) : (
           <>
             {currentRole === 'FREE_SERVICE_CRE' ? (
-              <section className="customer-workspace cre-dashboard">
-                <section className="stats-grid">
-                  {[
-                    ['Calls made today', dashboardData?.freeServiceCre?.dailyTargets?.callsMade, 120],
-                    ['Pickups achieved today', dashboardData?.freeServiceCre?.dailyTargets?.callsPickedUp, 80],
-                  ].map(([label, metric, target]) => {
-                    const actual = metric?.actual ?? 0;
-                    const percent = Math.min(100, Math.round((actual / target) * 100));
-                    return (
-                      <article key={label} className="stat-card">
-                        <p>{label}</p>
-                        <strong>{actual} / {target}</strong>
-                        <div className="target-progress-row">
-                          <div className="target-progress-bar"><div className={`target-progress-fill ${percent >= 100 ? 'met' : ''}`} style={{ width: `${percent}%` }} /></div>
-                          <span>{percent}%</span>
-                        </div>
-                        <small>{actual} actual of {target} daily target</small>
-                      </article>
-                    );
-                  })}
-                </section>
-                <section className="panel customer-list-panel">
-                  <div className="panel-header"><h3>Today&apos;s Appointments</h3><span>{dashboardData?.freeServiceCre?.todayAppointments?.length || 0} booked</span></div>
-                  <div className="table-scroll"><table><thead><tr><th>Customer</th><th>Vehicle</th><th>Time</th><th>Status</th></tr></thead><tbody>
-                    {(dashboardData?.freeServiceCre?.todayAppointments || []).map((appointment) => <tr key={appointment.id}>
-                      <td>{appointment.customer}</td><td>{appointment.vehicle}</td>
-                      <td>{new Date(appointment.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td><td><span className="badge badge-blue">{appointment.status}</span></td>
-                    </tr>)}
-                    {!dashboardData?.freeServiceCre?.todayAppointments?.length && <tr><td colSpan="4" className="empty-state">No appointments scheduled for today.</td></tr>}
-                  </tbody></table></div>
-                </section>
-              </section>
+            <Suspense fallback={<SectionSkeleton />}>
+              <FreeServiceCreDashboard
+                dashboardData={dashboardData}
+              />
+            </Suspense>
             ) : currentRole === 'CRE' ? (
-              <section className="customer-workspace cre-dashboard">
-                <div className="quick-actions-bar">
-                  <span className="quick-actions-label">Quick Actions:</span>
-                  <button type="button" className="quick-action-btn primary" onClick={() => { setAppointmentFormOpen(true); setActiveView('Appointments'); }}>
-                    <CalendarPlus2 size={15} aria-hidden="true" /> Book Appointment
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={() => openDueList('Due 1-Year')}>
-                    <CalendarClock size={15} aria-hidden="true" /> 1-Year Due ({dashboardData?.cre?.categoryCounts?.oneYear ?? 0})
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={() => openDueList('Due 6-Month')}>
-                    <Clock3 size={15} aria-hidden="true" /> 6-Month Due ({dashboardData?.cre?.categoryCounts?.sixMonth ?? 0})
-                  </button>
-                  {canAccessFreeService && <button type="button" className="quick-action-btn" onClick={() => openDueList('Free Service')}>
-                    <Gift size={15} aria-hidden="true" /> Free Service ({dashboardData?.cre?.categoryCounts?.freeService ?? 0})
-                  </button>}
-                  {canAccessWarranty && <button type="button" className="quick-action-btn" onClick={() => openDueList('Warranty')}>
-                    <ShieldCheck size={15} aria-hidden="true" /> Warranty
-                  </button>}
-                  <button type="button" className="quick-action-btn" onClick={() => openFollowUpList('Follow-up Service')}>
-                    <PhoneCall size={15} aria-hidden="true" /> Follow-up Queue
-                  </button>
-                </div>
-
-                <section className="stats-grid">
-                  <article className="stat-card">
-                    <p>Calls Made Today</p>
-                    <strong>{dashboardData?.cre?.dailyTargets?.callsMade?.actual ?? 0} / {dashboardData?.cre?.dailyTargets?.callsMade?.target ?? 120}</strong>
-                    <div className="target-progress-row">
-                      <div className="target-progress-bar">
-                        <div
-                          className={`target-progress-fill ${dashboardData?.cre?.dailyTargets?.callsMade?.met ? 'met' : ''}`}
-                          style={{ width: `${Math.min(100, Math.round(((dashboardData?.cre?.dailyTargets?.callsMade?.actual ?? 0) / (dashboardData?.cre?.dailyTargets?.callsMade?.target || 120)) * 100))}%` }}
-                        />
-                      </div>
-                      <span className={`badge ${dashboardData?.cre?.dailyTargets?.callsMade?.met ? 'badge-success' : 'badge-danger'}`}>
-                        {dashboardData?.cre?.dailyTargets?.callsMade?.met ? 'Met' : `${dashboardData?.cre?.dailyTargets?.callsMade?.shortfall ?? 120} short`}
-                      </span>
-                    </div>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>Calls Picked Up Today</p>
-                    <strong>{dashboardData?.cre?.dailyTargets?.callsPickedUp?.actual ?? 0} / {dashboardData?.cre?.dailyTargets?.callsPickedUp?.target ?? 80}</strong>
-                    <div className="target-progress-row">
-                      <div className="target-progress-bar">
-                        <div
-                          className={`target-progress-fill ${dashboardData?.cre?.dailyTargets?.callsPickedUp?.met ? 'met' : ''}`}
-                          style={{ width: `${Math.min(100, Math.round(((dashboardData?.cre?.dailyTargets?.callsPickedUp?.actual ?? 0) / (dashboardData?.cre?.dailyTargets?.callsPickedUp?.target || 80)) * 100))}%` }}
-                        />
-                      </div>
-                      <span className={`badge ${dashboardData?.cre?.dailyTargets?.callsPickedUp?.met ? 'badge-success' : 'badge-danger'}`}>
-                        {dashboardData?.cre?.dailyTargets?.callsPickedUp?.met ? 'Met' : `${dashboardData?.cre?.dailyTargets?.callsPickedUp?.shortfall ?? 80} short`}
-                      </span>
-                    </div>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>Assigned Workload</p>
-                    <strong>{dashboardData?.cre?.assignedWorkload ?? 0}</strong>
-                    <span>1-Yr, 6-Mo{canAccessFreeService ? ' & Free Service' : ''}</span>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>Pending Follow-ups</p>
-                    <strong>{dashboardData?.cre?.pendingFollowUps ?? 0}</strong>
-                    <span>
-                      {(dashboardData?.cre?.overdueFollowUpsCount || 0) > 0 ? (
-                        <span className="badge badge-danger">{dashboardData.cre.overdueFollowUpsCount} overdue</span>
-                      ) : (
-                        'All on schedule'
-                      )}
-                    </span>
-                  </article>
-                </section>
-
-                <section className="content-grid">
-                  <article className="panel">
-                    <div className="panel-header">
-                      <h3>Urgent & Upcoming Follow-ups</h3>
-                      <span>{dashboardData?.cre?.urgentFollowUps?.length ?? 0} items in queue</span>
-                    </div>
-                    <div className="table-scroll">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Customer</th>
-                            <th>Vehicle</th>
-                            <th>Due Time</th>
-                            <th>Category</th>
-                            <th>Action</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(dashboardData?.cre?.urgentFollowUps || []).map((fu) => (
-                            <tr key={fu.id}>
-                              <td>
-                                <strong><button type="button" className="text-link" onClick={() => openCustomerProfile({
-                                  customerId: fu.customerId,
-                                  vehicleId: fu.vehicleId,
-                                  name: fu.customerName,
-                                  mobile: fu.mobileNumber,
-                                  model: fu.vehicleModel,
-                                })}>{fu.customerName}</button></strong>
-                                {fu.mobileNumber && <small style={{ display: 'block', color: '#718085' }}>{fu.mobileNumber}</small>}
-                              </td>
-                              <td>{fu.vehicleModel || '—'}</td>
-                              <td>
-                                {new Date(fu.followUpAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                                {fu.isOverdue && <span className="badge badge-danger" style={{ marginLeft: 6 }}>Overdue</span>}
-                              </td>
-                              <td><span className="badge badge-neutral">{fu.source?.toLowerCase().replace('_', ' ') || fu.category}</span></td>
-                              <td>
-                                <button
-                                  type="button"
-                                  className="primary-btn compact-btn"
-                                  onClick={() => openDueCustomer({ customerId: fu.customerId, vehicleId: fu.vehicleId, callSource: fu.source }, 'call')}
-                                >
-                                  <PhoneCall size={13} aria-hidden="true" /> Call
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                          {(!dashboardData?.cre?.urgentFollowUps || dashboardData.cre.urgentFollowUps.length === 0) && (
-                            <tr>
-                              <td colSpan="5" className="empty-state">
-                                No pending follow-ups scheduled for today. Great job keeping your queue clear!
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </article>
-
-                  <article className="panel">
-                    <div className="panel-header">
-                      <h3>Today&apos;s Appointments</h3>
-                      <span>{(dashboardData?.cre?.todayAppointments || appointments).length} booked</span>
-                    </div>
-
-                    <ul className="stack-list">
-                      {(dashboardData?.cre?.todayAppointments || appointments).map((appointment) => (
-                        <li key={appointment.id || appointment.customer || appointment.time}>
-                          <div>
-                            <strong><button type="button" className="text-link" onClick={() => openCustomerProfile({
-                              customerId: appointment.customerId,
-                              vehicleId: appointment.vehicleId,
-                              name: appointment.customer,
-                            })}>{appointment.customer}</button></strong>
-                            <small>{appointment.vehicle}</small>
-                          </div>
-                          <div className="meta-block" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span>{appointment.time || new Date(appointment.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                            <span className="badge badge-blue">{appointment.status}</span>
-                            <button
-                              type="button"
-                              className="compact-delete-btn"
-                              aria-label={`Delete appointment for ${appointment.customer}`}
-                              title="Delete appointment"
-                              disabled={appointmentDeletingId === appointment.id}
-                              onClick={() => deleteAppointment(appointment)}
-                            >
-                              <Trash2 size={15} aria-hidden="true" />
-                            </button>
-                          </div>
-                        </li>
-                      ))}
-                      {((!dashboardData?.cre?.todayAppointments || dashboardData.cre.todayAppointments.length === 0) && appointments.length === 0) && (
-                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: '24px 0' }}>
-                          No appointments scheduled for today.
-                        </li>
-                      )}
-                    </ul>
-                  </article>
-                </section>
-                {callError && <p className="form-alert error" role="alert">{callError}</p>}
-                {customerPanel.mode === 'call' && renderCustomerActionPanel()}
-              </section>
+            <Suspense fallback={<SectionSkeleton />}>
+              <CreDashboard
+                appointmentDeletingId={appointmentDeletingId}
+                appointments={appointments}
+                callError={callError}
+                canAccessFreeService={canAccessFreeService}
+                canAccessWarranty={canAccessWarranty}
+                customerPanel={customerPanel}
+                dashboardData={dashboardData}
+                deleteAppointment={deleteAppointment}
+                openCustomerProfile={openCustomerProfile}
+                openDueCustomer={openDueCustomer}
+                openDueList={openDueList}
+                openFollowUpList={openFollowUpList}
+                renderCustomerActionPanel={renderCustomerActionPanel}
+                setActiveView={setActiveView}
+                setAppointmentFormOpen={setAppointmentFormOpen}
+              />
+            </Suspense>
             ) : currentRole === 'CCM' ? (
-              <section className="customer-workspace ccm-dashboard">
-                <section className="content-grid quota-notices" aria-label="Previous-day call target alerts">
-                  {[
-                    { key: 'callsMadeMissed', title: 'Calls made target missed', noun: 'calls made', allMet: 'All CREs met the calls-made target yesterday' },
-                    { key: 'callsPickedUpMissed', title: 'Calls picked up target missed', noun: 'calls picked up', allMet: 'All CREs met the calls-picked-up target yesterday' },
-                  ].map(({ key, title, noun, allMet }) => {
-                    const notices = dashboardData?.ccm?.quotaNotices || quotaNotices;
-                    return (
-                      <article key={key} className="panel quota-notice">
-                        <div className="panel-header">
-                          <h3>{title}</h3>
-                          <span>{notices?.date ? formatDate(`${notices.date}T12:00:00`) : 'Yesterday'}</span>
-                        </div>
-                        {!notices ? <p className="empty-state">Checking yesterday&apos;s calls…</p> : notices[key].length === 0 ? (
-                          <p className="empty-state">{notices.totalCres === 0 ? 'No active CREs report to you yet.' : allMet}</p>
-                        ) : (
-                          <ul className="stack-list">
-                            {notices[key].map((entry) => (
-                              <li key={entry.creId}>
-                                <div><strong>{entry.creName}</strong><span>{entry.actual}/{entry.target} {noun}</span></div>
-                                <span className="badge badge-danger">{entry.shortfall} short</span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </article>
-                    );
-                  })}
-                </section>
-
-                <div className="quick-actions-bar">
-                  <span className="quick-actions-label">Quick Actions:</span>
-                  <button type="button" className="quick-action-btn primary" onClick={openAllocations}>
-                    <ClipboardList size={15} aria-hidden="true" /> Allocate Vehicles
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={openPerformanceBoard}>
-                    <BarChart3 size={15} aria-hidden="true" /> Performance Board
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={() => setActiveView('Workshop Performance')}>
-                    <Activity size={15} aria-hidden="true" /> Workshop Performance
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={openAppointments}>
-                    <CalendarDays size={15} aria-hidden="true" /> Team Schedule
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={openImports}>
-                    <Upload size={15} aria-hidden="true" /> Import Repair Orders
-                  </button>
-                </div>
-
-                <section className="stats-grid">
-                  <article className="stat-card">
-                    <p>Active CREs</p>
-                    <strong>{dashboardData?.ccm?.teamCresCount ?? allocationCres.length ?? 0}</strong>
-                    <span>In your team</span>
-                  </article>
-                  <article className="stat-card">
-                    <p>Free-Service CREs</p>
-                    <strong>{dashboardData?.ccm?.teamFreeServiceCresCount ?? freeServiceCres.length ?? 0}</strong>
-                    <span>Separate Free-Service role</span>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>Team Calls Today</p>
-                    <strong>{dashboardData?.ccm?.teamCallsToday ?? 0}</strong>
-                    <span>Logged across team</span>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>Team Calls Connected</p>
-                    <strong>{dashboardData?.ccm?.teamCallsPickedUpToday ?? 0}</strong>
-                    <span>Answered by customers</span>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>Unassigned Customers</p>
-                    <strong>{dashboardData?.ccm?.pendingAllocationsCount ?? '—'}</strong>
-                    <span>Awaiting an active CRE</span>
-                  </article>
-                </section>
-
-                <section className="content-grid">
-                  <article className="panel">
-                    <div className="panel-header">
-                      <h3>Live CRE Performance Today</h3>
-                      <button type="button" className="text-link" onClick={openPerformanceBoard}>View full board</button>
-                    </div>
-                    <div className="table-scroll">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>CRE</th>
-                            <th>Calls Made</th>
-                            <th>Calls Picked Up</th>
-                            <th>Calls Made Status</th>
-                            <th>Picked Up Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(dashboardData?.ccm?.creBoard || []).map((row) => (
-                            <tr key={row.creId}>
-                              <td><strong>{row.creName}</strong></td>
-                              <td>{row.callsMade} / {row.callsMadeTarget}</td>
-                              <td>{row.callsPickedUp} / {row.callsPickedUpTarget}</td>
-                              <td><span className={`badge ${row.callsMadeMet ? 'badge-success' : 'badge-danger'}`}>{row.callsMadeMet ? 'Target met' : `${row.callsMadeShortfall} short`}</span></td>
-                              <td><span className={`badge ${row.callsPickedUpMet ? 'badge-success' : 'badge-danger'}`}>{row.callsPickedUpMet ? 'Target met' : `${row.callsPickedUpShortfall} short`}</span></td>
-                            </tr>
-                          ))}
-                          {(!dashboardData?.ccm?.creBoard || dashboardData.ccm.creBoard.length === 0) && (
-                            <tr>
-                              <td colSpan="5" className="empty-state">No CRE performance logged yet today.</td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </article>
-
-                  <article className="panel">
-                    <div className="panel-header">
-                      <h3>Today&apos;s Team Appointments</h3>
-                      <span>{(dashboardData?.ccm?.todayAppointments || appointments).length} booked</span>
-                    </div>
-                    <ul className="stack-list">
-                      {(dashboardData?.ccm?.todayAppointments || appointments).map((appointment) => (
-                        <li key={appointment.id || appointment.customer || appointment.time}>
-                          <div>
-                            <strong><button type="button" className="text-link" onClick={() => openCustomerProfile({
-                              customerId: appointment.customerId,
-                              vehicleId: appointment.vehicleId,
-                              name: appointment.customer,
-                            })}>{appointment.customer}</button></strong>
-                            <small>{appointment.vehicle} {appointment.assigneeName ? `· ${appointment.assigneeName}` : ''}</small>
-                          </div>
-                          <div className="meta-block" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span>{appointment.time || new Date(appointment.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                            <span className="badge badge-blue">{appointment.status}</span>
-                            <button
-                              type="button"
-                              className="compact-delete-btn"
-                              aria-label={`Delete appointment for ${appointment.customer}`}
-                              title="Delete appointment"
-                              disabled={appointmentDeletingId === appointment.id}
-                              onClick={() => deleteAppointment(appointment)}
-                            >
-                              <Trash2 size={15} aria-hidden="true" />
-                            </button>
-                          </div>
-                        </li>
-                      ))}
-                      {((!dashboardData?.ccm?.todayAppointments || dashboardData.ccm.todayAppointments.length === 0) && appointments.length === 0) && (
-                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: '24px 0' }}>
-                          No appointments scheduled for team today.
-                        </li>
-                      )}
-                    </ul>
-                  </article>
-                </section>
-                {callError && <p className="form-alert error" role="alert">{callError}</p>}
-                {renderCustomerActionPanel()}
-              </section>
+            <Suspense fallback={<SectionSkeleton />}>
+              <CcmDashboard
+                allocationCres={allocationCres}
+                appointmentDeletingId={appointmentDeletingId}
+                appointments={appointments}
+                callError={callError}
+                dashboardData={dashboardData}
+                deleteAppointment={deleteAppointment}
+                freeServiceCres={freeServiceCres}
+                openAllocations={openAllocations}
+                openAppointments={openAppointments}
+                openCustomerProfile={openCustomerProfile}
+                openImports={openImports}
+                openPerformanceBoard={openPerformanceBoard}
+                quotaNotices={quotaNotices}
+                setActiveView={setActiveView}
+              />
+            </Suspense>
             ) : currentRole === 'GM' ? (
-              <section className="customer-workspace gm-dashboard">
-                <div className="quick-actions-bar">
-                  <span className="quick-actions-label">Quick Actions:</span>
-                  <button type="button" className="quick-action-btn primary" onClick={() => setActiveView('Workshop Performance')}>
-                    <Activity size={15} aria-hidden="true" /> Service Analytics (Workshop Performance)
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={openReports}>
-                    <BarChart3 size={15} aria-hidden="true" /> CRM Reports & Productivity
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={openAllocations}>
-                    <ClipboardList size={15} aria-hidden="true" /> Vehicle Allocations
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={openImports}>
-                    <Upload size={15} aria-hidden="true" /> Repair Order Imports
-                  </button>
-                </div>
-
-                <section className="stats-grid">
-                  <article className="stat-card">
-                    <p>Total Workshop Customers</p>
-                    <strong>{dashboardData?.totalCustomers ?? 0}</strong>
-                    <span>Registered in CRM</span>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>Active Vehicles Fleet</p>
-                    <strong>{dashboardData?.activeVehicles ?? 0}</strong>
-                    <span>Workshop database</span>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>Calls Logged Today</p>
-                    <strong>{dashboardData?.gm?.todayCallsTotal ?? dashboardData?.todaysCalls ?? 0}</strong>
-                    <span>{dashboardData?.gm?.todayPickedUpTotal ?? 0} connected</span>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>Workshop Appointments Today</p>
-                    <strong>{dashboardData?.appointmentCount ?? 0}</strong>
-                    <span>{dashboardData?.conversionRate ?? 0}% conversion</span>
-                  </article>
-                </section>
-
-                <section className="content-grid">
-                  <article className="panel">
-                    <div className="panel-header">
-                      <h3>CCM Team Productivity Today</h3>
-                      <span>{(dashboardData?.gm?.teamBreakdowns || []).length} teams</span>
-                    </div>
-                    <div className="table-scroll">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Team / CCM</th>
-                            <th>Active CREs</th>
-                            <th>Calls Today</th>
-                            <th>Connected</th>
-                            <th>Appointments</th>
-                            <th>Fleet Vehicles</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(dashboardData?.gm?.teamBreakdowns || []).map((t) => (
-                            <tr key={t.id}>
-                              <td><strong>{t.name}</strong></td>
-                              <td>{t.creCount}</td>
-                              <td>{t.callsMade}</td>
-                              <td>{t.callsPickedUp}</td>
-                              <td>{t.appointmentsToday}</td>
-                              <td>{t.vehiclesCount}</td>
-                            </tr>
-                          ))}
-                          {(!dashboardData?.gm?.teamBreakdowns || dashboardData.gm.teamBreakdowns.length === 0) && (
-                            <tr>
-                              <td colSpan="6" className="empty-state">No CCM teams configured yet.</td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </article>
-
-                  <article className="panel">
-                    <div className="panel-header">
-                      <h3>Today&apos;s Workshop Appointments</h3>
-                      <span>{(dashboardData?.gm?.todayAppointments || appointments).length} total</span>
-                    </div>
-                    {dashboardData?.gm?.appointmentStatusCounts && (
-                      <div className="status-pill-list">
-                        {Object.entries(dashboardData.gm.appointmentStatusCounts).map(([status, count]) => (
-                          <span key={status} className="status-pill">
-                            {status.toLowerCase()}: <strong>{count}</strong>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    <ul className="stack-list">
-                      {(dashboardData?.gm?.todayAppointments || appointments).map((appointment) => (
-                        <li key={appointment.id || appointment.customer || appointment.time}>
-                          <div>
-                            <strong>{appointment.customer}</strong>
-                            <small>{appointment.vehicle} {appointment.assigneeName ? `· ${appointment.assigneeName}` : ''}</small>
-                          </div>
-                          <div className="meta-block">
-                            <span>{appointment.time || new Date(appointment.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                            <span className="badge badge-blue">{appointment.status}</span>
-                          </div>
-                        </li>
-                      ))}
-                      {((!dashboardData?.gm?.todayAppointments || dashboardData.gm.todayAppointments.length === 0) && appointments.length === 0) && (
-                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: '24px 0' }}>
-                          No appointments scheduled today across workshop.
-                        </li>
-                      )}
-                    </ul>
-                  </article>
-                </section>
-              </section>
+            <Suspense fallback={<SectionSkeleton />}>
+              <GmDashboard
+                appointments={appointments}
+                dashboardData={dashboardData}
+                openAllocations={openAllocations}
+                openImports={openImports}
+                openReports={openReports}
+                setActiveView={setActiveView}
+              />
+            </Suspense>
             ) : currentRole === 'ADMIN' ? (
-              <section className="customer-workspace admin-dashboard">
-                <div className="quick-actions-bar">
-                  <span className="quick-actions-label">Admin Actions:</span>
-                  <button type="button" className="quick-action-btn primary" onClick={openUserManagement}>
-                    <UserCog size={15} aria-hidden="true" /> User Management
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={() => { openUserManagement(); startUserEdit(); }}>
-                    <UserRoundPlus size={15} aria-hidden="true" /> + New User Account
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={openImports}>
-                    <Upload size={15} aria-hidden="true" /> Import Repair Orders
-                  </button>
-                  <button type="button" className="quick-action-btn" onClick={openReports}>
-                    <BarChart3 size={15} aria-hidden="true" /> Workshop Reports
-                  </button>
-                </div>
-
-                <section className="stats-grid">
-                  <article className="stat-card">
-                    <p>Total User Accounts</p>
-                    <strong>{dashboardData?.admin?.userStats?.total ?? 0}</strong>
-                    <span>{dashboardData?.admin?.userStats?.active ?? 0} active accounts</span>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>User Role Breakdown</p>
-                    <strong style={{ fontSize: '1.25rem' }}>
-                      {dashboardData?.admin?.userStats?.byRole?.cre ?? dashboardData?.admin?.userStats?.cre ?? 0} CREs · {dashboardData?.admin?.userStats?.byRole?.freeServiceCre ?? 0} Free-Service CREs · {dashboardData?.admin?.userStats?.byRole?.ccm ?? dashboardData?.admin?.userStats?.ccm ?? 0} CCMs
-                    </strong>
-                    <span>
-                      {dashboardData?.admin?.userStats?.byRole?.gm ?? dashboardData?.admin?.userStats?.gm ?? 0} GMs · {dashboardData?.admin?.userStats?.byRole?.admin ?? dashboardData?.admin?.userStats?.admin ?? 0} Admins
-                      {(dashboardData?.admin?.userStats?.inactive || 0) > 0 ? ` · ${dashboardData.admin.userStats.inactive} inactive` : ''}
-                    </span>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>Imported Repair Orders</p>
-                    <strong>{dashboardData?.importedRows ?? 0}</strong>
-                    <span>{dashboardData?.admin?.recentBatches?.length ?? 0} batches tracked</span>
-                  </article>
-
-                  <article className="stat-card">
-                    <p>Pending VIN Conflicts</p>
-                    <strong>{dashboardData?.pendingVinConflicts ?? 0}</strong>
-                    <span>Flagged for review</span>
-                  </article>
-                </section>
-
-                <section className="content-grid">
-                  <article className="panel">
-                    <div className="panel-header">
-                      <h3>Recent Repair Order Imports</h3>
-                      <button type="button" className="text-link" onClick={openImports}>View import workspace</button>
-                    </div>
-                    <div className="table-scroll">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>File Name</th>
-                            <th>Date</th>
-                            <th>Total Rows</th>
-                            <th>Created</th>
-                            <th>Appended</th>
-                            <th>Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(dashboardData?.admin?.recentBatches || []).map((b) => (
-                            <tr key={b.id}>
-                              <td><strong>{b.fileName}</strong></td>
-                              <td>{new Date(b.createdAt).toLocaleDateString()}</td>
-                              <td>{b.totalRows}</td>
-                              <td>{b.createdRows}</td>
-                              <td>{b.appendedRows}</td>
-                              <td><span className={`badge ${b.status === 'completed' ? 'badge-success' : 'badge-neutral'}`}>{b.status}</span></td>
-                            </tr>
-                          ))}
-                          {(!dashboardData?.admin?.recentBatches || dashboardData.admin.recentBatches.length === 0) && (
-                            <tr>
-                              <td colSpan="6" className="empty-state">No import batches recorded yet.</td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </article>
-
-                  <article className="panel">
-                    <div className="panel-header">
-                      <h3>Recent System Audit Logs</h3>
-                      <span>Latest activity</span>
-                    </div>
-                    <ul className="stack-list">
-                      {(dashboardData?.admin?.recentAuditLogs || []).map((log) => (
-                        <li key={log.id}>
-                          <div>
-                            <strong>{log.action?.replace('_', ' ')}</strong>
-                            <small>{log.actor} · {log.entityType}</small>
-                          </div>
-                          <div className="meta-block">
-                            <span>{new Date(log.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                            <span className="badge badge-neutral">{new Date(log.createdAt).toLocaleDateString()}</span>
-                          </div>
-                        </li>
-                      ))}
-                      {(!dashboardData?.admin?.recentAuditLogs || dashboardData.admin.recentAuditLogs.length === 0) && (
-                        <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: '24px 0' }}>
-                          No audit logs recorded yet.
-                        </li>
-                      )}
-                    </ul>
-                  </article>
-                </section>
-              </section>
+            <Suspense fallback={<SectionSkeleton />}>
+              <AdminDashboard
+                dashboardData={dashboardData}
+                openImports={openImports}
+                openReports={openReports}
+                openUserManagement={openUserManagement}
+                startUserEdit={startUserEdit}
+              />
+            </Suspense>
             ) : (
-              <section className="stats-grid">
-                {summary.map((card) => (
-                  <article key={card.label} className="stat-card">
-                    <p>{card.label}</p>
-                    <strong>{card.value}</strong>
-                    <span>{card.change}</span>
-                  </article>
-                ))}
-              </section>
+            <Suspense fallback={<SectionSkeleton />}>
+              <DefaultDashboard
+                summary={summary}
+              />
+            </Suspense>
             )}
           </>
         )}

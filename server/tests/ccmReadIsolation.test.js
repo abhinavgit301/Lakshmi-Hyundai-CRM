@@ -5,6 +5,7 @@ import { getCustomers, getDashboardSummary, getVisibilityWhere, loadCallListReco
 import { getCrePerformanceSummary } from '../src/controllers/callWorkflowController.js';
 import { getCreCallCounts } from '../src/utils/callMetrics.js';
 import { workshopDayRange } from '../src/utils/workshopTime.js';
+import { latestWorkshopVisitOrderBy } from '../src/utils/workshopVisitOrdering.js';
 
 async function captureCallListQuery(user) {
   const original = prisma.masterCallList.findMany;
@@ -25,12 +26,24 @@ test('Master Call List loader scopes nested workshop history by role and preserv
   for (const role of ['ADMIN', 'GM']) {
     const query = await captureCallListQuery({ role });
     assert.deepEqual(query.where, {});
-    assert.deepEqual(query.include.vehicle.include.workshopVisits.where, {});
+    const visits = query.include.vehicle.include.physicalVehicle.include.workshopVisits;
+    assert.deepEqual(visits.where, {});
+    assert.deepEqual(visits.orderBy, latestWorkshopVisitOrderBy);
+    assert.equal(visits.take, undefined);
   }
 
   const ccmQuery = await captureCallListQuery({ role: 'CCM', ccmId: 'ccm-a' });
   assert.deepEqual(ccmQuery.where, { ccmId: 'ccm-a' });
-  assert.deepEqual(ccmQuery.include.vehicle.include.workshopVisits.where, { ccmId: 'ccm-a' });
+  const ccmVisits = ccmQuery.include.vehicle.include.physicalVehicle.include.workshopVisits;
+  assert.deepEqual(ccmVisits.where, {
+    physicalVehicle: { is: { vehicles: { some: { ccmId: 'ccm-a' } } } },
+  });
+  assert.deepEqual(ccmVisits.orderBy, [
+    { visitDate: { sort: 'desc', nulls: 'last' } },
+    { createdAt: 'desc' },
+    { id: 'desc' },
+  ]);
+  assert.equal(ccmVisits.take, undefined);
   assert.deepEqual(
     ccmQuery.include.vehicle.include.monthlyDataEntries.where.dataset.is,
     { ccmId: 'ccm-a' },
@@ -38,8 +51,9 @@ test('Master Call List loader scopes nested workshop history by role and preserv
 
   const creQuery = await captureCallListQuery({ role: 'CRE', id: 'cre-a1', ccmId: 'ccm-a' });
   assert.deepEqual(creQuery.where, { ccmId: 'ccm-a', ownerUserId: 'cre-a1' });
-  assert.equal(creQuery.include.vehicle.include.workshopVisits.where.ccmId, 'ccm-a');
-  assert.deepEqual(creQuery.include.vehicle.include.workshopVisits.where.vehicle.is.OR[0], {
+  const creVisits = creQuery.include.vehicle.include.physicalVehicle.include.workshopVisits;
+  assert.deepEqual(creVisits.orderBy, latestWorkshopVisitOrderBy);
+  assert.deepEqual(creVisits.where.physicalVehicle.is.vehicles.some.OR[0], {
     allocations: { some: { creId: 'cre-a1', ccmId: 'ccm-a', status: 'assigned' } },
   });
   assert.deepEqual(
@@ -77,19 +91,45 @@ test('Customer endpoint scopes nested vehicles and related records by role', asy
   }
 
   const ccm = await captureCustomerQuery({ role: 'CCM', ccmId: 'ccm-a' });
-  assert.deepEqual(ccm.query.where, { ccmId: 'ccm-a' });
+  assert.deepEqual(ccm.query.where, {
+    OR: [
+      { ccmId: 'ccm-a' },
+      { vehicles: { some: { ccmId: 'ccm-a' } } },
+    ],
+  });
   assert.deepEqual(ccm.query.include.vehicles.where, { ccmId: 'ccm-a' });
-  assert.deepEqual(ccm.query.include.visits.where, { ccmId: 'ccm-a' });
+  assert.deepEqual(ccm.query.include.visits.where, {
+    physicalVehicle: { is: { vehicles: { some: { ccmId: 'ccm-a' } } } },
+  });
   assert.deepEqual(ccm.query.include.vehicles.include.allocations.where, { ccmId: 'ccm-a' });
 
   const ccmWithoutId = await captureCustomerQuery({ role: 'CCM' });
-  assert.deepEqual(ccmWithoutId.query.where, { ccmId: 'no-access' });
+  assert.deepEqual(ccmWithoutId.query.where, {
+    OR: [
+      { ccmId: 'no-access' },
+      { vehicles: { some: { ccmId: 'no-access' } } },
+    ],
+  });
   assert.deepEqual(ccmWithoutId.query.include.vehicles.where, { ccmId: 'no-access' });
   assert.deepEqual(ccmWithoutId.query.include.vehicles.include.allocations.where, { ccmId: 'no-access' });
 
   const cre = await captureCustomerQuery({ role: 'CRE', id: 'cre-a1', ccmId: 'ccm-a' });
-  assert.equal(cre.query.where.ccmId, 'ccm-a');
-  assert.equal(cre.query.include.visits.where.ccmId, 'ccm-a');
+  assert.equal(cre.query.where.vehicles.some.ccmId, 'ccm-a');
+  assert.deepEqual(cre.query.include.visits.where, {
+    physicalVehicle: {
+      is: {
+        vehicles: {
+          some: {
+            ccmId: 'ccm-a',
+            OR: [
+              { allocations: { some: { creId: 'cre-a1', ccmId: 'ccm-a', status: 'assigned' } } },
+              { masterCallListEntries: { some: { ownerUserId: 'cre-a1', ccmId: 'ccm-a' } } },
+            ],
+          },
+        },
+      },
+    },
+  });
   assert.equal(cre.query.include.vehicles.where.OR[0].allocations.some.status, 'assigned');
   assert.equal(cre.query.include.vehicles.include.allocations.where.creId, 'cre-a1');
   assert.equal(cre.query.include.vehicles.include.allocations.where.ccmId, 'ccm-a');

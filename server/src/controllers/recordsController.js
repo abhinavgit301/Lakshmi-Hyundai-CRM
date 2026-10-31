@@ -17,9 +17,16 @@ import { workshopDayRange, workshopMonthOf } from '../utils/workshopTime.js';
 import { getCreCallCounts } from '../utils/callMetrics.js';
 import { findMissedWarrantyCases } from '../utils/serviceLists.js';
 import { lockCcmAllocationTeam } from '../utils/customerAllocation.js';
+import { recordCreAssignmentEvent, validateAssignmentReason } from '../utils/creAssignmentHistory.js';
+import { consolidateMasterCallListEntries, findCanonicalMasterCallListEntry, includeUnassignedAllocationQueue } from '../utils/masterCallList.js';
 import { allowedServiceSources, canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { classifyMasterRepairType } from '../utils/repairTypes.js';
 import { filterMasterCallListRecords, validateMasterCallListFilters } from '../utils/masterCallListFilters.js';
+import { filterServiceListRecords, paginateRecords, parsePagination } from '../utils/pagination.js';
+import { buildRepairOrderKey, normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
+import { latestWorkshopVisitOrderBy } from '../utils/workshopVisitOrdering.js';
+import { addOriginatingDealerCodes } from '../utils/serviceHistoryDealerCodes.js';
+import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
 
 function normalizeRole(role) {
   return String(role || '').toUpperCase();
@@ -62,16 +69,27 @@ export function operationalReadScope(user) {
   }
   if (role === 'CCM') {
     const ccmId = user?.ccmId || 'no-access';
-    const customer = { ccmId };
-    const linkedVehicle = {
-      OR: [{ vehicleId: null }, { vehicle: { is: { ccmId } } }],
+    const customer = {
+      OR: [{ ccmId }, { vehicles: { some: { ccmId } } }],
     };
     return {
       customer,
       vehicle: { ccmId },
-      call: { ccmId, customer: { is: customer }, AND: [linkedVehicle] },
+      call: {
+        ccmId,
+        OR: [
+          { vehicleId: null, customer: { is: { ccmId } } },
+          { vehicle: { is: { ccmId } } },
+        ],
+      },
       appointment: appointmentVisibilityWhere(user),
-      followUp: { ccmId, customer: { is: customer }, AND: [linkedVehicle] },
+      followUp: {
+        ccmId,
+        OR: [
+          { vehicleId: null, customer: { is: { ccmId } } },
+          { vehicle: { is: { ccmId } } },
+        ],
+      },
       importBatch: { ccmId },
       vinConflict: { targetCcmId: ccmId },
       allocation: { ccmId },
@@ -131,13 +149,10 @@ export async function getDashboardSummary(req, res) {
   if (role === 'FREE_SERVICE_CRE') {
     const teamCallScope = {
       ccmId: user.ccmId || 'no-access',
-      customer: { is: { ccmId: user.ccmId || 'no-access' } },
-      AND: [{
-        OR: [
-          { vehicleId: null },
-          { vehicle: { is: { ccmId: user.ccmId || 'no-access' } } },
-        ],
-      }],
+      OR: [
+        { vehicleId: null, customer: { is: { ccmId: user.ccmId || 'no-access' } } },
+        { vehicle: { is: { ccmId: user.ccmId || 'no-access' } } },
+      ],
     };
     const counts = await getCreCallCounts({
       creIds: [user.id],
@@ -591,21 +606,24 @@ export async function loadCallListRecords(where, now = new Date(), user = null) 
     include: {
       vehicle: {
         include: {
-          workshopVisits: {
-            where: visitWhere,
-            orderBy: [
-              { visitDate: { sort: 'desc', nulls: 'last' } },
-              { repairOrderNo: 'asc' },
-            ],
-            select: {
-              repairOrderNo: true,
-              visitDate: true,
-              closingDate: true,
-              gpDate: true,
-              totalLaborCost: true,
-              totalPartsCost: true,
-              totalAmount: true,
-              importedDetails: true,
+          physicalVehicle: {
+            include: {
+              workshopVisits: {
+                where: visitWhere,
+                orderBy: latestWorkshopVisitOrderBy,
+                select: {
+                  id: true,
+                  repairOrderNo: true,
+                  ccmId: true,
+                  visitDate: true,
+                  closingDate: true,
+                  gpDate: true,
+                  totalLaborCost: true,
+                  totalPartsCost: true,
+                  totalAmount: true,
+                  importedDetails: true,
+                },
+              },
             },
           },
           allocations: {
@@ -646,6 +664,10 @@ export async function loadCallListRecords(where, now = new Date(), user = null) 
       },
     },
   });
+  const visitsWithDealerCodes = await addOriginatingDealerCodes(
+    rows.flatMap((row) => row.vehicle?.physicalVehicle?.workshopVisits || []),
+  );
+  const dealerCodeByVisitId = new Map(visitsWithDealerCodes.map((visit) => [visit.id, visit]));
   const ownerIds = [...new Set(rows.map((row) => row.ownerUserId).filter(Boolean))];
   const owners = ownerIds.length
     ? await prisma.user.findMany({
@@ -655,8 +677,9 @@ export async function loadCallListRecords(where, now = new Date(), user = null) 
     : [];
   const ownerNames = new Map(owners.map((owner) => [owner.id, owner.name]));
 
-  return rows.map((row) => ({
+  const records = rows.map((row) => ({
       id: row.id,
+      createdAt: row.createdAt,
       customerId: row.vehicle?.customerId || null,
       vehicleId: row.vehicle?.id || null,
       name: row.customerName,
@@ -666,21 +689,21 @@ export async function loadCallListRecords(where, now = new Date(), user = null) 
       model: row.vehicle?.model || null,
       vehicleAgeMonths: getAgeInMonths(
         row.vehicle?.saleDate
-          || (row.vehicle?.workshopVisits || [])
+          || (row.vehicle?.physicalVehicle?.workshopVisits || [])
             .map((visit) => parseStoredDate(visit.importedDetails?.saleDate))
             .find(Boolean),
         now,
       ),
       registrationNumber: row.registrationNumber || row.vehicle?.registrationNumber || null,
       saleDate: row.vehicle?.saleDate || null,
-      type: classifyMasterRepairType(row.vehicle?.workshopVisits[0]?.importedDetails?.workType
+      type: classifyMasterRepairType(row.vehicle?.physicalVehicle?.workshopVisits[0]?.importedDetails?.workType
         || row.vehicle?.monthlyDataEntries[0]?.serviceType
         || row.vehicle?.allocations[0]?.serviceType),
       dueCategory: classifyServiceDue(
-        getLatestServiceDate(row.vehicle?.workshopVisits || [], now),
+        getLatestServiceDate(row.vehicle?.physicalVehicle?.workshopVisits || [], now),
         now,
       ),
-      dueDate: getYearlyDueDate(row.vehicle?.workshopVisits || [])
+      dueDate: getYearlyDueDate(row.vehicle?.physicalVehicle?.workshopVisits || [])
         || row.vehicle?.monthlyDataEntries[0]?.nextServiceDueDate
         || null,
       scheduledAppointment: [
@@ -692,9 +715,12 @@ export async function loadCallListRecords(where, now = new Date(), user = null) 
       assigneeId: row.ownerUserId,
       assigneeName: ownerNames.get(row.ownerUserId) || null,
       ccmId: row.ccmId,
-      importedDetails: row.vehicle?.workshopVisits[0]?.importedDetails || null,
-      workshopVisits: row.vehicle?.workshopVisits || [],
+      importedDetails: row.vehicle?.physicalVehicle?.workshopVisits[0]?.importedDetails || null,
+      physicalVehicleId: row.vehicle?.physicalVehicleId || null,
+      workshopVisits: (row.vehicle?.physicalVehicle?.workshopVisits || [])
+        .map((visit) => dealerCodeByVisitId.get(visit.id) || { ...visit, dealerCode: null }),
     }));
+  return consolidateMasterCallListEntries(records);
 }
 
 export async function getCallList(req, res) {
@@ -703,10 +729,36 @@ export async function getCallList(req, res) {
   }
   const validated = validateMasterCallListFilters(req.query);
   if (validated.error) return res.status(400).json({ message: validated.error });
-  const records = await loadCallListRecords(getVisibilityWhere(req.user), new Date(), req.user);
-  return res.json({
-    records: filterMasterCallListRecords(records, validated.filters, req.user?.role),
-  });
+  const paginationResult = parsePagination(req.query);
+  if (paginationResult.error) return res.status(400).json({ message: paginationResult.error });
+  let records = await loadCallListRecords(getVisibilityWhere(req.user), new Date(), req.user);
+  if (normalizeRole(req.user?.role) === 'CCM') {
+    const ccmId = req.user?.ccmId || 'no-access';
+    const unassignedAllocations = await prisma.allocation.findMany({
+      where: { ccmId, status: 'assigned', creId: null },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        ccmId: true,
+        serviceType: true,
+        vehicle: {
+          select: {
+            id: true,
+            vin: true,
+            model: true,
+            registrationNumber: true,
+            customer: { select: { id: true } },
+          },
+        },
+      },
+    });
+    records = includeUnassignedAllocationQueue(records, unassignedAllocations, ccmId);
+  }
+  const filtered = filterMasterCallListRecords(records, validated.filters, req.user?.role)
+    .sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)
+      || String(left.id).localeCompare(String(right.id)));
+  if (!paginationResult.hasPagination) return res.json({ records: filtered });
+  return res.json(paginateRecords(filtered, paginationResult));
 }
 
 // The MasterCallList scope for one CRE's own due-list and performance figures: vehicles they
@@ -744,7 +796,7 @@ export function classifyDueCohorts(records, asOf = new Date()) {
       lastServiceDate,
       dueDate: addMonths(lastServiceDate, window === '1y' ? 12 : 6),
     }))
-    .sort((left, right) => left.dueDate - right.dueDate);
+    .sort((left, right) => left.dueDate - right.dueDate || String(left.id).localeCompare(String(right.id)));
   return { oneYear: cohort('1y'), sixMonth: cohort('6m') };
 }
 
@@ -762,21 +814,33 @@ export async function getDueCallList(req, res) {
   if (!['1y', '6m'].includes(dueWindow)) {
     return res.status(400).json({ message: 'window must be 1y or 6m.' });
   }
+  const paginationResult = parsePagination(req.query);
+  if (paginationResult.error) return res.status(400).json({ message: paginationResult.error });
 
   const role = normalizeRole(req.user?.role);
   const where = role === 'CCM'
     ? { ccmId: req.user?.ccmId || 'no-access' }
     : creDueWhere(req.user?.id, req.user?.ccmId);
   const due = await loadDueRecords(where, dueWindow, new Date(), req.user);
-  return res.json({ records: due });
+  const filtered = filterServiceListRecords(due, req.query);
+  if (filtered.error) return res.status(400).json({ message: filtered.error });
+  if (!paginationResult.hasPagination) return res.json({ records: filtered.records });
+  return res.json(paginateRecords(filtered.records, paginationResult));
 }
 
 export async function updateCallListAssignee(req, res) {
+  const reasonValidation = validateAssignmentReason(req.body?.reason);
+  if (reasonValidation.error) return res.status(400).json({ message: reasonValidation.error });
+  const reason = reasonValidation.value;
   const entry = await prisma.masterCallList.findFirst({
-    where: { id: req.params.id, ccmId: req.user.ccmId || 'no-access', ownerUserId: { not: null } },
-    select: { id: true, ccmId: true, ownerUserId: true, vin: true },
+    where: { id: req.params.id, ccmId: req.user.ccmId || 'no-access' },
+    select: { id: true, ccmId: true, ownerUserId: true, vin: true, vehicle: { select: { id: true, ccmId: true } } },
   });
   if (!entry) return res.status(404).json({ message: 'Allocated customer not found.' });
+  if (!entry.vehicle) return res.status(409).json({ message: 'The call-list vehicle no longer exists.' });
+  if (!entry.vehicle.ccmId || entry.vehicle.ccmId !== entry.ccmId) {
+    return res.status(409).json({ message: 'The call-list CCM does not own this vehicle.' });
+  }
 
   const assigneeId = req.body?.assigneeId == null || req.body.assigneeId === ''
     ? null
@@ -786,22 +850,52 @@ export async function updateCallListAssignee(req, res) {
   const updated = await prisma.$transaction(async (transaction) => {
     await lockCcmAllocationTeam(transaction, entry.ccmId);
     const currentEntry = await transaction.masterCallList.findFirst({
-      where: { id: entry.id, ccmId: entry.ccmId, ownerUserId: { not: null } },
-      select: { id: true, ownerUserId: true, vin: true },
+      where: { id: entry.id, ccmId: entry.ccmId },
+      select: { id: true, ownerUserId: true, vin: true, vehicle: { select: { id: true, ccmId: true } } },
     });
-    if (!currentEntry) return null;
+    if (!currentEntry?.vehicle || currentEntry.vehicle.ccmId !== entry.ccmId) return 'ownership-conflict';
     const assignee = await transaction.user.findFirst({
       where: { id: assigneeId, role: 'CRE', status: 'active', ccmId: entry.ccmId },
       select: { id: true, name: true },
     });
     if (!assignee) return null;
+    const previousCreId = currentEntry.ownerUserId;
     const record = await transaction.masterCallList.update({
       where: { id: currentEntry.id },
-      data: { ownerUserId: assignee.id },
+      data: { ownerUserId: assignee.id, assignmentNeedsReview: false },
+    });
+    await recordCreAssignmentEvent(transaction, {
+      vehicleId: currentEntry.vehicle.id,
+      masterCallListId: record.id,
+      ccmId: entry.ccmId,
+      previousCreId,
+      newCreId: assignee.id,
+      actorUserId: req.user.id,
+      reason,
     });
     // Active allocations follow the Master Call List owner so the previous CRE loses access.
     const allocationScope = { status: 'assigned', vehicle: { is: { vin: currentEntry.vin } }, ccmId: entry.ccmId };
-    await transaction.allocation.updateMany({ where: allocationScope, data: { creId: assignee.id } });
+    const allocations = await transaction.allocation.findMany({
+      where: allocationScope,
+      select: { id: true, vehicleId: true, creId: true },
+    });
+    for (const allocation of allocations) {
+      if (allocation.creId === assignee.id) continue;
+      const previousCreId = allocation.creId;
+      await transaction.allocation.update({
+        where: { id: allocation.id },
+        data: { creId: assignee.id },
+      });
+      await recordCreAssignmentEvent(transaction, {
+        vehicleId: allocation.vehicleId,
+        allocationId: allocation.id,
+        ccmId: entry.ccmId,
+        previousCreId,
+        newCreId: assignee.id,
+        actorUserId: req.user.id,
+        reason,
+      });
+    }
     await transaction.auditLog.create({
       data: {
         userId: req.user.id,
@@ -816,6 +910,9 @@ export async function updateCallListAssignee(req, res) {
     });
     return { record, assignee };
   });
+  if (updated === 'ownership-conflict') {
+    return res.status(409).json({ message: 'Call-list vehicle ownership changed before reassignment.' });
+  }
   if (!updated) return res.status(400).json({ message: 'Choose an active CRE assigned to your team.' });
 
   return res.json({
@@ -898,12 +995,12 @@ export async function createManualCallListEntry(req, res) {
   if (!activeCcm) return res.status(400).json({ message: 'CCM assignment is invalid.' });
 
   const [vehicleOwner, matchingVisits] = await Promise.all([
-    prisma.vehicle.findUnique({
-      where: { vin },
-      select: { ccmId: true, registrationNumber: true, customer: { select: { ccmId: true } } },
+    prisma.vehicle.findFirst({
+      where: { vin, ccmId },
+      select: { id: true, registrationNumber: true },
     }),
     prisma.workshopVisit.findMany({
-      where: { repairOrderNo: { equals: roNumber, mode: 'insensitive' } },
+      where: { ccmId, normalizedRepairOrderNo: normalizeRepairOrderNo(roNumber) },
       include: { vehicle: { select: { vin: true } } },
     }),
   ]);
@@ -912,6 +1009,7 @@ export async function createManualCallListEntry(req, res) {
     ? await prisma.vehicle.findFirst({
       where: {
         registrationNumber: { equals: registrationNumber, mode: 'insensitive' },
+        ccmId,
         vin: { not: vin },
       },
       select: { id: true },
@@ -926,20 +1024,15 @@ export async function createManualCallListEntry(req, res) {
   }
   const repairOrder = matchingVisits[0];
   const existingKeys = new Map(matchingVisits.map((visit) => [
-    String(visit.repairOrderNo).trim().toUpperCase(),
+    buildRepairOrderKey(visit.ccmId, visit.normalizedRepairOrderNo),
     normalizeVin(visit.vehicle.vin),
   ]));
-  const ownerCcmIds = [vehicleOwner?.ccmId, vehicleOwner?.customer?.ccmId].filter(Boolean);
-  const ownerCcmId = ownerCcmIds.find((ownerId) => ownerId !== ccmId) || ownerCcmIds[0] || null;
-  if (vehicleOwner && ownerCcmIds.length !== 2) {
-    return res.status(409).json({ message: 'The existing VIN has no resolvable CCM owner and cannot be transferred.' });
-  }
   const result = evaluateRepairOrderRow({
     ...row,
     vin,
     roNumber,
     ccmId,
-    ownerCcmId,
+    ownerCcmId: ccmId,
   }, existingKeys);
   if (result.status === 'skipped') {
     return res.status(409).json({ message: 'This repair order number is already in the system.' });
@@ -947,14 +1040,11 @@ export async function createManualCallListEntry(req, res) {
   if (result.status === 'rejected') {
     return res.status(400).json({ message: result.reason });
   }
-  if (vehicleOwner && ownerCcmIds.length !== 2) {
-    return res.status(409).json({ message: 'The existing VIN has no resolvable CCM owner and cannot be transferred.' });
-  }
   if (result.status === 'flagged') {
     await prisma.vINConflictReview.create({
       data: {
         vin,
-        sourceCcmId: ownerCcmId,
+        sourceCcmId: ccmId,
         targetCcmId: ccmId,
         reason: result.reason,
       },
@@ -964,13 +1054,11 @@ export async function createManualCallListEntry(req, res) {
   if (repairOrder && repairOrder.vehicle.vin !== vin) {
     return res.status(409).json({ message: 'This repair order number is already in use for another VIN.' });
   }
-  if (vehicleOwner && (vehicleOwner.ccmId !== ccmId || vehicleOwner.customer?.ccmId !== ccmId)) {
-    return res.status(409).json({ message: 'This VIN belongs to another CCM team and requires conflict review.' });
-  }
-
   try {
     const record = await prisma.$transaction(async (transaction) => {
-      let vehicle = await transaction.vehicle.findUnique({ where: { vin }, include: { customer: true } });
+      await lockCcmAllocationTeam(transaction, ccmId);
+      const physicalVehicle = await findOrCreatePhysicalVehicle(transaction, vin);
+      let vehicle = await transaction.vehicle.findFirst({ where: { vin, ccmId }, include: { customer: true } });
       let customer = vehicle?.customer;
 
       if (!customer) {
@@ -989,6 +1077,7 @@ export async function createManualCallListEntry(req, res) {
         vehicle = await transaction.vehicle.create({
           data: {
             vin,
+            physicalVehicleId: physicalVehicle.id,
             registrationNumber: String(row.registrationNumber || '').trim().toUpperCase() || null,
             make: String(row.make || '').trim() || null,
             model: String(row.model || '').trim() || null,
@@ -999,7 +1088,7 @@ export async function createManualCallListEntry(req, res) {
             ccmId,
           },
         });
-      } else if (vehicle.ccmId !== ccmId || customer?.ccmId !== ccmId) {
+      } else if (vehicle.ccmId !== ccmId) {
         throw Object.assign(new Error('Existing VIN ownership does not match the selected CCM.'), { code: 'IDENTITY_CONFLICT' });
       } else if (!vehicle.registrationNumber && registrationNumber) {
         vehicle = await transaction.vehicle.update({
@@ -1015,8 +1104,10 @@ export async function createManualCallListEntry(req, res) {
       await transaction.workshopVisit.create({
         data: {
           repairOrderNo: roNumber,
+          normalizedRepairOrderNo: normalizeRepairOrderNo(roNumber),
           customerId: customer.id,
           vehicleId: vehicle.id,
+          physicalVehicleId: physicalVehicle.id,
           ccmId,
           totalLaborCost: laborCost,
           totalPartsCost: partsCost,
@@ -1028,17 +1119,18 @@ export async function createManualCallListEntry(req, res) {
         },
       });
 
-      const existingEntry = await transaction.masterCallList.findFirst({ where: { vin, ccmId } });
+      const existingEntry = await findCanonicalMasterCallListEntry(transaction, vin, ccmId);
       const callListEntry = existingEntry
         ? await transaction.masterCallList.update({
           where: { id: existingEntry.id },
-          data: { customerName, mobileNumber, registrationNumber: vehicle.registrationNumber },
+          data: { customerName, mobileNumber, registrationNumber: vehicle.registrationNumber, vehicleId: vehicle.id },
         })
         : await transaction.masterCallList.create({
           data: {
             customerName,
             mobileNumber,
             vin,
+            vehicleId: vehicle.id,
             registrationNumber: vehicle.registrationNumber,
             ccmId,
           },
@@ -1103,7 +1195,12 @@ export async function getCustomers(req, res) {
   const where = role === 'ADMIN' || role === 'GM'
     ? {}
     : role === 'CCM'
-      ? { ccmId: user?.ccmId || 'no-access' }
+      ? {
+        OR: [
+          { ccmId: user?.ccmId || 'no-access' },
+          { vehicles: { some: { ccmId: user?.ccmId || 'no-access' } } },
+        ],
+      }
       : role === 'CRE'
         ? creCustomerWhere(user)
         : { id: 'no-access' };
@@ -1125,6 +1222,26 @@ export async function getCustomers(req, res) {
             ? { where: creVehicleWhere(user) }
             : {}),
         include: {
+          physicalVehicle: {
+            include: {
+              workshopVisits: {
+                where: workshopVisitVisibilityWhere(user),
+                orderBy: latestWorkshopVisitOrderBy,
+                select: {
+                  id: true,
+                  vehicleId: true,
+                  repairOrderNo: true,
+                  ccmId: true,
+                  visitDate: true,
+                  createdAt: true,
+                  closingDate: true,
+                  gpDate: true,
+                  totalAmount: true,
+                  importedDetails: true,
+                },
+              },
+            },
+          },
           allocations: {
             where: allocationWhere,
             include: {
@@ -1135,13 +1252,12 @@ export async function getCustomers(req, res) {
       },
       visits: {
         where: workshopVisitVisibilityWhere(user),
-        orderBy: [
-          { visitDate: { sort: 'desc', nulls: 'last' } },
-          { repairOrderNo: 'asc' },
-        ],
+        orderBy: latestWorkshopVisitOrderBy,
         select: {
+          id: true,
           vehicleId: true,
           repairOrderNo: true,
+          ccmId: true,
           visitDate: true,
           closingDate: true,
           gpDate: true,
@@ -1152,17 +1268,35 @@ export async function getCustomers(req, res) {
     },
     orderBy: { createdAt: 'desc' },
   });
+  const historyVisits = rows.flatMap((customer) => [
+    ...(customer.visits || []),
+    ...(customer.vehicles || []).flatMap((vehicle) => vehicle.physicalVehicle?.workshopVisits || []),
+  ]);
+  const visitsWithDealerCodes = await addOriginatingDealerCodes(historyVisits);
+  const dealerCodeByVisitId = new Map(visitsWithDealerCodes.map((visit) => [visit.id, visit]));
   const now = new Date();
 
   return res.json({
     customers: rows.map((customer) => {
-      const visitsByVehicle = new Map();
-      for (const visit of customer.visits || []) {
-        if (!visit.vehicleId) continue;
-        const visits = visitsByVehicle.get(visit.vehicleId) || [];
-        visits.push(visit);
-        visitsByVehicle.set(visit.vehicleId, visits);
+      const allVisits = new Map((customer.visits || []).map((visit) => [
+        visit.id,
+        dealerCodeByVisitId.get(visit.id) || { ...visit, dealerCode: null },
+      ]));
+      for (const vehicle of customer.vehicles || []) {
+        for (const visit of vehicle.physicalVehicle?.workshopVisits || []) {
+          allVisits.set(visit.id, {
+            ...(dealerCodeByVisitId.get(visit.id) || { ...visit, dealerCode: null }),
+            vehicleId: vehicle.id,
+          });
+        }
       }
+      const visits = [...allVisits.values()].sort((left, right) => {
+        const dateDifference = (right.visitDate ? new Date(right.visitDate).getTime() : Number.NEGATIVE_INFINITY)
+          - (left.visitDate ? new Date(left.visitDate).getTime() : Number.NEGATIVE_INFINITY);
+        if (dateDifference) return dateDifference;
+        const createdDifference = new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+        return createdDifference || String(right.id).localeCompare(String(left.id));
+      });
       return {
         id: customer.id,
         name: customer.fullName,
@@ -1174,12 +1308,14 @@ export async function getCustomers(req, res) {
         vehicles: (customer.vehicles || []).map((vehicle) => ({
           ...vehicle,
           vehicleAgeMonths: getAgeInMonths(vehicle.saleDate, now),
+          workshopVisits: (vehicle.physicalVehicle?.workshopVisits || [])
+            .map((visit) => dealerCodeByVisitId.get(visit.id) || { ...visit, dealerCode: null }),
           freeServicesRemaining: countRemainingFreeServiceMilestones({
             saleDate: vehicle.saleDate,
-            workshopVisits: visitsByVehicle.get(vehicle.id) || [],
+            workshopVisits: vehicle.physicalVehicle?.workshopVisits || [],
           }, now),
         })),
-        visits: customer.visits || [],
+        visits,
       };
     }),
   });

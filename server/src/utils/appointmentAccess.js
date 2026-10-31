@@ -17,9 +17,9 @@ export function appointmentVisibilityWhere(user) {
     const ccmId = user.ccmId || 'no-access';
     return {
       ccmId,
-      AND: [
-        { OR: [{ customerId: null }, { customer: { is: { ccmId } } }] },
-        { OR: [{ vehicleId: null }, { vehicle: { is: { ccmId } } }] },
+      OR: [
+        { vehicleId: null, OR: [{ customerId: null }, { customer: { is: { ccmId } } }] },
+        { vehicle: { is: { ccmId } } },
       ],
     };
   }

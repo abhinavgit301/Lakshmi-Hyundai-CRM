@@ -1,4 +1,5 @@
 import { buildDuplicateKey, normalizeVin } from './roleAccess.js';
+import { buildRepairOrderKey, normalizeRepairOrderNo } from './repairOrderIdentity.js';
 
 export function validateRepairOrderImportFields(row = {}) {
   const roNumber = String(row.roNumber || '').trim();
@@ -40,15 +41,16 @@ export function evaluateRepairOrderRow(row = {}, existingKeys = []) {
   }
 
   const duplicateKey = buildDuplicateKey(normalizedVin, repairOrderNumber);
-  const normalizedRepairOrderNumber = repairOrderNumber.toUpperCase();
+  const normalizedRepairOrderNumber = normalizeRepairOrderNo(repairOrderNumber);
+  const repairOrderKey = buildRepairOrderKey(row.ccmId, repairOrderNumber);
   const existingVin = existingKeys instanceof Map
-    ? existingKeys.get(normalizedRepairOrderNumber)
+    ? existingKeys.get(repairOrderKey)
     : null;
   const isSameRepairOrder = existingKeys instanceof Map
-    ? existingKeys.has(normalizedRepairOrderNumber)
+    ? existingKeys.has(repairOrderKey)
     : existingKeys instanceof Set
-      ? existingKeys.has(normalizedRepairOrderNumber) || existingKeys.has(duplicateKey)
-      : existingKeys.includes(normalizedRepairOrderNumber) || existingKeys.includes(duplicateKey);
+      ? existingKeys.has(repairOrderKey)
+      : existingKeys.includes(repairOrderKey);
 
   if (isSameRepairOrder && existingVin && existingVin !== normalizedVin) {
     return {

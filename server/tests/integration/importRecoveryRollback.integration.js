@@ -38,6 +38,13 @@ function nextId(label) {
   return `${runPrefix}_${label}_${randomUUID().replaceAll('-', '')}`;
 }
 
+function repairOrderIdentity(repairOrderNo) {
+  return {
+    repairOrderNo,
+    normalizedRepairOrderNo: String(repairOrderNo).trim().replace(/\s+/g, ' ').toUpperCase(),
+  };
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((complete) => { resolve = complete; });
@@ -154,7 +161,7 @@ async function createBusinessFixture({
     const visit = await transaction.workshopVisit.create({
       data: {
         id: visitId,
-        repairOrderNo: nextId('ro'),
+        ...repairOrderIdentity(nextId('ro')),
         customerId,
         vehicleId,
         ccmId: customer.ccmId,
@@ -357,7 +364,7 @@ async function createAllocationFixture() {
     const visit = await transaction.workshopVisit.create({
       data: {
         id: visitId,
-        repairOrderNo: nextId('ro'),
+        ...repairOrderIdentity(nextId('ro')),
         customerId,
         vehicleId,
         ccmId,
@@ -537,6 +544,71 @@ test('test URL validation accepts only the approved local database', () => {
   ]) {
     assert.throws(() => validateTestDatabaseUrl(value), /TEST_DATABASE_URL/);
   }
+});
+
+test('PostgreSQL scopes normalized repair-order uniqueness to CCM and rejects concurrent duplicates', async () => {
+  const ccmA = await createImportActor();
+  const ccmB = await createImportActor();
+  const ownedVehicles = [];
+  for (const ccm of [ccmA, ccmB]) {
+    const customerId = nextId('ro-customer');
+    const vehicleId = nextId('ro-vehicle');
+    ownedCustomerIds.add(customerId);
+    ownedVehicleIds.add(vehicleId);
+    const customer = await prisma.customer.create({
+      data: {
+        id: customerId,
+        customerCode: nextId('ro-customer-code'),
+        fullName: 'Repair Order Identity Integration',
+        mobileNumber: nextId('phone'),
+        ccmId: ccm.ccmId,
+      },
+    });
+    const vehicle = await prisma.vehicle.create({
+      data: {
+        id: vehicleId,
+        vin: nextId('ro-vin'),
+        customerId: customer.id,
+        ccmId: ccm.ccmId,
+      },
+    });
+    ownedVehicles.push({ ccmId: ccm.ccmId, customerId, vehicleId });
+  }
+
+  const sameRo = nextId('shared-ro');
+  const sharedVisitIds = ownedVehicles.map(() => nextId('shared-visit'));
+  for (let index = 0; index < ownedVehicles.length; index += 1) {
+    const owner = ownedVehicles[index];
+    const id = sharedVisitIds[index];
+    ownedVisitIds.add(id);
+    await prisma.workshopVisit.create({
+      data: {
+        id,
+        ...repairOrderIdentity(sameRo),
+        customerId: owner.customerId,
+        vehicleId: owner.vehicleId,
+        ccmId: owner.ccmId,
+      },
+    });
+  }
+
+  const owner = ownedVehicles[0];
+  const concurrentRo = nextId('concurrent-ro');
+  const attempts = [nextId('concurrent-visit'), nextId('concurrent-visit')];
+  for (const id of attempts) ownedVisitIds.add(id);
+  const outcomes = await Promise.allSettled(attempts.map((id, index) => prisma.workshopVisit.create({
+    data: {
+      id,
+      ...repairOrderIdentity(index === 0 ? concurrentRo : ` ${concurrentRo.toLowerCase()} `),
+      customerId: owner.customerId,
+      vehicleId: owner.vehicleId,
+      ccmId: owner.ccmId,
+    },
+  })));
+
+  assert.equal(outcomes.filter(({ status }) => status === 'fulfilled').length, 1);
+  const rejected = outcomes.find(({ status }) => status === 'rejected');
+  assert.equal(rejected?.reason?.code, 'P2002');
 });
 
 test('production import controller commits business mutations with row progress and change logs', async () => {

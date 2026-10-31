@@ -19,9 +19,12 @@ test('CCM access is limited to their own team', () => {
   const where = appointmentVisibilityWhere({ role: 'CCM', ccmId: 'ccm-team-1' });
   assert.deepEqual(where, {
     ccmId: 'ccm-team-1',
-    AND: [
-      { OR: [{ customerId: null }, { customer: { is: { ccmId: 'ccm-team-1' } } }] },
-      { OR: [{ vehicleId: null }, { vehicle: { is: { ccmId: 'ccm-team-1' } } }] },
+    OR: [
+      {
+        vehicleId: null,
+        OR: [{ customerId: null }, { customer: { is: { ccmId: 'ccm-team-1' } } }],
+      },
+      { vehicle: { is: { ccmId: 'ccm-team-1' } } },
     ],
   });
 });
@@ -37,9 +40,9 @@ test('CRE appointment visibility also requires a currently assigned team custome
   assert.deepEqual(where.AND[0], {
     customer: {
       is: {
-        ccmId: 'ccm-team-1',
         vehicles: {
           some: {
+            ccmId: 'ccm-team-1',
             OR: [
               { allocations: { some: { creId: 'cre-user-1', ccmId: 'ccm-team-1', status: 'assigned' } } },
               { masterCallListEntries: { some: { ownerUserId: 'cre-user-1', ccmId: 'ccm-team-1' } } },

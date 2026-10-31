@@ -4,9 +4,12 @@ import { prisma } from '../config/prisma.js';
 import { isValidUsername, normalizeUsername, validateOptionalPhone } from '../utils/userRules.js';
 import {
   allocateUnassignedMasterCallListEntries,
+  lockAndValidateCreCcmTransfer,
   redistributeCreAssignments,
+  unassignCreAssignments,
 } from '../utils/customerAllocation.js';
 import { resolveCreServicePermissions } from '../utils/creServicePermissions.js';
+import { validateAssignmentReason } from '../utils/creAssignmentHistory.js';
 
 const MANAGED_ROLES = ['ADMIN', 'GM', 'CCM', 'CRE', 'FREE_SERVICE_CRE'];
 
@@ -213,16 +216,6 @@ export async function updateManagedUser(req, res) {
     }
   }
 
-  if (existing.role === 'CRE' && nextRole === 'CRE' && ccmId != null && String(ccmId).trim() !== existing.ccmId) {
-    const [activeAllocation, assignedCustomer] = await Promise.all([
-      prisma.allocation.findFirst({ where: { creId: existing.id, status: 'assigned' }, select: { id: true } }),
-      prisma.masterCallList.findFirst({ where: { ownerUserId: existing.id }, select: { id: true } }),
-    ]);
-    if (activeAllocation || assignedCustomer) {
-      return res.status(409).json({ message: 'Reassign this CRE’s customers and active vehicle allocations before moving them to another CCM.' });
-    }
-  }
-
   let nextCcmId = null;
   let nextGmId = null;
   if (nextRole === 'CCM') {
@@ -241,6 +234,17 @@ export async function updateManagedUser(req, res) {
   }
 
   const updated = await prisma.$transaction(async (transaction) => {
+    const isCreCcmTransfer = ['CRE', 'FREE_SERVICE_CRE'].includes(existing.role)
+      && ['CRE', 'FREE_SERVICE_CRE'].includes(nextRole)
+      && existing.ccmId !== nextCcmId;
+    if (isCreCcmTransfer) {
+      const transfer = await lockAndValidateCreCcmTransfer(transaction, {
+        creId: existing.id,
+        expectedOldCcmId: existing.ccmId,
+        newCcmId: nextCcmId,
+      });
+      if (transfer.error) return { error: transfer.error };
+    }
     if (existing.role === 'CRE' && nextRole === 'FREE_SERVICE_CRE' && existing.ccmId) {
       await redistributeCreAssignments(transaction, { ccmId: existing.ccmId, departingCreId: existing.id, actorId: req.user.id });
     }
@@ -271,9 +275,17 @@ export async function updateManagedUser(req, res) {
     if (existing.role === 'FREE_SERVICE_CRE' && nextRole === 'CRE' && nextCcmId) {
       await allocateUnassignedMasterCallListEntries(transaction, nextCcmId, req.user.id);
     }
-    return user;
+    return { user };
   });
-  return res.json({ user: sanitizeUser(updated) });
+  if (updated.error) {
+    const message = {
+      'cre-changed': 'CRE status or CCM assignment changed before the update. Reload and try again.',
+      'ccm-inactive': 'CRE accounts must be assigned to an active CCM.',
+      'active-assignments': 'Reassign this CRE’s customers and active vehicle allocations before moving them to another CCM.',
+    }[updated.error];
+    return res.status(409).json({ message });
+  }
+  return res.json({ user: sanitizeUser(updated.user) });
 }
 
 export async function updateUserStatus(req, res) {
@@ -284,6 +296,9 @@ export async function updateUserStatus(req, res) {
   if (!allowedStatuses.includes(String(status || '').toLowerCase())) {
     return res.status(400).json({ message: 'Status must be active or inactive.' });
   }
+  const reasonValidation = validateAssignmentReason(req.body?.reason);
+  if (reasonValidation.error) return res.status(400).json({ message: reasonValidation.error });
+  const reason = reasonValidation.value;
   if (req.user?.id === id && String(status).toLowerCase() === 'inactive') {
     return res.status(403).json({ message: 'You cannot deactivate your own account.' });
   }
@@ -302,7 +317,29 @@ export async function updateUserStatus(req, res) {
 
   const nextStatus = String(status).toLowerCase();
   const updated = await prisma.$transaction(async (transaction) => {
+    if (['CRE', 'FREE_SERVICE_CRE'].includes(existing.role)
+      && existing.status === 'active'
+      && nextStatus === 'inactive') {
+      await unassignCreAssignments(transaction, {
+        departingCreId: existing.id,
+        actorId: req.user.id,
+        reason,
+      });
+    }
     const user = await transaction.user.update({ where: { id }, data: { status: nextStatus } });
+    if (['CRE', 'FREE_SERVICE_CRE'].includes(existing.role)
+      && existing.status === 'active'
+      && nextStatus === 'inactive') {
+      await transaction.auditLog.create({
+        data: {
+          userId: req.user.id,
+          entityType: 'User',
+          entityId: existing.id,
+          action: 'ACCOUNT_DEACTIVATED',
+          details: JSON.stringify({ ccmId: existing.ccmId, reason }),
+        },
+      });
+    }
     if (existing.role === 'CRE' && existing.ccmId && nextStatus === 'active') {
       await allocateUnassignedMasterCallListEntries(transaction, existing.ccmId, req.user.id);
     }
@@ -320,27 +357,38 @@ export async function assignUserToCcm(req, res) {
     return res.status(400).json({ message: 'CCM ID is required.' });
   }
 
-  const existing = await prisma.user.findUnique({ where: { id }, select: { id: true, role: true, ccmId: true } });
+  const existing = await prisma.user.findUnique({ where: { id }, select: { id: true, role: true, ccmId: true, status: true } });
   if (!existing || existing.role !== 'CRE') {
     return res.status(404).json({ message: 'User not found.' });
   }
   if (!await activeCcmExists(String(ccmId).trim())) {
     return res.status(400).json({ message: 'CCM assignment must reference an active CCM.' });
   }
-  const [activeAllocation, assignedCustomer] = await Promise.all([
-    prisma.allocation.findFirst({ where: { creId: id, status: 'assigned' }, select: { id: true } }),
-    prisma.masterCallList.findFirst({ where: { ownerUserId: id }, select: { id: true } }),
-  ]);
-  if ((activeAllocation || assignedCustomer) && existing.ccmId !== String(ccmId).trim()) {
-    return res.status(409).json({ message: 'Reassign active vehicle allocations before moving this CRE to another CCM.' });
+  const nextCcmId = String(ccmId).trim();
+  const transferResult = await prisma.$transaction(async (transaction) => {
+    const transfer = await lockAndValidateCreCcmTransfer(transaction, {
+      creId: id,
+      expectedOldCcmId: existing.ccmId,
+      newCcmId: nextCcmId,
+    });
+    if (transfer.error) return transfer;
+    return {
+      user: await transaction.user.update({
+        where: { id },
+        data: { ccmId: nextCcmId },
+      }),
+    };
+  });
+  if (transferResult.error) {
+    const messages = {
+      'cre-changed': 'CRE status or CCM assignment changed before the update. Reload and try again.',
+      'ccm-inactive': 'CCM assignment must reference an active CCM.',
+      'active-assignments': 'Reassign active vehicle allocations before moving this CRE to another CCM.',
+    };
+    return res.status(409).json({ message: messages[transferResult.error] });
   }
 
-  const updated = await prisma.user.update({
-    where: { id },
-    data: { ccmId: String(ccmId).trim() },
-  });
-
-  return res.json({ user: sanitizeUser(updated) });
+  return res.json({ user: sanitizeUser(transferResult.user) });
 }
 
 export async function deleteManagedUser(req, res) {
@@ -353,41 +401,16 @@ export async function deleteManagedUser(req, res) {
     return res.status(404).json({ message: 'User not found.' });
   }
 
+  if (existing.role === 'CRE' || existing.role === 'FREE_SERVICE_CRE') {
+    return res.status(409).json({ message: 'CRE accounts must be deactivated instead of deleted.' });
+  }
+
   if (existing.role === 'CCM') {
     const assignedCre = await prisma.user.findFirst({
       where: { role: { in: ['CRE', 'FREE_SERVICE_CRE'] }, ccmId: existing.ccmId },
       select: { id: true },
     });
     if (assignedCre) return res.status(409).json({ message: 'Reassign or delete this CCM CRE accounts before deleting the CCM.' });
-  }
-
-  if (existing.role === 'CRE' || existing.role === 'FREE_SERVICE_CRE') {
-    await prisma.$transaction(async (transaction) => {
-      if (existing.ccmId) {
-        await redistributeCreAssignments(transaction, {
-          ccmId: existing.ccmId,
-          departingCreId: existing.id,
-          actorId: req.user.id,
-        });
-      }
-      await transaction.auditLog.create({
-        data: {
-          userId: req.user.id,
-          entityType: 'User',
-          entityId: existing.id,
-          action: 'ACCOUNT_DELETED',
-          details: JSON.stringify({
-            name: existing.name,
-            username: existing.username || existing.email?.split('@')[0],
-            role: existing.role,
-            ccmId: existing.ccmId,
-            deleted: true,
-          }),
-        },
-      });
-      await transaction.user.delete({ where: { id: existing.id } });
-    });
-    return res.json({ id: existing.id, deleted: true });
   }
 
   await prisma.$transaction(async (transaction) => {

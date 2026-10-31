@@ -349,3 +349,77 @@ test('Admin can deactivate and delete a different account', async (t) => {
   assert.equal(deleteResponse.body.deleted, true);
   assert.equal(users.some(({ id }) => id === 'other-gm'), false);
 });
+
+test('deactivating a CRE unassigns active work for CCM review and CRE deletion is rejected', async (t) => {
+  const users = setupUserStore(t);
+  users.push({
+    id: 'cre-to-deactivate',
+    name: 'CRE User',
+    username: 'cre.user',
+    email: null,
+    password: 'not-used',
+    role: 'CRE',
+    status: 'active',
+    ccmId: 'ccm-1',
+  });
+  const history = [];
+  const changes = [];
+  replaceMethod(t, prisma, '$transaction', async (callback) => callback({
+    user: {
+      update: async ({ where, data }) => {
+        const user = users.find(({ id }) => id === where.id);
+        Object.assign(user, data);
+        return user;
+      },
+    },
+    $queryRaw: async () => [],
+    masterCallList: {
+      findMany: async () => [{ id: 'call-1', ccmId: 'ccm-1', vehicle: { id: 'vehicle-1' } }],
+      update: async ({ data }) => { changes.push(data); return {}; },
+    },
+    allocation: {
+      findMany: async () => [{ id: 'allocation-1', ccmId: 'ccm-1', vehicleId: 'vehicle-1' }],
+      update: async ({ data }) => { changes.push(data); return {}; },
+    },
+    creAssignmentHistory: {
+      create: async ({ data }) => { history.push(data); return data; },
+    },
+    auditLog: { create: async () => ({}) },
+  }));
+
+  const deactivateResponse = responseRecorder();
+  await updateUserStatus({
+    user: { id: 'existing-admin', role: 'Admin' },
+    params: { id: 'cre-to-deactivate' },
+    body: { status: 'inactive', reason: 'Role ended' },
+  }, deactivateResponse);
+
+  assert.equal(deactivateResponse.body.user.status, 'inactive');
+  assert.deepEqual(changes, [
+    { ownerUserId: null, status: 'pending', assignmentNeedsReview: true },
+    { creId: null },
+  ]);
+  assert.equal(history.length, 2);
+  assert.ok(history.every((event) => event.previousCreId === 'cre-to-deactivate'
+    && event.newCreId === null
+    && event.actorUserId === 'existing-admin'
+    && event.reason === 'Role ended'));
+
+  const deleteResponse = responseRecorder();
+  await deleteManagedUser({
+    user: { id: 'existing-admin', role: 'Admin' },
+    params: { id: 'cre-to-deactivate' },
+  }, deleteResponse);
+  assert.equal(deleteResponse.statusCode, 409);
+  assert.equal(users.some(({ id }) => id === 'cre-to-deactivate'), true);
+
+  const token = jwt.sign({ sub: 'cre-to-deactivate' }, process.env.JWT_SECRET);
+  let continued = false;
+  const authResponse = responseRecorder();
+  await authMiddleware({
+    headers: { authorization: `Bearer ${token}` },
+    cookies: {},
+  }, authResponse, () => { continued = true; });
+  assert.equal(authResponse.statusCode, 401);
+  assert.equal(continued, false);
+});

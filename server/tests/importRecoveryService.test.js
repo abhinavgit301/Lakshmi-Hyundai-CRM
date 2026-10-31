@@ -68,10 +68,11 @@ function makeBatch({ rowStatuses = ['completed'], changes = [] } = {}) {
       mutationState: status === 'completed' ? 'complete' : 'pending',
       loggedChangeCount: 0,
     })),
-    changes: changes.map((change) => ({
+    changes: changes.map((change, index) => ({
       importBatchId: 'batch-1',
       rowProgressId: change.evidenceScope === 'batch' ? null : rowId,
       evidenceScope: change.evidenceScope || 'row',
+      sequence: index + 1,
       ...change,
     })),
   };
@@ -95,6 +96,7 @@ function fullVisit(id) {
   return {
     id,
     repairOrderNo: `RO-${id}`,
+    normalizedRepairOrderNo: `RO-${id}`.toUpperCase(),
     customerId: 'customer-1',
     vehicleId: 'vehicle-1',
     ccmId: 'ccm-1',

@@ -10,6 +10,7 @@ import { isVehicleAssignedToCre, workshopVisitVisibilityWhere } from '../src/uti
 import { getFreeServiceList, getWarrantyList } from '../src/controllers/serviceListsController.js';
 import { getCallList, getCustomers, getVisibilityWhere, operationalReadScope } from '../src/controllers/recordsController.js';
 import { listAllocations } from '../src/controllers/allocationController.js';
+import { prisma } from '../src/config/prisma.js';
 import {
   filterMasterCallListRecords,
   validateMasterCallListFilters,
@@ -56,6 +57,46 @@ test('CCM access remains unrestricted by CRE permissions', () => {
   assert.equal(canAccessServiceSource(ccm, 'WARRANTY'), true);
 });
 
+test('paginated follow-up search retains CCM visibility constraints and returns page metadata', async () => {
+  const originalFindMany = prisma.followUp.findMany;
+  const originalCount = prisma.followUp.count;
+  let findArgs;
+  let countArgs;
+  prisma.followUp.findMany = async (args) => {
+    findArgs = args;
+    return [{ id: 'follow-up-2' }];
+  };
+  prisma.followUp.count = async (args) => {
+    countArgs = args;
+    return 3;
+  };
+  try {
+    const res = mockRes();
+    await listFollowUps({
+      user: { id: 'ccm-user', role: 'CCM', ccmId: 'ccm-a' },
+      query: { source: 'SERVICE', search: 'VIN', limit: '1', offset: '1' },
+    }, res);
+
+    assert.deepEqual(findArgs.skip, 1);
+    assert.deepEqual(findArgs.take, 1);
+    assert.equal(findArgs.where.ccmId, 'ccm-a');
+    assert.ok(Array.isArray(findArgs.where.OR));
+    assert.ok(Array.isArray(findArgs.where.AND));
+    assert.deepEqual(findArgs.where.AND[0].OR[0], { id: { contains: 'vin', mode: 'insensitive' } });
+    assert.deepEqual(countArgs.where, findArgs.where);
+    assert.deepEqual(res.body, {
+      followUps: [{ id: 'follow-up-2' }],
+      total: 3,
+      limit: 1,
+      offset: 1,
+      hasMore: true,
+    });
+  } finally {
+    prisma.followUp.findMany = originalFindMany;
+    prisma.followUp.count = originalCount;
+  }
+});
+
 test('Free-Service CRE cannot access normal customer-list service sources', () => {
   const user = { role: 'FREE_SERVICE_CRE', freeServiceEnabled: true, warrantyEnabled: true };
   assert.deepEqual(allowedServiceSources(user), []);
@@ -92,9 +133,9 @@ test('regular CRE Master Call List visibility includes only records assigned to 
     assert.equal(creWhere.customerId, 'customer-1');
     assert.equal(creWhere.assignedToId, 'cre-1');
     assert.deepEqual(creWhere.customer.is, {
-      ccmId: 'ccm-1',
       vehicles: {
         some: {
+          ccmId: 'ccm-1',
           OR: [
             { allocations: { some: { creId: 'cre-1', ccmId: 'ccm-1', status: 'assigned' } } },
             { masterCallListEntries: { some: { ownerUserId: 'cre-1', ccmId: 'ccm-1' } } },
@@ -106,22 +147,31 @@ test('regular CRE Master Call List visibility includes only records assigned to 
     const ccmWhere = callLogVisibility({ role: 'CCM', ccmId: 'ccm-1' }, 'customer-1');
     assert.equal(ccmWhere.ccmId, 'ccm-1');
     assert.equal(ccmWhere.customerId, 'customer-1');
-    assert.deepEqual(ccmWhere.customer.is, { ccmId: 'ccm-1' });
+    assert.deepEqual(ccmWhere.OR, [
+      { vehicleId: null, customer: { is: { ccmId: 'ccm-1' } } },
+      { vehicle: { is: { ccmId: 'ccm-1' } } },
+    ]);
   });
 
   test('CCM and CRE visit filters fail closed and enforce team plus current CRE assignment', () => {
-    assert.deepEqual(workshopVisitVisibilityWhere({ role: 'CCM' }), { ccmId: 'no-access' });
+    assert.deepEqual(workshopVisitVisibilityWhere({ role: 'CCM' }), {
+      physicalVehicle: { is: { vehicles: { some: { ccmId: 'no-access' } } } },
+    });
     assert.deepEqual(workshopVisitVisibilityWhere({ role: 'UNKNOWN', ccmId: 'ccm-1' }), { id: 'no-access' });
     assert.deepEqual(workshopVisitVisibilityWhere({ role: 'ADMIN' }), {});
 
     const where = workshopVisitVisibilityWhere({ role: 'CRE', id: 'cre-1', ccmId: 'ccm-1' });
-    assert.equal(where.ccmId, 'ccm-1');
-    assert.deepEqual(where.vehicle, {
+    assert.deepEqual(where.physicalVehicle, {
       is: {
-        OR: [
-          { allocations: { some: { creId: 'cre-1', ccmId: 'ccm-1', status: 'assigned' } } },
-          { masterCallListEntries: { some: { ownerUserId: 'cre-1', ccmId: 'ccm-1' } } },
-        ],
+        vehicles: {
+          some: {
+            ccmId: 'ccm-1',
+            OR: [
+              { allocations: { some: { creId: 'cre-1', ccmId: 'ccm-1', status: 'assigned' } } },
+              { masterCallListEntries: { some: { ownerUserId: 'cre-1', ccmId: 'ccm-1' } } },
+            ],
+          },
+        },
       },
     });
   });
@@ -160,10 +210,23 @@ test('regular CRE Master Call List visibility includes only records assigned to 
     }
 
     const ccmScope = operationalReadScope({ role: 'CCM', ccmId: 'ccm-1' });
-    assert.deepEqual(ccmScope.customer, { ccmId: 'ccm-1' });
+    assert.deepEqual(ccmScope.customer, {
+      OR: [
+        { ccmId: 'ccm-1' },
+        { vehicles: { some: { ccmId: 'ccm-1' } } },
+      ],
+    });
     assert.deepEqual(ccmScope.vehicle, { ccmId: 'ccm-1' });
-    assert.equal(ccmScope.call.customer.is.ccmId, 'ccm-1');
-    assert.deepEqual(operationalReadScope({ role: 'CCM' }).customer, { ccmId: 'no-access' });
+    assert.deepEqual(ccmScope.call.OR, [
+      { vehicleId: null, customer: { is: { ccmId: 'ccm-1' } } },
+      { vehicle: { is: { ccmId: 'ccm-1' } } },
+    ]);
+    assert.deepEqual(operationalReadScope({ role: 'CCM' }).customer, {
+      OR: [
+        { ccmId: 'no-access' },
+        { vehicles: { some: { ccmId: 'no-access' } } },
+      ],
+    });
 
     const creScope = operationalReadScope({
       role: 'CRE',

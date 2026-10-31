@@ -12,6 +12,7 @@ import { filterMilestoneCompletionByVisits, syncFreeServiceMilestones } from '..
 import { getWorkshopTimezone, workshopToday, zonedDateKey } from '../utils/workshopTime.js';
 import { canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { creCustomerWhere, creVehicleWhere } from '../utils/creAccess.js';
+import { filterServiceListRecords, paginateRecords, parsePagination } from '../utils/pagination.js';
 import { creDueWhere, loadCallListRecords } from './recordsController.js';
 
 function scopeFor(user) {
@@ -65,8 +66,10 @@ function workflowVisibilityWhere(user) {
   if (role === 'CCM') {
     return {
       ccmId,
-      customer: { is: { ccmId } },
-      AND: [{ OR: [{ vehicleId: null }, { vehicle: { is: { ccmId } } }] }],
+      OR: [
+        { vehicleId: null, customer: { is: { ccmId } } },
+        { vehicle: { is: { ccmId } } },
+      ],
     };
   }
   if (role === 'CRE') {
@@ -88,6 +91,8 @@ export async function getFreeServiceList(req, res) {
   if (!canAccessServiceSource(req.user, 'FREE_SERVICE')) {
     return res.status(403).json({ message: 'You do not have permission to access Free Service.' });
   }
+  const pagination = parsePagination(req.query);
+  if (pagination.error) return res.status(400).json({ message: pagination.error });
   const now = new Date();
   const today = workshopToday(now);
   const records = await loadCallListRecords(scopeFor(req.user), now, req.user);
@@ -96,6 +101,7 @@ export async function getFreeServiceList(req, res) {
 
   const syncedMilestones = await syncFreeServiceMilestones(dated.map(({ record, saleDate }) => ({
     id: record.vehicleId,
+    physicalVehicleId: record.physicalVehicleId,
     saleDate,
     workshopVisits: record.workshopVisits,
   })));
@@ -132,15 +138,24 @@ export async function getFreeServiceList(req, res) {
       lastCall: call ? { createdAt: call.createdAt, outcome: call.outcome } : null,
       followUp: followUp ? { id: followUp.id, followUpAt: followUp.followUpAt } : null,
     };
-  }).sort((left, right) => left.dueDate - right.dueDate);
+  }).sort((left, right) => new Date(left.dueDate) - new Date(right.dueDate)
+    || String(left.id).localeCompare(String(right.id)));
 
-  return res.json({ records: rows, dataIssues, asOf: zonedDateKey(now) });
+  const filtered = filterServiceListRecords(rows, req.query);
+  if (filtered.error) return res.status(400).json({ message: filtered.error });
+  return res.json({
+    ...(pagination.hasPagination ? paginateRecords(filtered.records, pagination) : { records: filtered.records }),
+    dataIssues,
+    asOf: zonedDateKey(now),
+  });
 }
 
 export async function getWarrantyList(req, res) {
   if (!canAccessServiceSource(req.user, 'WARRANTY')) {
     return res.status(403).json({ message: 'You do not have permission to access Warranty.' });
   }
+  const pagination = parsePagination(req.query);
+  if (pagination.error) return res.status(400).json({ message: pagination.error });
   const now = new Date();
   const today = workshopToday(now);
   const timeZone = getWorkshopTimezone();
@@ -177,7 +192,14 @@ export async function getWarrantyList(req, res) {
       contactStatus: classifyWarrantyCase({ expiryDate, calls: vehicleCalls, now, timeZone }).contacted ? 'Contacted' : 'Not contacted',
       followUp: followUp ? { id: followUp.id, followUpAt: followUp.followUpAt } : null,
     };
-  }).sort((left, right) => left.warrantyExpiryDate - right.warrantyExpiryDate);
+  }).sort((left, right) => new Date(left.warrantyExpiryDate) - new Date(right.warrantyExpiryDate)
+    || String(left.id).localeCompare(String(right.id)));
 
-  return res.json({ records: rows, dataIssues, asOf: zonedDateKey(now) });
+  const filtered = filterServiceListRecords(rows, req.query);
+  if (filtered.error) return res.status(400).json({ message: filtered.error });
+  return res.json({
+    ...(pagination.hasPagination ? paginateRecords(filtered.records, pagination) : { records: filtered.records }),
+    dataIssues,
+    asOf: zonedDateKey(now),
+  });
 }

@@ -1,11 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { buildDuplicateKey, normalizeVin } from '../utils/roleAccess.js';
+import { buildRepairOrderKey, normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
 import { evaluateRepairOrderRow, validateRepairOrderImportFields } from '../utils/businessRules.js';
 import { parseRepairOrderCsv, parseRepairOrderDate } from '../utils/repairOrderCsv.js';
 import { normalizeSaleDate } from '../utils/serviceCalendar.js';
 import { prisma } from '../config/prisma.js';
 import { allocateUnassignedMasterCallListEntries, lockCcmAllocationTeam } from '../utils/customerAllocation.js';
+import { findCanonicalMasterCallListEntry } from '../utils/masterCallList.js';
+import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
 import { importSnapshot, recordImportChange } from '../utils/importChangeLog.js';
 import { ImportRollbackConflict, rollbackImportBatch } from '../services/importRollbackService.js';
 import { ImportRecoveryConflict, recoverAbandonedImport } from '../services/importRecoveryService.js';
@@ -14,6 +17,12 @@ import {
   permanentlyDeleteImportBatch,
   previewPermanentImportDeletion,
 } from '../services/permanentImportDeletionService.js';
+import {
+  cleanupLegacyImport,
+  LegacyImportReconciliationConflict,
+  previewLegacyImportCleanup,
+  previewLegacyImportReconciliation,
+} from '../services/legacyImportReconciliationService.js';
 import { acquireImportProcessingLock, assertImportBatchProcessing } from '../utils/importProcessingLock.js';
 import {
   collectImportBatchStats,
@@ -70,6 +79,19 @@ function isSerializationConflict(error) {
       error.meta?.code === '40001'
       || error.meta?.driverAdapterError?.cause?.originalCode === '40001'
     ));
+}
+
+function isRepairOrderIdentityUniqueConflict(error) {
+  if (error?.code !== 'P2002') return false;
+  const target = error.meta?.target;
+  const targetText = [
+    ...(Array.isArray(target) ? target : [target]),
+    error.meta?.constraint,
+    error.meta?.driverAdapterError?.cause?.constraint,
+    error.message,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return targetText.includes('workshop_visits_ccmid_normalizedrepairorderno_key')
+    || (targetText.includes('ccmid') && targetText.includes('normalizedrepairorderno'));
 }
 
 function parseOptionalNumber(value) {
@@ -211,6 +233,7 @@ export async function importRepairOrders(req, res) {
         data: {
           id: batchId,
           fileName,
+          importType: 'repair_order',
           importedByUserId,
           ccmId: batchCcmId,
           idempotencyKey,
@@ -291,13 +314,18 @@ export async function importRepairOrders(req, res) {
   };
 
   try {
-    const repairOrderNumbers = [...new Set(parsed.rows.map(({ row }) => String(row.roNumber || '').trim()).filter(Boolean))];
+    const repairOrderNumbers = [...new Set(parsed.rows
+      .map(({ row }) => normalizeRepairOrderNo(row.roNumber))
+      .filter(Boolean))];
     const existingVisits = await prisma.workshopVisit.findMany({
-      where: { repairOrderNo: { in: repairOrderNumbers } },
-      include: { vehicle: { select: { vin: true } } },
+      where: { ccmId: batchCcmId, normalizedRepairOrderNo: { in: repairOrderNumbers } },
+      include: { physicalVehicle: { select: { vin: true } } },
     });
     for (const visit of existingVisits) {
-      existingKeys.set(String(visit.repairOrderNo).trim().toUpperCase(), normalizeVin(visit.vehicle.vin));
+      existingKeys.set(
+        buildRepairOrderKey(visit.ccmId, visit.normalizedRepairOrderNo),
+        normalizeVin(visit.physicalVehicle.vin),
+      );
     }
 
     for (const { row, rowNumber } of parsed.rows) {
@@ -349,46 +377,28 @@ export async function importRepairOrders(req, res) {
         continue;
       }
 
-      const vehicleOwner = await prisma.vehicle.findUnique({
-        where: { vin },
-        select: { ccmId: true, customer: { select: { ccmId: true } } },
-      });
-      const ownerCcmIds = [vehicleOwner?.ccmId, vehicleOwner?.customer?.ccmId].filter(Boolean);
-      const ownerCcmId = ownerCcmIds.find((ownerId) => ownerId !== ccmId) || ownerCcmIds[0] || null;
       const otherRegistrationOwner = registrationNumber
         ? await prisma.vehicle.findFirst({
           where: {
             registrationNumber: { equals: registrationNumber, mode: 'insensitive' },
-            ...(vehicleOwner ? { vin: { not: vin } } : {}),
+            ccmId,
+            physicalVehicle: { is: { vin: { not: vin } } },
           },
-          select: { ccmId: true, customer: { select: { ccmId: true } } },
+          select: { id: true },
         })
         : null;
+      const ownerCcmId = ccmId;
       const result = evaluateRepairOrderRow({
         ...ownedRow,
         vin,
         roNumber,
         ccmId,
-        ownerCcmId,
+        ownerCcmId: ccmId,
       }, existingKeys);
       if (result.status === 'processed' && otherRegistrationOwner) {
         result.status = 'rejected';
         result.reason = 'Registration number is already assigned to another vehicle.';
       }
-      if (result.status === 'processed' && vehicleOwner && ownerCcmIds.length !== 2) {
-        result.status = 'rejected';
-        result.reason = 'The existing VIN has no resolvable CCM owner and cannot be transferred.';
-      }
-      if (result.status === 'processed' && vehicleOwner
-        && (vehicleOwner.ccmId !== ccmId || vehicleOwner.customer?.ccmId !== ccmId)) {
-        result.status = 'flagged';
-        result.reason = 'Cross-manager VIN conflict';
-      }
-      if (result.status === 'flagged' && !ownerCcmIds.length) {
-        result.status = 'rejected';
-        result.reason = 'The existing VIN has no resolvable CCM owner and cannot be transferred.';
-      }
-
       if (result.status !== 'processed') {
         const code = result.status === 'flagged' ? 'VIN_CONFLICT' : result.status === 'skipped' ? 'DUPLICATE_RO' : 'INVALID_ROW';
         const rowError = toRowError(row, rowNumber, code, result.reason);
@@ -419,13 +429,13 @@ export async function importRepairOrders(req, res) {
         await prisma.$transaction(async (transaction) => {
           await assertImportBatchProcessing(transaction, batch.id);
           await lockCcmAllocationTeam(transaction, ccmId);
-          let vehicle = await transaction.vehicle.findUnique({ where: { vin }, include: { customer: true } });
+          const physicalVehicle = await findOrCreatePhysicalVehicle(transaction, vin);
+          let vehicle = await transaction.vehicle.findUnique({
+            where: { physicalVehicleId_ccmId: { physicalVehicleId: physicalVehicle.id, ccmId } },
+            include: { customer: true },
+          });
           const wasExistingVehicle = Boolean(vehicle);
           let customer = vehicle?.customer;
-
-          if (vehicle && (vehicle.ccmId !== ccmId || customer?.ccmId !== ccmId)) {
-            throw Object.assign(new Error('Existing VIN ownership does not match the selected CCM.'), { code: 'IDENTITY_CONFLICT' });
-          }
 
           if (!customer) {
             customer = await createTrackedRecord(transaction, rowProgressId, {
@@ -449,6 +459,7 @@ export async function importRepairOrders(req, res) {
             }, () => transaction.vehicle.create({
               data: {
                 vin,
+                physicalVehicleId: physicalVehicle.id,
                 registrationNumber,
                 make: String(row.make || '').trim() || '-',
                 model: String(row.model || '').trim() || '-',
@@ -476,8 +487,10 @@ export async function importRepairOrders(req, res) {
           }, () => transaction.workshopVisit.create({
             data: {
               repairOrderNo: roNumber,
+              normalizedRepairOrderNo: normalizeRepairOrderNo(roNumber),
               customerId: customer.id,
               vehicleId: vehicle.id,
+              physicalVehicleId: physicalVehicle.id,
               ccmId,
               totalLaborCost: laborCost,
               totalPartsCost: partsCost,
@@ -507,17 +520,19 @@ export async function importRepairOrders(req, res) {
             }));
           }
 
-          const callListEntry = await transaction.masterCallList.findFirst({ where: { vin, ccmId } });
+          const callListEntry = await findCanonicalMasterCallListEntry(transaction, vin, ccmId);
           if (callListEntry) {
             const before = {
               customerName: callListEntry.customerName,
               mobileNumber: callListEntry.mobileNumber,
               registrationNumber: callListEntry.registrationNumber,
+              vehicleId: callListEntry.vehicleId,
             };
             const after = {
               customerName: String(row.customerName || '').trim() ? customerName : callListEntry.customerName,
               mobileNumber: String(row.mobileNumber || '').trim() ? mobileNumber : callListEntry.mobileNumber,
               registrationNumber: vehicle.registrationNumber,
+              vehicleId: vehicle.id,
             };
             const callListEntryChanged = JSON.stringify(importSnapshot(before)) !== JSON.stringify(importSnapshot(after));
             if (callListEntryChanged) {
@@ -541,6 +556,7 @@ export async function importRepairOrders(req, res) {
                 customerName,
                 mobileNumber,
                 vin,
+                vehicleId: vehicle.id,
                 registrationNumber: vehicle.registrationNumber,
                 ccmId,
               },
@@ -550,8 +566,44 @@ export async function importRepairOrders(req, res) {
           return wasExistingVehicle ? 'appended' : 'created';
         });
         importedCcmIds.add(ccmId);
-        existingKeys.set(roNumber.toUpperCase(), vin);
+        existingKeys.set(buildRepairOrderKey(ccmId, roNumber), vin);
       } catch (error) {
+        if (isRepairOrderIdentityUniqueConflict(error)) {
+          // The failed transaction has rolled back before this lookup runs.
+          const existingVisit = await prisma.workshopVisit.findFirst({
+            where: {
+              ccmId,
+              normalizedRepairOrderNo: normalizeRepairOrderNo(roNumber),
+            },
+            select: { physicalVehicle: { select: { vin: true } } },
+          });
+          if (existingVisit) {
+            const samePhysicalVehicle = normalizeVin(existingVisit.physicalVehicle.vin) === vin;
+            const status = samePhysicalVehicle ? 'skipped' : 'rejected';
+            const rowError = toRowError(
+              row,
+              rowNumber,
+              samePhysicalVehicle ? 'DUPLICATE_RO' : 'UNIQUE_CONFLICT',
+              samePhysicalVehicle
+                ? 'Duplicate repair order number.'
+                : 'Repair order number is already assigned to a different VIN.',
+            );
+            errors.push({ ...rowError, status });
+            await prisma.$transaction(async (transaction) => {
+              await assertImportBatchProcessing(transaction, batch.id);
+              await recordRowError(transaction, batch.id, rowError);
+              await completeImportRow(
+                transaction,
+                batch.id,
+                rowNumber,
+                rowProgressId,
+                samePhysicalVehicle ? 'skipped' : 'rejected',
+              );
+            });
+            if (samePhysicalVehicle) existingKeys.set(buildRepairOrderKey(ccmId, roNumber), vin);
+            continue;
+          }
+        }
         if (error?.code !== 'P2002' && error?.code !== 'IDENTITY_CONFLICT') throw error;
         const rowError = toRowError(
           row,
@@ -668,6 +720,8 @@ export async function getImportHistory(req, res) {
       affectedRepairOrders: true,
       affectedCallListEntries: true,
       affectedAllocations: true,
+      affectedMonthlyEntries: true,
+      importType: true,
       status: true,
       rollbackSupported: true,
       statsComplete: true,
@@ -751,7 +805,10 @@ export async function previewPermanentDeletion(req, res) {
     return res.json(await previewPermanentImportDeletion(importBatchId));
   } catch (error) {
     if (error instanceof PermanentImportDeletionConflict) {
-      return res.status(error.message === 'Import not found.' ? 404 : 409).json({ message: error.message });
+      return res.status(error.message === 'Import not found.' ? 404 : 409).json({
+        message: error.message,
+        blockers: error.blockers || [],
+      });
     }
     throw error;
   }
@@ -784,14 +841,77 @@ export async function permanentlyDeleteImport(req, res) {
             : isSerializationConflict(error)
               ? 'Serialization conflict.'
               : 'Unexpected permanent-deletion failure.',
+          blockers: error instanceof PermanentImportDeletionConflict ? error.blockers || [] : [],
         }),
       },
     });
     if (error instanceof PermanentImportDeletionConflict) {
-      return res.status(error.message === 'Import not found.' ? 404 : 409).json({ message: error.message });
+      return res.status(error.message === 'Import not found.' ? 404 : 409).json({
+        message: error.message,
+        blockers: error.blockers || [],
+      });
     }
     if (isSerializationConflict(error)) {
       return res.status(409).json({ message: 'The import changed during permanent deletion. Refresh the preview and try again.' });
+    }
+    throw error;
+  }
+}
+
+export async function getLegacyImportReconciliation(_req, res) {
+  return res.json(await previewLegacyImportReconciliation());
+}
+
+export async function previewLegacyImportCleanupHandler(req, res) {
+  const importBatchId = String(req.params.id || '').trim();
+  if (!importBatchId || importBatchId.length > 128) {
+    return res.status(400).json({ message: 'A valid import ID is required.' });
+  }
+  try {
+    return res.json(await previewLegacyImportCleanup(importBatchId));
+  } catch (error) {
+    if (error instanceof LegacyImportReconciliationConflict) {
+      return res.status(409).json({ message: error.message, blockers: error.blockers });
+    }
+    throw error;
+  }
+}
+
+export async function cleanupLegacyImportHandler(req, res) {
+  const importBatchId = String(req.params.id || '').trim();
+  if (!importBatchId || importBatchId.length > 128) {
+    return res.status(400).json({ message: 'A valid import ID is required.' });
+  }
+  try {
+    return res.json(await cleanupLegacyImport(
+      importBatchId,
+      req.user.id,
+      String(req.body?.confirmationToken || ''),
+    ));
+  } catch (error) {
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        entityType: 'ImportBatch',
+        entityId: importBatchId,
+        action: error instanceof LegacyImportReconciliationConflict
+          ? 'LEGACY_IMPORT_RECONCILIATION_CLEANUP_BLOCKED'
+          : 'LEGACY_IMPORT_RECONCILIATION_CLEANUP_FAILED',
+        details: JSON.stringify({
+          reason: error instanceof LegacyImportReconciliationConflict
+            ? error.message
+            : isSerializationConflict(error)
+              ? 'Serialization conflict.'
+              : 'Unexpected legacy cleanup failure.',
+          blockers: error instanceof LegacyImportReconciliationConflict ? error.blockers : [],
+        }),
+      },
+    });
+    if (error instanceof LegacyImportReconciliationConflict) {
+      return res.status(409).json({ message: error.message, blockers: error.blockers });
+    }
+    if (isSerializationConflict(error)) {
+      return res.status(409).json({ message: 'Legacy import evidence changed during cleanup. Refresh the reconciliation preview and try again.' });
     }
     throw error;
   }

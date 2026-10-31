@@ -5,590 +5,566 @@ import { configureTestDatabaseUrl } from './testDatabaseConfig.js';
 
 configureTestDatabaseUrl(process.env.TEST_DATABASE_URL);
 
-const [
-  { prisma },
-  { previewPermanentImportDeletion, permanentlyDeleteImportBatch },
-  { rollbackImportBatch },
-  { recordImportChange, importSnapshot },
-] = await Promise.all([
+const [{ prisma }, { previewPermanentImportDeletion, permanentlyDeleteImportBatch }, { recordImportChange, importSnapshot }] = await Promise.all([
   import('../../src/config/prisma.js'),
   import('../../src/services/permanentImportDeletionService.js'),
-  import('../../src/services/importRollbackService.js'),
   import('../../src/utils/importChangeLog.js'),
 ]);
 
 const prefix = `it_${randomUUID().replaceAll('-', '')}`;
-const fixtureIds = {
-  user: `${prefix}_admin`,
-  batches: [`${prefix}_february`, `${prefix}_march`],
-  customers: [`${prefix}_imported`, `${prefix}_existing`],
-  vehicles: [`${prefix}_vehicle`],
-  visits: [`${prefix}_feb_ro`, `${prefix}_march_ro`, `${prefix}_april_ro`],
-  callLists: [`${prefix}_feb_call_list`, `${prefix}_may_call_list`],
-  calls: [`${prefix}_call_log`],
-  followUps: [`${prefix}_follow_up`],
-  appointments: [`${prefix}_appointment`],
-  appointmentEvents: [`${prefix}_appointment_event`],
-  allocations: [`${prefix}_allocation`],
-  ownership: [`${prefix}_ownership`],
-  milestones: [`${prefix}_milestone`],
-  monthlyEntries: [`${prefix}_monthly_entry`],
-  monthlyDatasets: [`${prefix}_dataset`],
-  vinReviews: [`${prefix}_vin_review`],
+const fixture = {
+  userIds: [],
+  batchIds: [],
+  rowIds: [],
+  customerIds: [],
+  vehicleIds: [],
+  visitIds: [],
+  callIds: [],
+  errorIds: [],
 };
 
 function next(label) {
   return `${prefix}_${label}_${randomUUID().replaceAll('-', '')}`;
 }
 
-function transactionThatFailsAtVehicleDelete(database) {
+function repairOrderIdentity(repairOrderNo) {
   return {
-    $transaction(callback, options) {
-      return database.$transaction((transaction) => callback(new Proxy(transaction, {
-        get(target, property) {
-          const value = Reflect.get(target, property, target);
-          if (property === 'vehicle' && value) {
-            return new Proxy(value, {
-              get(delegate, method) {
-                if (method === 'deleteMany') {
-                  return async () => { throw new Error('Injected failure at vehicle deletion.'); };
-                }
-                const delegateMethod = Reflect.get(delegate, method, delegate);
-                return typeof delegateMethod === 'function' ? delegateMethod.bind(delegate) : delegateMethod;
-              },
-            });
-          }
-          return typeof value === 'function' ? value.bind(target) : value;
-        },
-      })), options);
-    },
+    repairOrderNo,
+    normalizedRepairOrderNo: String(repairOrderNo).trim().replace(/\s+/g, ' ').toUpperCase(),
   };
 }
 
-async function seedCascadeFixture() {
-  const [targetBatchId, laterBatchId] = fixtureIds.batches;
-  const [targetProgressId, marchProgressId, aprilProgressId] = [next('feb-progress'), next('march-progress'), next('april-progress')];
-  const ccmId = next('ccm');
-  const targetDate = new Date('2026-02-01T00:00:00.000Z');
-  const laterDate = new Date('2026-03-01T00:00:00.000Z');
-  const admin = await prisma.user.create({
+async function createAdmin() {
+  const user = await prisma.user.create({
     data: {
-      id: fixtureIds.user,
-      name: 'Permanent Deletion Integration Admin',
+      id: next('admin'),
+      name: 'Permanent deletion integration admin',
       password: 'integration-only-placeholder',
       role: 'ADMIN',
     },
   });
-  const [targetBatch, laterBatch] = await Promise.all([
-    prisma.importBatch.create({
-      data: {
-        id: targetBatchId,
-        fileName: 'february-origin.csv',
-        status: 'completed',
-        rollbackSupported: true,
-        totalRows: 1,
-        processedRows: 1,
-        allocationEvidenceState: 'not_started',
-        createdAt: targetDate,
-        rowProgress: {
-          create: {
-            id: targetProgressId,
-            rowNumber: 2,
-            status: 'completed',
-            outcome: 'created',
-            mutationState: 'complete',
-            loggedChangeCount: 0,
-          },
-        },
-      },
-    }),
-    prisma.importBatch.create({
-      data: {
-        id: laterBatchId,
-        fileName: 'march-april-follow-on.csv',
-        status: 'completed',
-        rollbackSupported: true,
-        totalRows: 2,
-        processedRows: 2,
-        allocationEvidenceState: 'not_started',
-        createdAt: laterDate,
-        rowProgress: {
-          create: [
-            {
-              id: marchProgressId,
-              rowNumber: 2,
-              status: 'completed',
-              outcome: 'created',
-              mutationState: 'complete',
-              loggedChangeCount: 0,
-            },
-            {
-              id: aprilProgressId,
-              rowNumber: 3,
-              status: 'completed',
-              outcome: 'created',
-              mutationState: 'complete',
-              loggedChangeCount: 0,
-            },
-          ],
-        },
-      },
-    }),
-  ]);
-  const previousCustomer = await prisma.customer.create({
+  fixture.userIds.push(user.id);
+  return user;
+}
+
+async function createBatch(label, createdAt, changeCount, rowOutcome = 'created') {
+  const id = next(label);
+  const rowProgressId = next(`${label}-row`);
+  const batch = await prisma.importBatch.create({
     data: {
-      id: fixtureIds.customers[1],
-      customerCode: next('existing-code'),
-      fullName: 'Pre-existing customer',
-      mobileNumber: '9199990000',
-      ccmId,
-      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      id,
+      fileName: `${label}.csv`,
+      status: 'completed',
+      rollbackSupported: true,
+      statsComplete: true,
+      affectedCountsComplete: true,
+      totalRows: 1,
+      processedRows: 1,
+      createdRows: rowOutcome === 'created' ? 1 : 0,
+      appendedRows: rowOutcome === 'appended' ? 1 : 0,
+      allocationEvidenceState: 'not_started',
+      allocationChangeCount: 0,
+      createdAt,
+      rowProgress: {
+        create: {
+          id: rowProgressId,
+          rowNumber: 2,
+          status: 'completed',
+          outcome: rowOutcome,
+          mutationState: 'complete',
+          loggedChangeCount: changeCount,
+        },
+      },
     },
   });
+  fixture.batchIds.push(id);
+  fixture.rowIds.push(rowProgressId);
+  return { batch, rowProgressId };
+}
 
-  const created = await prisma.$transaction(async (transaction) => {
+async function addChanges(transaction, batchId, rowProgressId, ccmId, changes) {
+  for (const [index, [entityType, entity, operation, before, after]] of changes.entries()) {
+    await recordImportChange(transaction, {
+      importBatchId: batchId,
+      rowProgressId,
+      sequence: index + 1,
+      entityType,
+      entityId: entity.id,
+      ccmId,
+      operation,
+      before: importSnapshot(before),
+      after: importSnapshot(after),
+    });
+  }
+}
+
+async function createImportedCustomerVehicleVisit(batch, rowProgressId, ccmId) {
+  return prisma.$transaction(async (transaction) => {
     const customer = await transaction.customer.create({
       data: {
-        id: fixtureIds.customers[0],
-        customerCode: next('imported-code'),
-        fullName: 'February import customer',
-        mobileNumber: '9199990001',
+        id: next('customer'),
+        customerCode: next('customer-code'),
+        fullName: 'Import-created customer',
+        mobileNumber: next('mobile'),
         ccmId,
       },
     });
     const vehicle = await transaction.vehicle.create({
       data: {
-        id: fixtureIds.vehicles[0],
+        id: next('vehicle'),
         vin: next('vin'),
         registrationNumber: next('registration'),
         customerId: customer.id,
         ccmId,
       },
     });
-    const repairOrder = await transaction.workshopVisit.create({
+    const visit = await transaction.workshopVisit.create({
       data: {
-        id: fixtureIds.visits[0],
-        repairOrderNo: next('ro-feb'),
+        id: next('visit'),
+        ...repairOrderIdentity(next('repair-order')),
         customerId: customer.id,
         vehicleId: vehicle.id,
         ccmId,
-        importedDetails: { source: 'February' },
+        importedDetails: { source: 'integration-test', tags: ['created', null] },
       },
     });
-    const targetCallList = await transaction.masterCallList.create({
-      data: {
-        id: fixtureIds.callLists[0],
-        customerName: customer.fullName,
-        mobileNumber: customer.mobileNumber,
-        vin: vehicle.vin,
-        ccmId,
-      },
-    });
-    const previousState = { fullName: previousCustomer.fullName, updatedAt: previousCustomer.updatedAt };
-    const updatedCustomer = await transaction.customer.update({
-      where: { id: previousCustomer.id },
-      data: { fullName: 'Temporarily updated by February import' },
-    });
-    const changes = [
+    fixture.customerIds.push(customer.id);
+    fixture.vehicleIds.push(vehicle.id);
+    fixture.visitIds.push(visit.id);
+    await addChanges(transaction, batch.id, rowProgressId, ccmId, [
       ['Customer', customer, 'CREATE', {}, customer],
       ['Vehicle', vehicle, 'CREATE', {}, vehicle],
-      ['WorkshopVisit', repairOrder, 'CREATE', {}, repairOrder],
-      ['MasterCallList', targetCallList, 'CREATE', {}, targetCallList],
-      [
-        'Customer',
-        updatedCustomer,
-        'UPDATE',
-        previousState,
-        { fullName: updatedCustomer.fullName, updatedAt: updatedCustomer.updatedAt },
-      ],
-    ];
-    for (const [index, [entityType, record, operation, before, afterState]] of changes.entries()) {
-      await recordImportChange(transaction, {
-        importBatchId: targetBatch.id,
-        rowProgressId: targetProgressId,
-        sequence: index + 1,
-        entityType,
-        entityId: record.id,
-        ccmId,
-        operation,
-        before: importSnapshot(before),
-        after: importSnapshot(afterState),
-      });
-    }
-    await transaction.importRowProgress.update({
-      where: { id: targetProgressId },
-      data: { loggedChangeCount: changes.length },
-    });
-
-    const laterVisitRecords = [];
-    for (const [index, [id, rowProgressId]] of [
-      [fixtureIds.visits[1], marchProgressId],
-      [fixtureIds.visits[2], aprilProgressId],
-    ].entries()) {
-      const laterVisit = await transaction.workshopVisit.create({
-        data: {
-          id,
-          repairOrderNo: next(index ? 'ro-april' : 'ro-march'),
-          customerId: customer.id,
-          vehicleId: vehicle.id,
-          ccmId,
-          importedDetails: { source: index ? 'April' : 'March' },
-        },
-      });
-      laterVisitRecords.push(laterVisit);
-      await recordImportChange(transaction, {
-        importBatchId: laterBatch.id,
-        rowProgressId,
-        sequence: index + 1,
-        entityType: 'WorkshopVisit',
-        entityId: laterVisit.id,
-        ccmId,
-        operation: 'CREATE',
-        before: {},
-        after: importSnapshot(laterVisit),
-      });
-    }
-    const laterCallList = await transaction.masterCallList.create({
-      data: {
-        id: fixtureIds.callLists[1],
-        customerName: customer.fullName,
-        mobileNumber: customer.mobileNumber,
-        vin: vehicle.vin,
-        ccmId,
-      },
-    });
-    await recordImportChange(transaction, {
-      importBatchId: laterBatch.id,
-      rowProgressId: marchProgressId,
-      sequence: 3,
-      entityType: 'MasterCallList',
-      entityId: laterCallList.id,
-      ccmId,
-      operation: 'CREATE',
-      before: {},
-      after: importSnapshot(laterCallList),
-    });
-    await transaction.importRowProgress.update({
-      where: { id: marchProgressId },
-      data: { loggedChangeCount: 2 },
-    });
-    await transaction.importRowProgress.update({
-      where: { id: aprilProgressId },
-      data: { loggedChangeCount: 1 },
-    });
-
-    const allocation = await transaction.allocation.create({
-      data: { id: fixtureIds.allocations[0], vehicleId: vehicle.id, ccmId, serviceType: 'integration-test' },
-    });
-    const milestone = await transaction.freeServiceMilestone.create({
-      data: {
-        id: fixtureIds.milestones[0],
-        vehicleId: vehicle.id,
-        milestone: 1,
-        dueDate: new Date('2026-04-01T00:00:00.000Z'),
-      },
-    });
-    const call = await transaction.callLog.create({
-      data: {
-        id: fixtureIds.calls[0],
-        customerId: customer.id,
-        vehicleId: vehicle.id,
-        milestoneId: milestone.id,
-        outcome: 'NO_RESPONSE',
-      },
-    });
-    const followUp = await transaction.followUp.create({
-      data: {
-        id: fixtureIds.followUps[0],
-        customerId: customer.id,
-        vehicleId: vehicle.id,
-        milestoneId: milestone.id,
-        followUpAt: new Date('2026-04-02T00:00:00.000Z'),
-        category: 'integration-test',
-      },
-    });
-    const appointment = await transaction.appointment.create({
-      data: {
-        id: fixtureIds.appointments[0],
-        customerId: customer.id,
-        vehicleId: vehicle.id,
-        customerName: customer.fullName,
-        vehicleName: vehicle.model || 'Integration vehicle',
-        scheduledAt: new Date('2026-04-03T00:00:00.000Z'),
-      },
-    });
-    const appointmentEvent = await transaction.appointmentEvent.create({
-      data: {
-        id: fixtureIds.appointmentEvents[0],
-        appointmentId: appointment.id,
-        eventType: 'integration-test',
-      },
-    });
-    const ownership = await transaction.vehicleOwnershipHistory.create({
-      data: { id: fixtureIds.ownership[0], vehicleId: vehicle.id, reason: 'integration-test' },
-    });
-    const dataset = await transaction.monthlyCustomerDataset.create({
-      data: {
-        id: fixtureIds.monthlyDatasets[0],
-        ccmId: next('monthly-ccm'),
-        year: 2026,
-        month: 10,
-      },
-    });
-    const monthlyEntry = await transaction.monthlyCustomerDataEntry.create({
-      data: {
-        id: fixtureIds.monthlyEntries[0],
-        datasetId: dataset.id,
-        customerId: customer.id,
-        vehicleId: vehicle.id,
-        dedupeKey: next('monthly-dedupe'),
-        customerName: customer.fullName,
-        mobileNumber: customer.mobileNumber || '',
-        vin: vehicle.vin,
-      },
-    });
-    const conflictReview = await transaction.vINConflictReview.create({
-      data: {
-        id: fixtureIds.vinReviews[0],
-        vin: vehicle.vin,
-        sourceCcmId: ccmId,
-        targetCcmId: next('target-ccm'),
-        reason: 'integration-test',
-      },
-    });
-
-    return {
-      customer, vehicle, repairOrder, targetCallList, laterCallList, laterVisitRecords,
-      allocation, milestone, call, followUp, appointment, appointmentEvent,
-      ownership, dataset, monthlyEntry, conflictReview,
-    };
+      ['WorkshopVisit', visit, 'CREATE', {}, visit],
+    ]);
+    return { customer, vehicle, visit };
   });
-  return { admin, targetBatch, laterBatch, previousCustomer, created };
 }
 
 async function cleanupFixture() {
   await prisma.auditLog.deleteMany({
     where: {
       OR: [
-        { entityId: { in: fixtureIds.batches } },
-        { userId: fixtureIds.user },
+        { entityId: { in: fixture.batchIds } },
+        { userId: { in: fixture.userIds } },
       ],
     },
   });
-  await prisma.appointmentEvent.deleteMany({ where: { id: { in: fixtureIds.appointmentEvents } } });
-  await prisma.callLog.deleteMany({ where: { id: { in: fixtureIds.calls } } });
-  await prisma.followUp.deleteMany({ where: { id: { in: fixtureIds.followUps } } });
-  await prisma.appointment.deleteMany({ where: { id: { in: fixtureIds.appointments } } });
-  await prisma.allocation.deleteMany({ where: { id: { in: fixtureIds.allocations } } });
-  await prisma.vehicleOwnershipHistory.deleteMany({ where: { id: { in: fixtureIds.ownership } } });
-  await prisma.monthlyCustomerDataEntry.deleteMany({ where: { id: { in: fixtureIds.monthlyEntries } } });
-  await prisma.workshopVisit.deleteMany({ where: { id: { in: fixtureIds.visits } } });
-  await prisma.masterCallList.deleteMany({ where: { id: { in: fixtureIds.callLists } } });
-  await prisma.freeServiceMilestone.deleteMany({ where: { id: { in: fixtureIds.milestones } } });
-  await prisma.vINConflictReview.deleteMany({ where: { id: { in: fixtureIds.vinReviews } } });
-  await prisma.importBatch.deleteMany({ where: { id: { in: fixtureIds.batches } } });
-  await prisma.vehicle.deleteMany({ where: { id: { in: fixtureIds.vehicles } } });
-  await prisma.customer.deleteMany({ where: { id: { in: fixtureIds.customers } } });
-  await prisma.monthlyCustomerDataset.deleteMany({ where: { id: { in: fixtureIds.monthlyDatasets } } });
-  await prisma.user.deleteMany({ where: { id: fixtureIds.user } });
+  await prisma.importRowError.deleteMany({ where: { id: { in: fixture.errorIds } } });
+  await prisma.callLog.deleteMany({
+    where: { OR: [{ id: { in: fixture.callIds } }, { customerId: { in: fixture.customerIds } }, { vehicleId: { in: fixture.vehicleIds } }] },
+  });
+  await prisma.followUp.deleteMany({
+    where: { OR: [{ customerId: { in: fixture.customerIds } }, { vehicleId: { in: fixture.vehicleIds } }] },
+  });
+  await prisma.appointment.deleteMany({
+    where: { OR: [{ customerId: { in: fixture.customerIds } }, { vehicleId: { in: fixture.vehicleIds } }] },
+  });
+  await prisma.allocation.deleteMany({ where: { vehicleId: { in: fixture.vehicleIds } } });
+  await prisma.vehicleOwnershipHistory.deleteMany({ where: { vehicleId: { in: fixture.vehicleIds } } });
+  await prisma.monthlyCustomerDataEntry.deleteMany({
+    where: { OR: [{ customerId: { in: fixture.customerIds } }, { vehicleId: { in: fixture.vehicleIds } }] },
+  });
+  await prisma.workshopVisit.deleteMany({ where: { id: { in: fixture.visitIds } } });
+  await prisma.masterCallList.deleteMany({ where: { vin: { in: fixture.vehicleIds.map((id) => `${id}-vin`) } } });
+  await prisma.freeServiceMilestone.deleteMany({ where: { vehicleId: { in: fixture.vehicleIds } } });
+  await prisma.vINConflictReview.deleteMany({ where: { vin: { in: fixture.vehicleIds.map((id) => `${id}-vin`) } } });
+  await prisma.importBatch.deleteMany({ where: { id: { in: fixture.batchIds } } });
+  await prisma.vehicle.deleteMany({ where: { id: { in: fixture.vehicleIds } } });
+  await prisma.customer.deleteMany({ where: { id: { in: fixture.customerIds } } });
+  await prisma.user.deleteMany({ where: { id: { in: fixture.userIds } } });
+  for (const key of Object.keys(fixture)) fixture[key].length = 0;
 }
 
 afterEach(cleanupFixture);
 after(async () => { await prisma.$disconnect(); });
 
-test('PostgreSQL permanent deletion cascades dependencies, restores shared state, retains audit, and blocks re-creation on rollback', async () => {
-  const { admin, targetBatch, laterBatch, previousCustomer, created } = await seedCascadeFixture();
-  const preview = await previewPermanentImportDeletion(targetBatch.id);
+test('PostgreSQL deletes only target-created business records and retains import history and audit evidence', async () => {
+  const admin = await createAdmin();
+  const { batch, rowProgressId } = await createBatch('target-created', new Date('2020-01-01T00:00:00.000Z'), 3);
+  const ccmId = next('ccm');
+  const created = await createImportedCustomerVehicleVisit(batch, rowProgressId, ccmId);
+  await prisma.importRowError.create({
+    data: {
+      id: next('row-error'),
+      importBatchId: batch.id,
+      rowNumber: 3,
+      errorCode: 'TEST_RETAINED',
+      errorMessage: 'Integration history retention check',
+    },
+  }).then(({ id }) => fixture.errorIds.push(id));
 
-  assert.equal(preview.fileName, targetBatch.fileName);
-  assert.equal(preview.directlyAffectedRecords, 4);
-  assert.equal(preview.laterImportBatchesAffected, 1);
-  assert.equal(preview.existingRecordsRestored, 1);
+  const preview = await previewPermanentImportDeletion(batch.id);
+  assert.equal(preview.willDelete.length, 3);
+  assert.equal(preview.blockers.length, 0);
   assert.ok(preview.confirmationToken);
-  assert.ok(preview.totalRecordsDeleted >= 13);
+  const result = await permanentlyDeleteImportBatch(batch.id, admin.id, preview.confirmationToken);
 
-  const result = await permanentlyDeleteImportBatch(targetBatch.id, admin.id, preview.confirmationToken);
-  assert.equal(result.status, 'permanently_deleted');
-
-  const [deletedCustomer, deletedVehicle, repairOrders, calls, followUps, appointments, callLists, allocations, ownership, milestone, monthlyEntry, restoredCustomer, retainedTargetBatch, retainedLaterBatch, retainedAudits, targetChanges, laterChanges] = await Promise.all([
+  const [customer, vehicle, visit, retainedBatch, changes, errors, audits] = await Promise.all([
     prisma.customer.findUnique({ where: { id: created.customer.id } }),
     prisma.vehicle.findUnique({ where: { id: created.vehicle.id } }),
-    prisma.workshopVisit.findMany({ where: { id: { in: fixtureIds.visits } } }),
-    prisma.callLog.findMany({ where: { id: { in: fixtureIds.calls } } }),
-    prisma.followUp.findMany({ where: { id: { in: fixtureIds.followUps } } }),
-    prisma.appointment.findMany({ where: { id: { in: fixtureIds.appointments } } }),
-    prisma.masterCallList.findMany({ where: { id: { in: fixtureIds.callLists } } }),
-    prisma.allocation.findMany({ where: { id: { in: fixtureIds.allocations } } }),
-    prisma.vehicleOwnershipHistory.findMany({ where: { id: { in: fixtureIds.ownership } } }),
-    prisma.freeServiceMilestone.findUnique({ where: { id: created.milestone.id } }),
-    prisma.monthlyCustomerDataEntry.findUnique({ where: { id: created.monthlyEntry.id } }),
-    prisma.customer.findUnique({ where: { id: previousCustomer.id } }),
-    prisma.importBatch.findUnique({ where: { id: targetBatch.id } }),
-    prisma.importBatch.findUnique({ where: { id: laterBatch.id } }),
-    prisma.auditLog.findMany({ where: { entityType: 'ImportBatch', entityId: targetBatch.id } }),
-    prisma.importChangeLog.findMany({ where: { importBatchId: targetBatch.id } }),
-    prisma.importChangeLog.findMany({ where: { importBatchId: laterBatch.id } }),
+    prisma.workshopVisit.findUnique({ where: { id: created.visit.id } }),
+    prisma.importBatch.findUnique({ where: { id: batch.id } }),
+    prisma.importChangeLog.findMany({ where: { importBatchId: batch.id } }),
+    prisma.importRowError.findMany({ where: { importBatchId: batch.id } }),
+    prisma.auditLog.findMany({ where: { entityType: 'ImportBatch', entityId: batch.id } }),
   ]);
-  assert.equal(deletedCustomer, null);
-  assert.equal(deletedVehicle, null);
-  assert.deepEqual(repairOrders, []);
-  assert.deepEqual(calls, []);
-  assert.deepEqual(followUps, []);
-  assert.deepEqual(appointments, []);
-  assert.deepEqual(callLists, []);
-  assert.deepEqual(allocations, []);
-  assert.deepEqual(ownership, []);
-  assert.equal(milestone, null);
-  assert.equal(monthlyEntry.customerId, null);
-  assert.equal(monthlyEntry.vehicleId, null);
-  assert.equal(restoredCustomer.fullName, 'Pre-existing customer');
-  assert.equal(restoredCustomer.updatedAt.toISOString(), previousCustomer.updatedAt.toISOString());
-  assert.equal(retainedTargetBatch.status, 'permanently_deleted');
-  assert.equal(retainedLaterBatch.status, 'completed');
-  assert.equal(retainedAudits.length, 1);
-  assert.equal(retainedAudits[0].userId, admin.id);
-  assert.equal(retainedAudits[0].action, 'REPAIR_ORDER_IMPORT_PERMANENTLY_DELETED');
-  assert.ok(targetChanges.every(({ rollbackStatus }) => rollbackStatus === 'permanently_deleted'));
-  assert.equal(laterChanges.filter(({ rollbackStatus }) => rollbackStatus === 'permanently_deleted').length, 3);
+  assert.equal(result.status, 'permanently_deleted');
+  assert.equal(customer, null);
+  assert.equal(vehicle, null);
+  assert.equal(visit, null);
+  assert.equal(retainedBatch.status, 'permanently_deleted');
+  assert.equal(changes.length, 3);
+  assert.ok(changes.every(({ rollbackStatus }) => rollbackStatus === 'pending'));
+  assert.equal(errors.length, 1);
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0].action, 'REPAIR_ORDER_IMPORT_PERMANENTLY_DELETED');
 
-  const rollback = await rollbackImportBatch(laterBatch.id, admin.id);
-  assert.equal(rollback.batch.status, 'rolled_back');
-  assert.equal(rollback.reversedChanges, 0);
-  assert.deepEqual(await prisma.workshopVisit.findMany({ where: { id: { in: fixtureIds.visits } } }), []);
+  const replacementCustomer = await prisma.customer.create({
+    data: { id: next('replacement-customer'), customerCode: next('replacement-code'), fullName: 'Replacement', mobileNumber: '9000000001', ccmId },
+  });
+  fixture.customerIds.push(replacementCustomer.id);
+  const replacementVehicle = await prisma.vehicle.create({
+    data: {
+      id: next('replacement-vehicle'),
+      vin: created.vehicle.vin,
+      customerId: replacementCustomer.id,
+      ccmId,
+    },
+  });
+  fixture.vehicleIds.push(replacementVehicle.id);
+  const replacementVisit = await prisma.workshopVisit.create({
+    data: {
+      id: next('replacement-visit'),
+      ...repairOrderIdentity(created.visit.repairOrderNo),
+      customerId: replacementCustomer.id,
+      vehicleId: replacementVehicle.id,
+      ccmId,
+    },
+  });
+  fixture.visitIds.push(replacementVisit.id);
 });
 
-test('PostgreSQL permanent deletion tolerates already-missing imported customer and vehicle records', async () => {
-  const { admin, targetBatch, previousCustomer, created } = await seedCascadeFixture();
-  await prisma.$transaction(async (transaction) => {
-    await transaction.appointmentEvent.deleteMany({ where: { id: { in: fixtureIds.appointmentEvents } } });
-    await transaction.callLog.deleteMany({ where: { id: { in: fixtureIds.calls } } });
-    await transaction.followUp.deleteMany({ where: { id: { in: fixtureIds.followUps } } });
-    await transaction.appointment.deleteMany({ where: { id: { in: fixtureIds.appointments } } });
-    await transaction.vehicleOwnershipHistory.deleteMany({ where: { id: { in: fixtureIds.ownership } } });
-    await transaction.allocation.deleteMany({ where: { id: { in: fixtureIds.allocations } } });
-    await transaction.workshopVisit.deleteMany({ where: { id: { in: fixtureIds.visits } } });
-    await transaction.masterCallList.deleteMany({ where: { id: { in: fixtureIds.callLists } } });
-    await transaction.monthlyCustomerDataEntry.deleteMany({ where: { id: { in: fixtureIds.monthlyEntries } } });
-    await transaction.freeServiceMilestone.deleteMany({ where: { id: { in: fixtureIds.milestones } } });
-    await transaction.vINConflictReview.deleteMany({ where: { id: { in: fixtureIds.vinReviews } } });
-    await transaction.vehicle.delete({ where: { id: created.vehicle.id } });
-    await transaction.customer.delete({ where: { id: created.customer.id } });
+test('PostgreSQL preserves pre-existing customer history and unrelated later vehicle fields', async () => {
+  const admin = await createAdmin();
+  const targetDate = new Date('2020-02-01T00:00:00.000Z');
+  const laterDate = new Date('2021-02-01T00:00:00.000Z');
+  const ccmId = next('ccm');
+  const customer = await prisma.customer.create({
+    data: { id: next('existing-customer'), customerCode: next('existing-code'), fullName: 'Pre-existing', mobileNumber: next('mobile'), ccmId },
+  });
+  fixture.customerIds.push(customer.id);
+  const vehicle = await prisma.vehicle.create({
+    data: {
+      id: next('existing-vehicle'),
+      vin: next('existing-vin'),
+      customerId: customer.id,
+      ccmId,
+      saleDate: new Date('2020-01-01T00:00:00.000Z'),
+      model: 'i20',
+    },
+  });
+  fixture.vehicleIds.push(vehicle.id);
+  const unrelatedVisit = await prisma.workshopVisit.create({
+    data: {
+      id: next('unrelated-visit'),
+      ...repairOrderIdentity(next('unrelated-ro')),
+      customerId: customer.id,
+      vehicleId: vehicle.id,
+      ccmId,
+    },
+  });
+  fixture.visitIds.push(unrelatedVisit.id);
+  const target = await createBatch('target-update', targetDate, 2);
+  const targetChange = await prisma.$transaction(async (transaction) => {
+    const visit = await transaction.workshopVisit.create({
+      data: {
+        id: next('target-visit'),
+        ...repairOrderIdentity(next('target-ro')),
+        customerId: customer.id,
+        vehicleId: vehicle.id,
+        ccmId,
+      },
+    });
+    fixture.visitIds.push(visit.id);
+    const updatedVehicle = await transaction.vehicle.update({
+      where: { id: vehicle.id },
+      data: { saleDate: new Date('2020-03-01T00:00:00.000Z') },
+    });
+    await addChanges(transaction, target.batch.id, target.rowProgressId, ccmId, [
+      ['WorkshopVisit', visit, 'CREATE', {}, visit],
+      ['Vehicle', updatedVehicle, 'UPDATE', {
+        saleDate: vehicle.saleDate,
+        updatedAt: vehicle.updatedAt,
+      }, {
+        saleDate: updatedVehicle.saleDate,
+        updatedAt: updatedVehicle.updatedAt,
+      }],
+    ]);
+    return { visit, vehicle: updatedVehicle };
   });
 
-  const preview = await previewPermanentImportDeletion(targetBatch.id);
-  assert.deepEqual(
-    preview.recordsAlreadyAbsent.map(({ entityType }) => entityType),
-    ['Customer', 'MasterCallList', 'Vehicle', 'WorkshopVisit'],
-  );
-  assert.equal(preview.directlyAffectedRecords, 0);
-  const result = await permanentlyDeleteImportBatch(targetBatch.id, admin.id, preview.confirmationToken);
+  const later = await createBatch('later-independent-update', laterDate, 2);
+  const laterVisit = await prisma.$transaction(async (transaction) => {
+    const visit = await transaction.workshopVisit.create({
+      data: {
+        id: next('later-visit'),
+        ...repairOrderIdentity(next('later-ro')),
+        customerId: customer.id,
+        vehicleId: vehicle.id,
+        ccmId,
+      },
+    });
+    fixture.visitIds.push(visit.id);
+    const updatedVehicle = await transaction.vehicle.update({
+      where: { id: vehicle.id },
+      data: { model: 'Venue' },
+    });
+    await addChanges(transaction, later.batch.id, later.rowProgressId, ccmId, [
+      ['WorkshopVisit', visit, 'CREATE', {}, visit],
+      ['Vehicle', updatedVehicle, 'UPDATE', {
+        model: vehicle.model,
+        updatedAt: targetChange.vehicle.updatedAt,
+      }, {
+        model: updatedVehicle.model,
+        updatedAt: updatedVehicle.updatedAt,
+      }],
+    ]);
+    return visit;
+  });
 
-  const [retainedCustomer, retainedBatch, audits, changes] = await Promise.all([
-    prisma.customer.findUnique({ where: { id: previousCustomer.id } }),
-    prisma.importBatch.findUnique({ where: { id: targetBatch.id } }),
-    prisma.auditLog.findMany({ where: { entityType: 'ImportBatch', entityId: targetBatch.id } }),
-    prisma.importChangeLog.findMany({ where: { importBatchId: targetBatch.id } }),
+  const preview = await previewPermanentImportDeletion(target.batch.id);
+  assert.equal(preview.blockers.length, 0);
+  assert.deepEqual(preview.willRestore[0].fields.saleDate, {
+    before: '2020-01-01T00:00:00.000Z',
+    current: '2020-03-01T00:00:00.000Z',
+  });
+  await permanentlyDeleteImportBatch(target.batch.id, admin.id, preview.confirmationToken);
+
+  const [retainedCustomer, restoredVehicle, visits, laterLogs] = await Promise.all([
+    prisma.customer.findUnique({ where: { id: customer.id } }),
+    prisma.vehicle.findUnique({ where: { id: vehicle.id } }),
+    prisma.workshopVisit.findMany({ where: { id: { in: [unrelatedVisit.id, targetChange.visit.id, laterVisit.id] } } }),
+    prisma.importChangeLog.findMany({ where: { importBatchId: later.batch.id } }),
   ]);
-  assert.equal(result.status, 'permanently_deleted');
-  assert.equal(retainedBatch.status, 'permanently_deleted');
-  assert.equal(retainedCustomer.fullName, 'Pre-existing customer');
-  assert.equal(audits.length, 1);
-  assert.ok(changes.every(({ rollbackStatus }) => rollbackStatus === 'permanently_deleted'));
-  assert.equal(await prisma.importBatch.count({ where: { id: targetBatch.id } }), 1);
+  assert.equal(retainedCustomer.id, customer.id);
+  assert.equal(restoredVehicle.saleDate.toISOString(), '2020-01-01T00:00:00.000Z');
+  assert.equal(restoredVehicle.model, 'Venue');
+  assert.deepEqual(visits.map(({ id }) => id).sort(), [unrelatedVisit.id, laterVisit.id].sort());
+  assert.equal(laterLogs.length, 2);
+  assert.ok(laterLogs.every(({ rollbackStatus }) => rollbackStatus === 'pending'));
 });
 
-test('PostgreSQL rolls back every deletion and restoration when a dependent delete fails', async () => {
-  const { admin, targetBatch, previousCustomer, created } = await seedCascadeFixture();
-  const preview = await previewPermanentImportDeletion(targetBatch.id);
-  const originalUpdatedCustomer = await prisma.customer.findUnique({ where: { id: previousCustomer.id } });
-  const originalTargetBatch = await prisma.importBatch.findUnique({ where: { id: targetBatch.id } });
+test('PostgreSQL blocks invalidated cross-batch evidence without independent reversal proof', async () => {
+  const ccmId = next('ccm');
+  const customer = await prisma.customer.create({
+    data: {
+      id: next('existing-customer'),
+      customerCode: next('existing-code'),
+      fullName: 'Cross-batch evidence customer',
+      mobileNumber: next('mobile'),
+      ccmId,
+    },
+  });
+  fixture.customerIds.push(customer.id);
+  const vehicle = await prisma.vehicle.create({
+    data: {
+      id: next('existing-vehicle'),
+      vin: next('existing-vin'),
+      customerId: customer.id,
+      ccmId,
+      saleDate: new Date('2020-01-01T00:00:00.000Z'),
+      model: 'i20',
+    },
+  });
+  fixture.vehicleIds.push(vehicle.id);
 
-  await assert.rejects(
-    permanentlyDeleteImportBatch(
-      targetBatch.id,
-      admin.id,
-      preview.confirmationToken,
-      transactionThatFailsAtVehicleDelete(prisma),
-    ),
-    /Injected failure at vehicle deletion/,
-  );
+  const target = await createBatch('target-invalidated-cross-batch', new Date('2020-05-01T00:00:00.000Z'), 2, 'appended');
+  const targetVisit = await prisma.$transaction(async (transaction) => {
+    const visit = await transaction.workshopVisit.create({
+      data: {
+        id: next('target-visit'),
+        ...repairOrderIdentity(next('target-ro')),
+        customerId: customer.id,
+        vehicleId: vehicle.id,
+        ccmId,
+      },
+    });
+    fixture.visitIds.push(visit.id);
+    const updatedVehicle = await transaction.vehicle.update({
+      where: { id: vehicle.id },
+      data: { saleDate: new Date('2020-03-01T00:00:00.000Z') },
+    });
+    await addChanges(transaction, target.batch.id, target.rowProgressId, ccmId, [
+      ['WorkshopVisit', visit, 'CREATE', {}, visit],
+      ['Vehicle', updatedVehicle, 'UPDATE', {
+        saleDate: vehicle.saleDate,
+        updatedAt: vehicle.updatedAt,
+      }, {
+        saleDate: updatedVehicle.saleDate,
+        updatedAt: updatedVehicle.updatedAt,
+      }],
+    ]);
+    return visit;
+  });
 
-  const [customer, vehicle, visits, callList, call, appointment, monthlyEntry, updatedCustomer, currentBatch, auditCount, changeStates] = await Promise.all([
+  const later = await createBatch('later-invalidated-cross-batch', new Date('2021-05-01T00:00:00.000Z'), 2, 'appended');
+  const laterVisit = await prisma.$transaction(async (transaction) => {
+    const visit = await transaction.workshopVisit.create({
+      data: {
+        id: next('later-visit'),
+        ...repairOrderIdentity(next('later-ro')),
+        customerId: customer.id,
+        vehicleId: vehicle.id,
+        ccmId,
+      },
+    });
+    fixture.visitIds.push(visit.id);
+    const updatedVehicle = await transaction.vehicle.update({
+      where: { id: vehicle.id },
+      data: { model: 'Venue' },
+    });
+    await addChanges(transaction, later.batch.id, later.rowProgressId, ccmId, [
+      ['WorkshopVisit', visit, 'CREATE', {}, visit],
+      ['Vehicle', updatedVehicle, 'UPDATE', {
+        model: vehicle.model,
+        updatedAt: (await transaction.importChangeLog.findFirst({
+          where: { importBatchId: target.batch.id, entityType: 'Vehicle', entityId: vehicle.id },
+          select: { after: true },
+        })).after.updatedAt,
+      }, {
+        model: updatedVehicle.model,
+        updatedAt: updatedVehicle.updatedAt,
+      }],
+    ]);
+    return visit;
+  });
+
+  await prisma.$transaction(async (transaction) => {
+    await transaction.importChangeLog.updateMany({
+      where: { importBatchId: later.batch.id },
+      data: {
+        rollbackStatus: 'rolled_back',
+        rolledBackAt: new Date(),
+        rollbackError: 'Integration test: reversal is not independently verified.',
+      },
+    });
+    await transaction.importBatch.update({
+      where: { id: later.batch.id },
+      data: { status: 'rolled_back' },
+    });
+  });
+
+  const preview = await previewPermanentImportDeletion(target.batch.id);
+  assert.equal(preview.confirmationToken, null);
+  const blocker = preview.blockers.find(({ code }) => code === 'cross-batch-reversal-unverified');
+  assert.ok(blocker);
+  assert.equal(blocker.importBatchId, later.batch.id);
+  assert.ok(blocker.changeLogId);
+  assert.match(blocker.message, /cannot be independently verified/);
+  assert.ok(await prisma.workshopVisit.findUnique({ where: { id: targetVisit.id } }));
+  assert.ok(await prisma.workshopVisit.findUnique({ where: { id: laterVisit.id } }));
+});
+
+test('PostgreSQL concurrent confirmations apply permanent deletion at most once', async () => {
+  const admin = await createAdmin();
+  const { batch, rowProgressId } = await createBatch('target-concurrent', new Date('2020-06-01T00:00:00.000Z'), 3);
+  const created = await createImportedCustomerVehicleVisit(batch, rowProgressId, next('ccm'));
+  const preview = await previewPermanentImportDeletion(batch.id);
+  assert.ok(preview.confirmationToken);
+
+  const results = await Promise.allSettled([
+    permanentlyDeleteImportBatch(batch.id, admin.id, preview.confirmationToken),
+    permanentlyDeleteImportBatch(batch.id, admin.id, preview.confirmationToken),
+  ]);
+  const applied = results.filter((result) => result.status === 'fulfilled' && !result.value.alreadyDeleted);
+  assert.equal(applied.length, 1);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      assert.ok(result.reason.code === 'P2034'
+        || result.reason.meta?.code === '40001'
+        || result.reason.meta?.driverAdapterError?.cause?.originalCode === '40001');
+    }
+  }
+  const [customer, vehicle, visit, currentBatch] = await Promise.all([
     prisma.customer.findUnique({ where: { id: created.customer.id } }),
     prisma.vehicle.findUnique({ where: { id: created.vehicle.id } }),
-    prisma.workshopVisit.findMany({ where: { id: { in: fixtureIds.visits } } }),
-    prisma.masterCallList.findMany({ where: { id: { in: fixtureIds.callLists } } }),
-    prisma.callLog.findUnique({ where: { id: created.call.id } }),
-    prisma.appointment.findUnique({ where: { id: created.appointment.id } }),
-    prisma.monthlyCustomerDataEntry.findUnique({ where: { id: created.monthlyEntry.id } }),
-    prisma.customer.findUnique({ where: { id: previousCustomer.id } }),
-    prisma.importBatch.findUnique({ where: { id: targetBatch.id } }),
-    prisma.auditLog.count({ where: { entityType: 'ImportBatch', entityId: targetBatch.id } }),
-    prisma.importChangeLog.findMany({ where: { importBatchId: targetBatch.id } }),
+    prisma.workshopVisit.findUnique({ where: { id: created.visit.id } }),
+    prisma.importBatch.findUnique({ where: { id: batch.id } }),
   ]);
-  assert.ok(customer);
-  assert.ok(vehicle);
-  assert.equal(visits.length, 3);
-  assert.equal(callList.length, 2);
-  assert.ok(call);
-  assert.ok(appointment);
-  assert.equal(monthlyEntry.customerId, customer.id);
-  assert.equal(monthlyEntry.vehicleId, vehicle.id);
-  assert.equal(updatedCustomer.fullName, originalUpdatedCustomer.fullName);
-  assert.equal(updatedCustomer.updatedAt.toISOString(), originalUpdatedCustomer.updatedAt.toISOString());
-  assert.equal(currentBatch.status, originalTargetBatch.status);
-  assert.equal(auditCount, 0);
-  assert.ok(changeStates.every(({ rollbackStatus }) => rollbackStatus === 'pending'));
+  assert.equal(customer, null);
+  assert.equal(vehicle, null);
+  assert.equal(visit, null);
+  assert.equal(currentBatch.status, 'permanently_deleted');
 });
 
-test('PostgreSQL rejects a stale deletion preview when dependent records change', async () => {
-  const { admin, targetBatch, created } = await seedCascadeFixture();
-  const preview = await previewPermanentImportDeletion(targetBatch.id);
-  const lateCallId = next('late-call');
-  fixtureIds.calls.push(lateCallId);
-  await prisma.callLog.create({
+test('PostgreSQL blocks CRM workflow references and rejects stale previews without deleting business records', async () => {
+  const admin = await createAdmin();
+  const { batch, rowProgressId } = await createBatch('target-stale', new Date('2020-03-01T00:00:00.000Z'), 3);
+  const created = await createImportedCustomerVehicleVisit(batch, rowProgressId, next('ccm'));
+  const preview = await previewPermanentImportDeletion(batch.id);
+  assert.ok(preview.confirmationToken);
+
+  const call = await prisma.callLog.create({
     data: {
-      id: lateCallId,
+      id: next('late-call'),
       customerId: created.customer.id,
       vehicleId: created.vehicle.id,
       outcome: 'NO_RESPONSE',
     },
   });
+  fixture.callIds.push(call.id);
 
+  const blockedPreview = await previewPermanentImportDeletion(batch.id);
+  assert.equal(blockedPreview.confirmationToken, null);
+  assert.ok(blockedPreview.blockers.some(({ code }) => code === 'crm-workflow-reference'));
   await assert.rejects(
-    permanentlyDeleteImportBatch(targetBatch.id, admin.id, preview.confirmationToken),
-    /scope changed after preview/,
+    permanentlyDeleteImportBatch(batch.id, admin.id, preview.confirmationToken),
+    /blocked|changed/i,
   );
   assert.ok(await prisma.customer.findUnique({ where: { id: created.customer.id } }));
-  assert.ok(await prisma.callLog.findUnique({ where: { id: lateCallId } }));
-  assert.equal((await prisma.importBatch.findUnique({ where: { id: targetBatch.id } })).status, 'completed');
-  assert.equal(await prisma.auditLog.count({ where: { entityId: targetBatch.id } }), 0);
+  assert.ok(await prisma.callLog.findUnique({ where: { id: call.id } }));
+  assert.equal((await prisma.importBatch.findUnique({ where: { id: batch.id } })).status, 'completed');
 });
 
-test('concurrent PostgreSQL permanent deletions serialize and retain one audit record', async () => {
-  const { admin, targetBatch } = await seedCascadeFixture();
-  const preview = await previewPermanentImportDeletion(targetBatch.id);
-  const attempts = await Promise.allSettled([
-    permanentlyDeleteImportBatch(targetBatch.id, admin.id, preview.confirmationToken),
-    permanentlyDeleteImportBatch(targetBatch.id, admin.id, preview.confirmationToken),
-  ]);
-  const succeeded = attempts.filter(({ status }) => status === 'fulfilled');
-  assert.equal(succeeded.length, 1);
-  const rejected = attempts.find(({ status }) => status === 'rejected');
-  assert.ok(rejected, 'One concurrent deletion must be rejected.');
-  assert.ok(
-    rejected.reason.code === 'P2034'
-      || (rejected.reason.code === 'P2010' && rejected.reason.meta?.code === '40001')
-      || (rejected.reason.code === 'P2010'
-        && rejected.reason.meta?.driverAdapterError?.cause?.originalCode === '40001')
-      || rejected.reason.name === 'PermanentImportDeletionConflict',
-    `Unexpected concurrent deletion error: ${rejected.reason.name} ${rejected.reason.code || ''} ${JSON.stringify(rejected.reason.meta)} ${rejected.reason.message}`,
-  );
+test('PostgreSQL transaction failure rolls back every deletion and batch status change', async () => {
+  const admin = await createAdmin();
+  const { batch, rowProgressId } = await createBatch('target-rollback', new Date('2020-04-01T00:00:00.000Z'), 3);
+  const created = await createImportedCustomerVehicleVisit(batch, rowProgressId, next('ccm'));
+  const preview = await previewPermanentImportDeletion(batch.id);
+  const failingDatabase = {
+    $transaction(callback, options) {
+      return prisma.$transaction((transaction) => callback(new Proxy(transaction, {
+        get(target, property) {
+          const delegate = Reflect.get(target, property, target);
+          if (property === 'vehicle') {
+            return new Proxy(delegate, {
+              get(table, method) {
+                if (method === 'deleteMany') return async () => { throw new Error('Injected vehicle deletion failure.'); };
+                const value = Reflect.get(table, method, table);
+                return typeof value === 'function' ? value.bind(table) : value;
+              },
+            });
+          }
+          return typeof delegate === 'function' ? delegate.bind(target) : delegate;
+        },
+      })), options);
+    },
+  };
 
-  const retry = await permanentlyDeleteImportBatch(targetBatch.id, admin.id, preview.confirmationToken);
-  assert.equal(retry.alreadyDeleted, true);
-  assert.equal(await prisma.auditLog.count({
-    where: { entityType: 'ImportBatch', entityId: targetBatch.id, action: 'REPAIR_ORDER_IMPORT_PERMANENTLY_DELETED' },
-  }), 1);
-  assert.equal(await prisma.customer.count({ where: { id: `${prefix}_imported` } }), 0);
+  await assert.rejects(
+    permanentlyDeleteImportBatch(batch.id, admin.id, preview.confirmationToken, failingDatabase),
+    /Injected vehicle deletion failure/,
+  );
+  const [customer, vehicle, visit, currentBatch, audits] = await Promise.all([
+    prisma.customer.findUnique({ where: { id: created.customer.id } }),
+    prisma.vehicle.findUnique({ where: { id: created.vehicle.id } }),
+    prisma.workshopVisit.findUnique({ where: { id: created.visit.id } }),
+    prisma.importBatch.findUnique({ where: { id: batch.id } }),
+    prisma.auditLog.findMany({ where: { entityType: 'ImportBatch', entityId: batch.id } }),
+  ]);
+  assert.ok(customer);
+  assert.ok(vehicle);
+  assert.ok(visit);
+  assert.equal(currentBatch.status, 'completed');
+  assert.equal(audits.length, 0);
 });

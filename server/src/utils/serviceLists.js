@@ -9,18 +9,27 @@ import {
   warrantyExpiryDate,
 } from './serviceCalendar.js';
 import { getWorkshopTimezone } from './workshopTime.js';
+import { normalizeRepairOrderNo } from './repairOrderIdentity.js';
 
 export function filterMilestoneCompletionByVisits(milestones, records) {
-  const visitsByVehicle = new Map(records.map((record) => [
-    record.vehicleId,
-    new Set((record.workshopVisits || []).map((visit) => visit.repairOrderNo)),
-  ]));
-  return milestones.map((milestone) => (
-    milestone.status !== 'completed'
-      || visitsByVehicle.get(milestone.vehicleId)?.has(milestone.completedByRepairOrderNo)
+  const visitsByVehicle = new Map(records.map((record) => [record.vehicleId, record.workshopVisits || []]));
+  return milestones.map((milestone) => {
+    if (milestone.status !== 'completed') return milestone;
+    const visits = visitsByVehicle.get(milestone.vehicleId) || [];
+    const completingVisitIsVisible = milestone.completedByWorkshopVisitId
+      ? visits.some((visit) => visit.id === milestone.completedByWorkshopVisitId)
+      : visits.filter((visit) => normalizeRepairOrderNo(visit.repairOrderNo)
+        === normalizeRepairOrderNo(milestone.completedByRepairOrderNo)).length === 1;
+    return completingVisitIsVisible
       ? milestone
-      : { ...milestone, status: 'pending', completedAt: null, completedByRepairOrderNo: null }
-  ));
+      : {
+        ...milestone,
+        status: 'pending',
+        completedAt: null,
+        completedByRepairOrderNo: null,
+        completedByWorkshopVisitId: null,
+      };
+  });
 }
 
 // Creates any missing milestone rows for vehicles with a valid sale date, keeps pending due dates
@@ -43,9 +52,16 @@ export async function syncFreeServiceMilestones(vehicles, db = prisma) {
         const visit = findCompletingVisit(dueDate, vehicle.workshopVisits);
         missing.push({
           vehicleId: vehicle.id,
+          physicalVehicleId: vehicle.physicalVehicleId,
           milestone,
           dueDate,
-          ...(visit ? { status: 'completed', completedAt: new Date(visit.visitDate), completedByRepairOrderNo: visit.repairOrderNo } : {}),
+          ...(visit ? {
+            status: 'completed',
+            completedAt: new Date(visit.visitDate),
+            completedByRepairOrderNo: visit.repairOrderNo,
+            completedByWorkshopVisitId: visit.id,
+            physicalVehicleId: vehicle.physicalVehicleId,
+          } : {}),
         });
         continue;
       }
@@ -57,7 +73,13 @@ export async function syncFreeServiceMilestones(vehicles, db = prisma) {
           where: { id: current.id },
           data: {
             dueDate,
-            ...(visit ? { status: 'completed', completedAt: new Date(visit.visitDate), completedByRepairOrderNo: visit.repairOrderNo } : {}),
+            ...(visit ? {
+              status: 'completed',
+              completedAt: new Date(visit.visitDate),
+              completedByRepairOrderNo: visit.repairOrderNo,
+              completedByWorkshopVisitId: visit.id,
+              physicalVehicleId: vehicle.physicalVehicleId,
+            } : {}),
           },
         }));
       }

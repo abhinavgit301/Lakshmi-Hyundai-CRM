@@ -39,6 +39,9 @@ export function validateCustomerPayload(payload = {}) {
 
     vehicles.push({
       vin,
+      ccmId: rawVehicle.ccmId == null || String(rawVehicle.ccmId).trim() === ''
+        ? null
+        : String(rawVehicle.ccmId).trim(),
       registrationNumber: rawVehicle.registrationNumber ? String(rawVehicle.registrationNumber).trim().toUpperCase() : null,
       make: rawVehicle.make ? String(rawVehicle.make).trim() : null,
       model: rawVehicle.model ? String(rawVehicle.model).trim() : null,

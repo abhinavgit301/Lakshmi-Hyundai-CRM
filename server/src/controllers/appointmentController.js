@@ -3,7 +3,7 @@ import { appointmentVisibilityWhere, normalizeAppointmentRole } from '../utils/a
 import { validateAppointmentPayload, validateAppointmentUpdate } from '../utils/appointmentRules.js';
 import { isVehicleAssignedToCre } from '../utils/creAccess.js';
 
-async function findBookableCustomer(customerId, user) {
+async function findBookableCustomer(customerId, user, vehicleId = null) {
   const customer = await prisma.customer.findUnique({
     where: { id: customerId },
     include: { vehicles: { include: { allocations: true, masterCallListEntries: true } } },
@@ -12,10 +12,21 @@ async function findBookableCustomer(customerId, user) {
 
   const role = normalizeAppointmentRole(user?.role);
   if (role === 'Admin' || role === 'GM') return customer;
-  if (!user?.ccmId || customer.ccmId !== user.ccmId) return null;
-  if (role === 'CCM') return customer;
+  if (!user?.ccmId) return null;
+  if (role === 'CCM') {
+    if (vehicleId) {
+      return customer.vehicles.some((vehicle) => vehicle.id === vehicleId && vehicle.ccmId === user.ccmId)
+        ? customer
+        : null;
+    }
+    return customer.ccmId === user.ccmId ? customer : null;
+  }
 
-  return customer.vehicles.some((vehicle) => isVehicleAssignedToCre(vehicle, user)) ? customer : null;
+  return customer.vehicles.some((vehicle) => (
+    (!vehicleId || vehicle.id === vehicleId)
+      && vehicle.ccmId === user.ccmId
+      && isVehicleAssignedToCre(vehicle, user)
+  )) ? customer : null;
 }
 
 async function validateAssignee(assigneeId, user, ccmId) {
@@ -45,7 +56,7 @@ export async function createAppointment(req, res) {
 
   const { customerId, customerName, vehicleName, vehicleId, assigneeId, scheduledAt, confirmationCall } = validation.value;
   const customerlessAppointment = role === 'FREE_SERVICE_CRE';
-  const customer = customerlessAppointment ? null : await findBookableCustomer(customerId, req.user);
+  const customer = customerlessAppointment ? null : await findBookableCustomer(customerId, req.user, vehicleId);
   if (!customerlessAppointment && !customer) return res.status(404).json({ message: 'Customer not found.' });
 
   let vehicle = null;
@@ -54,9 +65,9 @@ export async function createAppointment(req, res) {
     if (!vehicle || vehicle.status !== 'ACTIVE') {
       return res.status(400).json({ message: 'Select an active vehicle belonging to this customer.' });
     }
-    if (vehicle.ccmId !== customer.ccmId
+    if (!vehicle.ccmId
       || (['CCM', 'CRE'].includes(role)
-        && (!req.user.ccmId || vehicle.ccmId !== req.user.ccmId || customer.ccmId !== req.user.ccmId))) {
+        && (!req.user.ccmId || vehicle.ccmId !== req.user.ccmId))) {
       return res.status(404).json({ message: 'Customer not found.' });
     }
     if (normalizeAppointmentRole(req.user.role) === 'CRE' && !isVehicleAssignedToCre(vehicle, req.user)) {
@@ -64,15 +75,15 @@ export async function createAppointment(req, res) {
     }
   }
 
+  const ccmId = vehicle?.ccmId || customer?.ccmId || req.user.ccmId || null;
   let assignedToId = assigneeId;
   if (role === 'CRE' || customerlessAppointment) assignedToId = req.user.id;
   if (assignedToId && !customerlessAppointment) {
-    const validatedAssignee = await validateAssignee(assignedToId, req.user, customer?.ccmId || req.user.ccmId);
+    const validatedAssignee = await validateAssignee(assignedToId, req.user, ccmId);
     if (validatedAssignee === false) return res.status(400).json({ message: "Assignee must be an active CRE in the customer's team." });
     assignedToId = validatedAssignee;
   }
 
-  const ccmId = customer?.ccmId || req.user.ccmId || null;
   const result = await prisma.$transaction(async (transaction) => {
     const appointment = await transaction.appointment.create({
       data: {
@@ -106,10 +117,25 @@ export async function deleteAppointment(req, res) {
   });
   if (!existing) return res.status(404).json({ message: 'Appointment not found.' });
 
-  await prisma.$transaction([
-    prisma.appointmentEvent.deleteMany({ where: { appointmentId: existing.id } }),
-    prisma.appointment.delete({ where: { id: existing.id } }),
-  ]);
+  await prisma.$transaction(async (transaction) => {
+    await transaction.appointment.update({
+      where: { id: existing.id },
+      data: { status: 'CANCELLED' },
+    });
+    const deletionEvent = await transaction.appointmentEvent.findFirst({
+      where: { appointmentId: existing.id, eventType: 'DELETED' },
+      select: { id: true },
+    });
+    if (!deletionEvent) {
+      await transaction.appointmentEvent.create({
+        data: {
+          appointmentId: existing.id,
+          eventType: 'DELETED',
+          notes: `Appointment removed by ${req.user.name || req.user.id}.`,
+        },
+      });
+    }
+  });
 
   return res.json({ id: existing.id });
 }

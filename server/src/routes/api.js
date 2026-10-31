@@ -16,7 +16,17 @@ import { createAppointment, deleteAppointment, updateAppointment } from '../cont
 import { getWorkshopPerformance } from '../controllers/workshopPerformanceController.js';
 import { getWorkshopServicePerformance } from '../controllers/workshopServicePerformanceController.js';
 import { exportWorkshopPerformancePdf, exportReportsPdf } from '../controllers/pdfExportController.js';
-import { deleteImport, getImportHistory, importRepairOrders, permanentlyDeleteImport, previewPermanentDeletion, recoverImport } from '../controllers/importController.js';
+import {
+  cleanupLegacyImportHandler,
+  deleteImport,
+  getImportHistory,
+  getLegacyImportReconciliation,
+  importRepairOrders,
+  permanentlyDeleteImport,
+  previewLegacyImportCleanupHandler,
+  previewPermanentDeletion,
+  recoverImport,
+} from '../controllers/importController.js';
 import { createAllocation, listAllocations, updateAllocation } from '../controllers/allocationController.js';
 import {
   createMonthlyCustomerEntry,
@@ -104,6 +114,9 @@ router.post('/follow-ups', authMiddleware, requireRole('CCM', 'CRE'), createFoll
 router.patch('/follow-ups/:id/status', authMiddleware, requireRole('CCM', 'CRE'), updateFollowUpStatus);
 
 router.get('/imports/history', authMiddleware, requireRole('Admin', 'GM', 'CCM'), getImportHistory);
+router.get('/imports/legacy-reconciliation', authMiddleware, requireRole('Admin'), getLegacyImportReconciliation);
+router.get('/imports/:id/legacy-cleanup/preview', authMiddleware, requireRole('Admin'), previewLegacyImportCleanupHandler);
+router.delete('/imports/:id/legacy-cleanup', authMiddleware, requireRole('Admin'), cleanupLegacyImportHandler);
 router.post('/imports/repair-orders', authMiddleware, requireRole('Admin', 'GM', 'CCM'), importRepairOrders);
 router.delete('/imports/:id', authMiddleware, requireRole('Admin'), deleteImport);
 router.get('/imports/:id/permanent-deletion/preview', authMiddleware, requireRole('Admin'), previewPermanentDeletion);

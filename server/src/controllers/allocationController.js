@@ -2,6 +2,8 @@ import { prisma } from '../config/prisma.js';
 import { validateAllocationPayload, validateAllocationUpdate } from '../utils/allocationRules.js';
 import { clearStaleMasterCallListOwner } from '../utils/allocationAccess.js';
 import { lockCcmAllocationTeam } from '../utils/customerAllocation.js';
+import { recordCreAssignmentEvent, validateAssignmentReason } from '../utils/creAssignmentHistory.js';
+import { findCanonicalMasterCallListEntry } from '../utils/masterCallList.js';
 
 function roleName(role) {
   const value = String(role || '').toUpperCase();
@@ -34,22 +36,44 @@ async function findActiveCcm(ccmId) {
 }
 
 // Keeps the Master Call List owner in step with the allocated CRE, creating the entry only if it is missing.
-async function syncMasterCallListOwner(transaction, vehicle, ccmId, creId) {
-  const existing = await transaction.masterCallList.findFirst({ where: { vin: vehicle.vin, ccmId }, select: { id: true } });
+async function syncMasterCallListOwner(transaction, vehicle, ccmId, creId, actorUserId, reason = null) {
+  const existing = await findCanonicalMasterCallListEntry(transaction, vehicle.vin, ccmId);
   if (existing) {
-    await transaction.masterCallList.update({ where: { id: existing.id }, data: { ownerUserId: creId } });
+    const previousCreId = existing.ownerUserId;
+    await transaction.masterCallList.update({
+      where: { id: existing.id },
+      data: { vehicleId: vehicle.id, ownerUserId: creId, assignmentNeedsReview: false },
+    });
+    await recordCreAssignmentEvent(transaction, {
+      vehicleId: vehicle.id,
+      masterCallListId: existing.id,
+      ccmId,
+      previousCreId,
+      newCreId: creId,
+      actorUserId,
+      reason,
+    });
     return;
   }
   if (!vehicle.customer?.mobileNumber) return;
-  await transaction.masterCallList.create({
+  const created = await transaction.masterCallList.create({
     data: {
       customerName: vehicle.customer.fullName,
       mobileNumber: vehicle.customer.mobileNumber,
       vin: vehicle.vin,
+      vehicleId: vehicle.id,
       registrationNumber: vehicle.registrationNumber,
       ccmId,
       ownerUserId: creId,
     },
+  });
+  await recordCreAssignmentEvent(transaction, {
+    vehicleId: vehicle.id,
+    masterCallListId: created.id,
+    ccmId,
+    newCreId: creId,
+    actorUserId,
+    reason,
   });
 }
 
@@ -77,6 +101,9 @@ export async function listAllocations(req, res) {
 export async function createAllocation(req, res) {
   const validation = validateAllocationPayload(req.body);
   if (validation.error) return res.status(400).json({ message: validation.error });
+  const reasonValidation = validateAssignmentReason(req.body?.reason);
+  if (reasonValidation.error) return res.status(400).json({ message: reasonValidation.error });
+  const reason = reasonValidation.value;
 
   const { vehicleId, creId, serviceType, category, notes } = validation.value;
   const vehicle = await prisma.vehicle.findUnique({
@@ -87,8 +114,8 @@ export async function createAllocation(req, res) {
 
   const role = roleName(req.user.role);
   const ccmId = vehicle.ccmId;
-  if (!ccmId || !vehicle.customer?.ccmId || vehicle.customer.ccmId !== ccmId) {
-    return res.status(409).json({ message: 'Vehicle and customer must have a consistent CCM owner before allocation.' });
+  if (!ccmId) {
+    return res.status(409).json({ message: 'Vehicle must have a CCM owner before allocation.' });
   }
   if (req.body?.ccmId && String(req.body.ccmId).trim() !== ccmId) {
     return res.status(400).json({ message: 'CCM must match the vehicle team.' });
@@ -110,7 +137,7 @@ export async function createAllocation(req, res) {
         customer: { select: { ccmId: true, fullName: true, mobileNumber: true } },
       },
     });
-    if (!currentVehicle || currentVehicle.ccmId !== ccmId || currentVehicle.customer?.ccmId !== ccmId) {
+    if (!currentVehicle || currentVehicle.ccmId !== ccmId) {
       return 'ownership-conflict';
     }
     const activeCre = await transaction.user.findFirst({
@@ -130,7 +157,15 @@ export async function createAllocation(req, res) {
         vehicle: { include: { customer: { select: { id: true, fullName: true, mobileNumber: true } } } },
       },
     });
-    await syncMasterCallListOwner(transaction, currentVehicle, ccmId, creId);
+    await recordCreAssignmentEvent(transaction, {
+      vehicleId: currentVehicle.id,
+      allocationId: created.id,
+      ccmId,
+      newCreId: creId,
+      actorUserId: req.user.id,
+      reason,
+    });
+    await syncMasterCallListOwner(transaction, currentVehicle, ccmId, creId, req.user.id, reason);
     await transaction.auditLog.create({
       data: {
         userId: req.user.id,
@@ -143,7 +178,7 @@ export async function createAllocation(req, res) {
     return created;
   });
   if (allocation === 'ownership-conflict') {
-    return res.status(409).json({ message: 'Vehicle and customer ownership changed before allocation.' });
+    return res.status(409).json({ message: 'Vehicle ownership changed before allocation.' });
   }
   if (allocation === null) return res.status(400).json({ message: 'CRE must be active and assigned to the vehicle team.' });
   if (allocation === false) return res.status(409).json({ message: 'This vehicle already has an active allocation for that service type.' });
@@ -154,6 +189,9 @@ export async function createAllocation(req, res) {
 export async function updateAllocation(req, res) {
   const validation = validateAllocationUpdate(req.body);
   if (validation.error) return res.status(400).json({ message: validation.error });
+  const reasonValidation = validateAssignmentReason(req.body?.reason);
+  if (reasonValidation.error) return res.status(400).json({ message: reasonValidation.error });
+  const reason = reasonValidation.value;
 
   const existing = await prisma.allocation.findFirst({
     where: { id: req.params.id, ...allocationVisibility(req.user) },
@@ -162,16 +200,20 @@ export async function updateAllocation(req, res) {
   if (!existing) return res.status(404).json({ message: 'Allocation not found.' });
   if (roleName(req.user.role) === 'CRE') return res.status(403).json({ message: 'CRE users cannot change allocations.' });
   const teamId = existing.ccmId;
-  if (!teamId || existing.vehicle.ccmId !== teamId || existing.vehicle.customer?.ccmId !== teamId) {
-    return res.status(409).json({ message: 'Allocation ownership is inconsistent with its vehicle and customer.' });
+  if (!teamId || existing.vehicle.ccmId !== teamId) {
+    return res.status(409).json({ message: 'Allocation ownership is inconsistent with its vehicle.' });
   }
   if (roleName(req.user.role) === 'CCM' && req.user.ccmId !== teamId) {
     return res.status(404).json({ message: 'Allocation not found.' });
   }
 
   const update = validation.value;
-  if (roleName(req.user.role) === 'CCM' && update.creId) {
-    return res.status(403).json({ message: 'Use the Allocation customer list to reassign customers.' });
+  const isCcmReassignment = roleName(req.user.role) === 'CCM' && Boolean(update.creId);
+  if (roleName(req.user.role) === 'CCM'
+    && (!update.creId
+      || update.status !== 'assigned'
+      || Object.keys(update).some((key) => !['creId', 'status'].includes(key)))) {
+    return res.status(403).json({ message: 'CCM users may only assign an eligible CRE to an unassigned vehicle.' });
   }
   if (update.creId) {
     const cre = await findActiveCre(update.creId, teamId);
@@ -182,9 +224,12 @@ export async function updateAllocation(req, res) {
     await lockCcmAllocationTeam(transaction, teamId);
     const current = await transaction.allocation.findFirst({
       where: { id: existing.id, ccmId: teamId },
-      include: { vehicle: { select: { vin: true, registrationNumber: true, ccmId: true, customer: { select: { ccmId: true, fullName: true, mobileNumber: true } } } } },
+      include: { vehicle: { select: { id: true, vin: true, registrationNumber: true, ccmId: true, customer: { select: { ccmId: true, fullName: true, mobileNumber: true } } } } },
     });
-    if (!current || current.vehicle.ccmId !== teamId || current.vehicle.customer?.ccmId !== teamId) return 'ownership-conflict';
+    if (!current || current.vehicle.ccmId !== teamId) return 'ownership-conflict';
+    if (isCcmReassignment && (current.status !== 'assigned' || current.creId != null)) {
+      return 'assignment-conflict';
+    }
     if (update.creId) {
       const activeCre = await transaction.user.findFirst({
         where: { id: update.creId, role: 'CRE', status: 'active', ccmId: teamId },
@@ -192,29 +237,71 @@ export async function updateAllocation(req, res) {
       });
       if (!activeCre) return null;
     }
-    const updated = await transaction.allocation.update({
-      where: { id: existing.id },
-      data: update,
+    const updated = isCcmReassignment
+      ? null
+      : await transaction.allocation.update({
+        where: { id: existing.id },
+        data: update,
+        include: {
+          cre: { select: { id: true, name: true } },
+          vehicle: { include: { customer: { select: { id: true, fullName: true, mobileNumber: true } } } },
+        },
+      });
+    if (update.creId) {
+      const allocations = isCcmReassignment
+        ? await transaction.allocation.findMany({
+          where: { vehicleId: current.vehicleId, ccmId: teamId, status: 'assigned' },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        })
+        : [current];
+      for (const assignedAllocation of allocations) {
+        if (assignedAllocation.creId === update.creId) continue;
+        const previousCreId = assignedAllocation.creId;
+        await transaction.allocation.update({
+          where: { id: assignedAllocation.id },
+          data: { creId: update.creId },
+        });
+        await recordCreAssignmentEvent(transaction, {
+          vehicleId: current.vehicleId,
+          allocationId: assignedAllocation.id,
+          ccmId: teamId,
+          previousCreId,
+          newCreId: update.creId,
+          actorUserId: req.user.id,
+          reason,
+        });
+      }
+      await syncMasterCallListOwner(transaction, current.vehicle, teamId, update.creId, req.user.id, reason);
+    }
+    else await clearStaleMasterCallListOwner(transaction, {
+      allocation: current,
+      update,
+      ccmId: teamId,
+      actorUserId: req.user.id,
+      reason,
+    });
+    await transaction.auditLog.create({
+      data: {
+        userId: req.user.id,
+        entityType: 'Allocation',
+        entityId: current.id,
+        action: update.creId ? 'CRE_REASSIGNED' : 'ALLOCATION_UPDATED',
+        details: JSON.stringify(update),
+      },
+    });
+    return updated || transaction.allocation.findFirst({
+      where: { id: current.id },
       include: {
         cre: { select: { id: true, name: true } },
         vehicle: { include: { customer: { select: { id: true, fullName: true, mobileNumber: true } } } },
       },
     });
-    if (update.creId) await syncMasterCallListOwner(transaction, current.vehicle, teamId, update.creId);
-    else await clearStaleMasterCallListOwner(transaction, { allocation: current, update, ccmId: teamId });
-    await transaction.auditLog.create({
-      data: {
-        userId: req.user.id,
-        entityType: 'Allocation',
-        entityId: updated.id,
-        action: update.creId ? 'CRE_REASSIGNED' : 'ALLOCATION_UPDATED',
-        details: JSON.stringify(update),
-      },
-    });
-    return updated;
   });
   if (allocation === 'ownership-conflict') {
     return res.status(409).json({ message: 'Allocation ownership changed before the update.' });
+  }
+  if (allocation === 'assignment-conflict') {
+    return res.status(409).json({ message: 'This vehicle is no longer in the unassigned allocation queue.' });
   }
   if (!allocation) return res.status(400).json({ message: 'CRE must be active and assigned to the vehicle team.' });
 

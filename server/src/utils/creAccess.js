@@ -13,8 +13,12 @@ export function creVehicleWhere(user) {
 
 export function creCustomerWhere(user) {
   return {
-    ccmId: user?.ccmId || 'no-access',
-    vehicles: { some: creVehicleWhere(user) },
+    vehicles: {
+      some: {
+        ccmId: user?.ccmId || 'no-access',
+        ...creVehicleWhere(user),
+      },
+    },
   };
 }
 
@@ -22,11 +26,21 @@ export function workshopVisitVisibilityWhere(user) {
   const role = String(user?.role || '').toUpperCase();
   if (role === 'ADMIN' || role === 'GM') return {};
   const ccmId = user?.ccmId || 'no-access';
-  if (role === 'CCM') return { ccmId };
+  const linkedVehicleScope = {
+    physicalVehicle: {
+      is: {
+        vehicles: { some: { ccmId } },
+      },
+    },
+  };
+  if (role === 'CCM') return linkedVehicleScope;
   if (role === 'CRE') {
     return {
-      ccmId,
-      vehicle: { is: creVehicleWhere(user) },
+      physicalVehicle: {
+        is: {
+          vehicles: { some: { ccmId, ...creVehicleWhere(user) } },
+        },
+      },
     };
   }
   return { id: 'no-access' };

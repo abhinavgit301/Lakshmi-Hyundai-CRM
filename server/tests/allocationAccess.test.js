@@ -31,6 +31,9 @@ function createTransaction({ activeAllocations = [], ownerUserId = 'cre-old' } =
         return { count: 1 };
       },
     },
+    creAssignmentHistory: {
+      create: async () => ({}),
+    },
   };
 }
 

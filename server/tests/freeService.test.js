@@ -3,14 +3,18 @@ import assert from 'node:assert/strict';
 
 import {
   countRemainingFreeServiceMilestones,
+  classifyFreeServiceStatus,
   findCompletingVisit,
   freeServiceCallStart,
   freeServiceCustomerIdsForMonth,
   freeServiceDueDate,
+  freeServiceExpiryDate,
+  isFreeServiceListVisible,
   isFreeServiceCallable,
   normalizeSaleDate,
   resolveSaleDate,
 } from '../src/utils/serviceCalendar.js';
+import { addMonths } from '../src/utils/serviceDue.js';
 
 const d = (year, month, day) => new Date(year, month - 1, day);
 
@@ -30,6 +34,25 @@ test('free-service dates clamp at month ends and across leap years', () => {
   assert.equal(freeServiceDueDate(d(2022, 2, 28), 3).getTime(), d(2024, 2, 28).getTime());
 });
 
+test('free-service grace status begins on the milestone and expires three months later', () => {
+  for (const milestone of [1, 2, 3]) {
+    const sale = d(2024, 1, 31);
+    const due = freeServiceDueDate(sale, milestone);
+    const expiry = freeServiceExpiryDate(due);
+    assert.equal(expiry.getTime(), addMonths(due, 3).getTime());
+    assert.equal(classifyFreeServiceStatus(due, d(due.getFullYear(), due.getMonth() + 1, due.getDate() - 1)), 'upcoming');
+    assert.equal(classifyFreeServiceStatus(due, due), 'grace');
+    assert.equal(classifyFreeServiceStatus(due, expiry), 'grace');
+    assert.equal(classifyFreeServiceStatus(due, d(expiry.getFullYear(), expiry.getMonth() + 1, expiry.getDate() + 1)), 'expired');
+  }
+});
+
+test('free-service expiry clamps consistently at month ends and leap years', () => {
+  assert.equal(freeServiceExpiryDate(d(2024, 2, 29)).getTime(), d(2024, 5, 29).getTime());
+  assert.equal(freeServiceExpiryDate(d(2024, 11, 30)).getTime(), d(2025, 2, 28).getTime());
+  assert.equal(freeServiceExpiryDate(d(2023, 11, 30)).getTime(), d(2024, 2, 29).getTime());
+});
+
 test('calling eligibility begins 14 calendar days before the due date', () => {
   assert.equal(freeServiceCallStart(d(2026, 12, 15)).getTime(), d(2026, 12, 1).getTime());
   assert.equal(freeServiceCallStart(d(2026, 3, 5)).getTime(), d(2026, 2, 19).getTime());
@@ -44,6 +67,18 @@ test('customers are excluded before the calling eligibility date', () => {
   assert.equal(isFreeServiceCallable(due, d(2026, 12, 14)), true);
   assert.equal(isFreeServiceCallable(due, d(2026, 12, 15)), true, 'the due date itself is inclusive');
   assert.equal(isFreeServiceCallable(due, d(2026, 12, 16)), false, 'past due is no longer in the window');
+});
+
+test('free-service list adds grace and expired milestones without widening future calling eligibility', () => {
+  const due = d(2026, 12, 15);
+  const expiry = freeServiceExpiryDate(due);
+  assert.equal(isFreeServiceListVisible(due, d(2026, 11, 30)), false);
+  assert.equal(isFreeServiceListVisible(due, d(2026, 12, 1)), true);
+  assert.equal(isFreeServiceListVisible(due, due), true);
+  assert.equal(isFreeServiceListVisible(due, d(2027, 1, 1)), true);
+  assert.equal(isFreeServiceListVisible(due, d(2027, 3, 16)), true);
+  assert.equal(isFreeServiceListVisible(d(2027, 1, 15), d(2026, 12, 15)), false);
+  assert.equal(classifyFreeServiceStatus(due, expiry), 'grace');
 });
 
 test('the due date must fall within the next rolling calendar month, inclusive', () => {
@@ -61,6 +96,24 @@ test('a free-service repair order near the due date completes the milestone', ()
     { repairOrderNo: 'RO-FREE', visitDate: d(2026, 5, 20), importedDetails: { workType: 'Free Service' } },
   ];
   assert.equal(findCompletingVisit(due, visits).repairOrderNo, 'RO-FREE');
+});
+
+test('a free service during the grace period completes the milestone through expiry day', () => {
+  const due = d(2026, 5, 10);
+  const expiry = freeServiceExpiryDate(due);
+  for (const visitDate of [
+    d(2026, 5, 10),
+    d(2026, 7, 10),
+    new Date(expiry.getFullYear(), expiry.getMonth(), expiry.getDate(), 16, 45),
+  ]) {
+    const visit = { repairOrderNo: 'RO-GRACE', visitDate, importedDetails: { workType: 'FOC Service' } };
+    assert.equal(findCompletingVisit(due, [visit]), visit);
+  }
+  assert.equal(findCompletingVisit(due, [{
+    repairOrderNo: 'RO-AFTER-GRACE',
+    visitDate: d(expiry.getFullYear(), expiry.getMonth() + 1, expiry.getDate() + 1),
+    importedDetails: { workType: 'Free Service' },
+  }]), null);
 });
 
 test('completion is not assumed when history cannot establish it', () => {
@@ -91,6 +144,17 @@ test('remaining free-service count uses sale-date milestones and only matching f
   visits[1].importedDetails.workType = 'Free Service';
   assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2026, 10, 30)), 1);
   assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, d(2026, 10, 30)), 3);
+});
+
+test('a grace-period free service reduces the available milestone count', () => {
+  const saleDate = d(2026, 1, 15);
+  const firstServiceDue = freeServiceDueDate(saleDate, 1);
+  const visit = {
+    visitDate: d(firstServiceDue.getFullYear(), firstServiceDue.getMonth() + 2, firstServiceDue.getDate()),
+    importedDetails: { workType: 'Free Service' },
+  };
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }), 3);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [visit] }), 2);
 });
 
 test('remaining free-service count is unknown without a valid sale date', () => {

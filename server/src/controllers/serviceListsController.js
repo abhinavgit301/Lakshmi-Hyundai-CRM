@@ -1,8 +1,10 @@
 import { prisma } from '../config/prisma.js';
 import {
   classifyWarrantyCase,
+  classifyFreeServiceStatus,
   freeServiceCallStart,
-  isFreeServiceCallable,
+  freeServiceExpiryDate,
+  isFreeServiceListVisible,
   isWarrantyCallable,
   resolveSaleDate,
   warrantyCallingWindow,
@@ -109,23 +111,21 @@ export async function getFreeServiceList(req, res) {
     syncedMilestones,
     dated.map(({ record }) => record),
   );
-  const callable = milestones.filter((milestone) => milestone.status === 'pending' && isFreeServiceCallable(milestone.dueDate, today));
-  const ids = callable.map((milestone) => milestone.id);
-
-  const [calls, followUps] = ids.length
-    ? await Promise.all([
-      prisma.callLog.findMany({ where: { ...workflowWhere, milestoneId: { in: ids } }, orderBy: { createdAt: 'desc' }, select: { milestoneId: true, outcome: true, createdAt: true } }),
-      prisma.followUp.findMany({ where: { ...workflowWhere, milestoneId: { in: ids }, status: 'pending' }, orderBy: { followUpAt: 'asc' }, select: { id: true, milestoneId: true, followUpAt: true } }),
-    ])
-    : [[], []];
-  const lastCall = latestBy(calls, 'milestoneId');
-  const openFollowUp = latestBy(followUps, 'milestoneId');
+  const visibleMilestones = milestones.filter((milestone) => milestone.status === 'pending'
+    && isFreeServiceListVisible(milestone.dueDate, today));
+  const allOpenFollowUps = req.query.followUpStatus
+    ? await prisma.followUp.findMany({
+      where: { ...workflowWhere, source: 'FREE_SERVICE', status: 'pending' },
+      orderBy: { followUpAt: 'asc' },
+      select: { id: true, milestoneId: true, followUpAt: true },
+    })
+    : [];
+  const openFollowUpByMilestone = latestBy(allOpenFollowUps, 'milestoneId');
   const byVehicle = new Map(dated.map((entry) => [entry.record.vehicleId, entry]));
 
-  const rows = callable.map((milestone) => {
+  const rows = visibleMilestones.map((milestone) => {
     const { record, saleDate } = byVehicle.get(milestone.vehicleId);
-    const call = lastCall.get(milestone.id);
-    const followUp = openFollowUp.get(milestone.id);
+    const expiryDate = freeServiceExpiryDate(milestone.dueDate);
     return {
       id: milestone.id,
       milestoneId: milestone.id,
@@ -133,18 +133,40 @@ export async function getFreeServiceList(req, res) {
       milestone: milestone.milestone,
       milestoneName: ['First', 'Second', 'Third'][milestone.milestone - 1] + ' free service',
       dueDate: milestone.dueDate,
+      expiryDate,
+      graceStatus: classifyFreeServiceStatus(milestone.dueDate, today),
       callingStartDate: freeServiceCallStart(milestone.dueDate),
-      callStatus: call ? 'Called' : 'Not called',
-      lastCall: call ? { createdAt: call.createdAt, outcome: call.outcome } : null,
-      followUp: followUp ? { id: followUp.id, followUpAt: followUp.followUpAt } : null,
+      ...(req.query.followUpStatus ? { followUp: openFollowUpByMilestone.get(milestone.id) || null } : {}),
     };
   }).sort((left, right) => new Date(left.dueDate) - new Date(right.dueDate)
     || String(left.id).localeCompare(String(right.id)));
 
   const filtered = filterServiceListRecords(rows, req.query);
   if (filtered.error) return res.status(400).json({ message: filtered.error });
+  const page = pagination.hasPagination ? paginateRecords(filtered.records, pagination) : { records: filtered.records };
+  const ids = page.records.map((record) => record.milestoneId);
+  const [calls, followUps] = ids.length
+    ? await Promise.all([
+      prisma.callLog.findMany({ where: { ...workflowWhere, milestoneId: { in: ids } }, orderBy: { createdAt: 'desc' }, select: { milestoneId: true, outcome: true, createdAt: true } }),
+      allOpenFollowUps.length
+        ? Promise.resolve(allOpenFollowUps)
+        : prisma.followUp.findMany({ where: { ...workflowWhere, milestoneId: { in: ids }, status: 'pending' }, orderBy: { followUpAt: 'asc' }, select: { id: true, milestoneId: true, followUpAt: true } }),
+    ])
+    : [[], []];
+  const lastCall = latestBy(calls, 'milestoneId');
+  const openFollowUp = latestBy(followUps, 'milestoneId');
+  page.records = page.records.map((record) => {
+    const call = lastCall.get(record.milestoneId);
+    const followUp = openFollowUp.get(record.milestoneId);
+    return {
+      ...record,
+      callStatus: call ? 'Called' : 'Not called',
+      lastCall: call ? { createdAt: call.createdAt, outcome: call.outcome } : null,
+      followUp: followUp ? { id: followUp.id, followUpAt: followUp.followUpAt } : null,
+    };
+  });
   return res.json({
-    ...(pagination.hasPagination ? paginateRecords(filtered.records, pagination) : { records: filtered.records }),
+    ...page,
     dataIssues,
     asOf: zonedDateKey(now),
   });

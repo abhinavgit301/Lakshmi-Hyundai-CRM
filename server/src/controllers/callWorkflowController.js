@@ -2,9 +2,17 @@ import { prisma } from '../config/prisma.js';
 import { creCustomerWhere, creVehicleWhere, isVehicleAssignedToCre } from '../utils/creAccess.js';
 import { validateCallLogPayload, validateFollowUpPayload } from '../utils/workflowRules.js';
 import { getCreCallCounts } from '../utils/callMetrics.js';
-import { DAILY_TARGETS, freeServiceCustomerIdsForMonth, isAnsweredOutcome } from '../utils/serviceCalendar.js';
+import {
+  classifyWarrantyCase,
+  classifyFreeServiceStatus,
+  DAILY_TARGETS,
+  freeServiceCustomerIdsForMonth,
+  freeServiceExpiryDate,
+  isAnsweredOutcome,
+  warrantyExpiryDate,
+} from '../utils/serviceCalendar.js';
 import { findMissedWarrantyCases } from '../utils/serviceLists.js';
-import { parseDateKey, workshopDayRange, workshopMonthOf, workshopMonthRange, zonedDateKey } from '../utils/workshopTime.js';
+import { getWorkshopTimezone, parseDateKey, workshopDayRange, workshopMonthOf, workshopMonthRange, workshopToday, zonedDateKey } from '../utils/workshopTime.js';
 import { allowedServiceSources, canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { appointmentVisibilityWhere } from '../utils/appointmentAccess.js';
 import { appointmentConversionRatePercent } from '../utils/performanceMetrics.js';
@@ -531,20 +539,145 @@ export async function createCallLog(req, res) {
 
 const FOLLOW_UP_INCLUDE = {
   customer: { select: { id: true, fullName: true, mobileNumber: true } },
-  vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
+  vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true, saleDate: true } },
   cre: { select: { id: true, name: true } },
   milestone: { select: { id: true, milestone: true, dueDate: true } },
 };
 
 function includeFormerFollowUpCre(followUp) {
-  if (followUp.cre || !followUp.creIdSnapshot) return followUp;
-  return {
+  const withCre = followUp.cre || !followUp.creIdSnapshot ? followUp : {
     ...followUp,
     cre: {
       id: followUp.creIdSnapshot,
       name: followUp.creNameSnapshot,
       username: followUp.creUsernameSnapshot,
     },
+  };
+  const saleDate = followUp.vehicle?.saleDate;
+  const dueDate = followUp.milestone?.dueDate;
+  return {
+    ...withCre,
+    ...(followUp.source === 'FREE_SERVICE' && dueDate ? {
+      expiryDate: freeServiceExpiryDate(dueDate),
+      graceStatus: classifyFreeServiceStatus(dueDate, workshopToday()),
+    } : {}),
+    ...(followUp.source === 'WARRANTY' && saleDate ? {
+      warrantyExpiryDate: warrantyExpiryDate(saleDate),
+    } : {}),
+  };
+}
+
+function parseFollowUpDate(value) {
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return date.getFullYear() === Number(match[1]) && date.getMonth() === Number(match[2]) - 1 && date.getDate() === Number(match[3])
+    ? date
+    : null;
+}
+
+function makeDateRange(from, to) {
+  if (!from && !to) return null;
+  return {
+    ...(from ? { gte: from } : {}),
+    ...(to ? { lt: new Date(to.getFullYear(), to.getMonth(), to.getDate() + 1) } : {}),
+  };
+}
+
+function firstSaleDateWithWarrantyExpiryOnOrAfter(targetDate) {
+  let date = new Date(targetDate.getFullYear() - 3, targetDate.getMonth(), targetDate.getDate());
+  while (warrantyExpiryDate(date) < targetDate) date.setDate(date.getDate() + 1);
+  while (true) {
+    const previous = new Date(date.getFullYear(), date.getMonth(), date.getDate() - 1);
+    if (warrantyExpiryDate(previous) < targetDate) break;
+    date = previous;
+  }
+  return date;
+}
+
+function firstFreeServiceDueDateWithExpiryOnOrAfter(targetDate) {
+  let date = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+  date.setMonth(date.getMonth() - 3);
+  while (freeServiceExpiryDate(date) < targetDate) date.setDate(date.getDate() + 1);
+  while (true) {
+    const previous = new Date(date.getFullYear(), date.getMonth(), date.getDate() - 1);
+    if (freeServiceExpiryDate(previous) < targetDate) break;
+    date = previous;
+  }
+  return date;
+}
+
+function warrantySaleDateRange(expiryRange) {
+  const from = expiryRange.gte
+    ? firstSaleDateWithWarrantyExpiryOnOrAfter(expiryRange.gte)
+    : undefined;
+  const to = expiryRange.lt
+    ? firstSaleDateWithWarrantyExpiryOnOrAfter(expiryRange.lt)
+    : undefined;
+  return { ...(from ? { gte: from } : {}), ...(to ? { lt: to } : {}) };
+}
+
+async function addWarrantyContactStatus(followUps, user, now = new Date()) {
+  const vehicleIds = [...new Set(followUps.map((followUp) => followUp.vehicleId).filter(Boolean))];
+  const calls = vehicleIds.length
+    ? await prisma.callLog.findMany({
+      where: { ...callLogVisibility(user), vehicleId: { in: vehicleIds }, callSource: 'WARRANTY' },
+      select: { vehicleId: true, outcome: true, callSource: true, createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    })
+    : [];
+  const callsByVehicle = new Map();
+  for (const call of calls) callsByVehicle.set(call.vehicleId, [...(callsByVehicle.get(call.vehicleId) || []), call]);
+  const timeZone = getWorkshopTimezone();
+  return followUps.map((followUp) => {
+    const expiryDate = followUp.vehicle?.saleDate ? warrantyExpiryDate(followUp.vehicle.saleDate) : null;
+    const contacted = expiryDate && classifyWarrantyCase({
+      expiryDate,
+      calls: callsByVehicle.get(followUp.vehicleId) || [],
+      now,
+      timeZone,
+    }).contacted;
+    return { ...includeFormerFollowUpCre(followUp), contactStatus: contacted ? 'Contacted' : 'Not contacted' };
+  });
+}
+
+async function listWarrantyFollowUpsByContactStatus(where, user, contactStatus, pagination) {
+  const limit = pagination.hasPagination ? pagination.limit : 200;
+  const offset = pagination.hasPagination ? pagination.offset : 0;
+  const orderBy = [{ followUpAt: 'asc' }, { id: 'asc' }];
+  const now = new Date();
+  const timeZone = getWorkshopTimezone();
+  const records = [];
+  let total = 0;
+  let scanned = 0;
+  const batchSize = 100;
+
+  while (true) {
+    const batch = await prisma.followUp.findMany({
+      where,
+      include: FOLLOW_UP_INCLUDE,
+      orderBy,
+      skip: scanned,
+      take: batchSize,
+    });
+    if (!batch.length) break;
+    const contactRows = await addWarrantyContactStatus(batch, user, now);
+    for (const followUp of contactRows) {
+      if (followUp.contactStatus !== contactStatus) continue;
+      if (total >= offset && records.length < limit) records.push(followUp);
+      total += 1;
+    }
+    scanned += batch.length;
+    if (batch.length < batchSize) break;
+  }
+
+  return {
+    records,
+    total,
+    limit,
+    offset,
+    hasPagination: pagination.hasPagination,
+    hasMore: pagination.hasPagination && offset + records.length < total,
   };
 }
 
@@ -560,6 +693,31 @@ export async function listFollowUps(req, res) {
   if (pagination.error) return res.status(400).json({ message: pagination.error });
   const search = String(req.query.search || '').trim().toLocaleLowerCase();
   if (search.length > 200) return res.status(400).json({ message: 'search must be 200 characters or fewer.' });
+  const dateFilters = {};
+  for (const key of ['saleFrom', 'saleTo', 'dueFrom', 'dueTo', 'expiryFrom', 'expiryTo', 'followUpFrom', 'followUpTo']) {
+    const raw = String(req.query[key] || '').trim();
+    if (!raw) continue;
+    const parsed = parseFollowUpDate(raw);
+    if (!parsed) return res.status(400).json({ message: `${key} must be a valid YYYY-MM-DD date.` });
+    dateFilters[key] = parsed;
+  }
+  const milestone = String(req.query.milestone || '').trim();
+  if (milestone && !['1', '2', '3'].includes(milestone)) {
+    return res.status(400).json({ message: 'milestone must be 1, 2, or 3.' });
+  }
+  const graceStatus = String(req.query.graceStatus || '').trim();
+  if (graceStatus && !['upcoming', 'grace', 'expired'].includes(graceStatus)) {
+    return res.status(400).json({ message: 'graceStatus is not supported.' });
+  }
+  const contactStatus = String(req.query.contactStatus || '').trim();
+  if (contactStatus && !['Contacted', 'Not contacted'].includes(contactStatus)) {
+    return res.status(400).json({ message: 'contactStatus is not supported.' });
+  }
+  for (const [fromKey, toKey] of [['saleFrom', 'saleTo'], ['dueFrom', 'dueTo'], ['expiryFrom', 'expiryTo'], ['followUpFrom', 'followUpTo']]) {
+    if (dateFilters[fromKey] && dateFilters[toKey] && dateFilters[fromKey] > dateFilters[toKey]) {
+      return res.status(400).json({ message: `${fromKey} must not be after ${toKey}.` });
+    }
+  }
 
   const visibility = followUpVisibility(req.user);
   const searchConditions = search ? [
@@ -570,15 +728,54 @@ export async function listFollowUps(req, res) {
     { vehicle: { is: { model: { contains: search, mode: 'insensitive' } } } },
     { vehicle: { is: { registrationNumber: { contains: search, mode: 'insensitive' } } } },
   ] : [];
+  const extraConditions = [];
+  if (search) extraConditions.push({ OR: searchConditions });
+  const assigneeId = String(req.query.assigneeId || '').trim();
+  if (assigneeId) extraConditions.push({ creId: assigneeId });
+  if (milestone && source === 'FREE_SERVICE') extraConditions.push({ milestone: { is: { milestone: Number(milestone) } } });
+  if (graceStatus && source === 'FREE_SERVICE') {
+    const today = workshopToday();
+    const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    const graceStart = firstFreeServiceDueDateWithExpiryOnOrAfter(today);
+    const dueDate = graceStatus === 'upcoming'
+      ? { gte: tomorrow }
+      : graceStatus === 'grace'
+        ? { gte: graceStart, lt: tomorrow }
+        : { lt: graceStart };
+    extraConditions.push({ milestone: { is: { dueDate } } });
+  }
+  const saleRange = makeDateRange(dateFilters.saleFrom, dateFilters.saleTo);
+  if (saleRange && (source === 'FREE_SERVICE' || source === 'WARRANTY')) {
+    extraConditions.push({ vehicle: { is: { saleDate: saleRange } } });
+  }
+  const dueRange = makeDateRange(dateFilters.dueFrom, dateFilters.dueTo);
+  if (dueRange && source === 'FREE_SERVICE') extraConditions.push({ milestone: { is: { dueDate: dueRange } } });
+  const expiryRange = makeDateRange(dateFilters.expiryFrom, dateFilters.expiryTo);
+  if (expiryRange && source === 'WARRANTY') {
+    extraConditions.push({ vehicle: { is: { saleDate: warrantySaleDateRange(expiryRange) } } });
+  }
+  const followUpRange = makeDateRange(dateFilters.followUpFrom, dateFilters.followUpTo);
+  if (followUpRange) extraConditions.push({ followUpAt: followUpRange });
   const where = {
     ...visibility,
     status: 'pending',
     ...(source ? { source } : {}),
     ...(!source && normalizeRole(req.user.role) === 'CRE' ? { source: { in: allowedServiceSources(req.user) } } : {}),
-    ...(search ? {
-      AND: [...(visibility.AND || []), { OR: searchConditions }],
+    ...(extraConditions.length || visibility.AND ? {
+      AND: [...(visibility.AND || []), ...extraConditions],
     } : {}),
   };
+  if (source === 'WARRANTY' && contactStatus) {
+    const result = await listWarrantyFollowUpsByContactStatus(where, req.user, contactStatus, pagination);
+    if (!result.hasPagination) return res.json({ followUps: result.records });
+    return res.json({
+      followUps: result.records,
+      total: result.total,
+      limit: result.limit,
+      offset: result.offset,
+      hasMore: result.hasMore,
+    });
+  }
   const orderBy = [{ followUpAt: 'asc' }, { id: 'asc' }];
   if (pagination.hasPagination) {
     const [followUps, total] = await Promise.all([
@@ -592,7 +789,9 @@ export async function listFollowUps(req, res) {
       prisma.followUp.count({ where }),
     ]);
     return res.json({
-      followUps: followUps.map(includeFormerFollowUpCre),
+      followUps: source === 'WARRANTY'
+        ? await addWarrantyContactStatus(followUps, req.user)
+        : followUps.map(includeFormerFollowUpCre),
       total,
       limit: pagination.limit,
       offset: pagination.offset,
@@ -605,7 +804,11 @@ export async function listFollowUps(req, res) {
     orderBy,
     take: 200,
   });
-  return res.json({ followUps: followUps.map(includeFormerFollowUpCre) });
+  return res.json({
+    followUps: source === 'WARRANTY'
+      ? await addWarrantyContactStatus(followUps, req.user)
+      : followUps.map(includeFormerFollowUpCre),
+  });
 }
 
 export async function createFollowUp(req, res) {

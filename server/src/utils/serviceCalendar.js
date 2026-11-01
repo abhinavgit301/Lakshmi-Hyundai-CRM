@@ -45,6 +45,15 @@ export function freeServiceDueDate(saleDate, milestone) {
   return definition ? addMonths(saleDate, definition.months) : null;
 }
 
+export function freeServiceExpiryDate(dueDate) {
+  return addMonths(dueDate, 3);
+}
+
+export function classifyFreeServiceStatus(dueDate, today) {
+  if (today < dueDate) return 'upcoming';
+  return today <= freeServiceExpiryDate(dueDate) ? 'grace' : 'expired';
+}
+
 export function freeServiceCallStart(dueDate) {
   return new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate() - FREE_SERVICE_CALL_LEAD_DAYS);
 }
@@ -59,14 +68,25 @@ export function isFreeServiceCallable(dueDate, today) {
   return today >= freeServiceCallStart(dueDate) && dueDate >= today && dueDate <= addMonths(today, 1);
 }
 
-// A repair order only completes a milestone when it is explicitly a free-service work type and the
-// visit falls within a month either side of the due date. Anything else is left pending.
+export function isFreeServiceListVisible(dueDate, today) {
+  return isFreeServiceCallable(dueDate, today) || today > dueDate;
+}
+
+// A free-service repair order completes the milestone from one month before its due date through
+// the expiry date, inclusive. Later visits cannot complete an expired milestone.
 export function findCompletingVisit(dueDate, visits) {
-  const windowStart = addMonths(dueDate, -1);
-  const windowEnd = addMonths(dueDate, 1);
+  const milestoneDate = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
+  const windowStart = addMonths(milestoneDate, -1);
+  const windowEnd = freeServiceExpiryDate(milestoneDate);
   return (visits || [])
     .filter((visit) => isFreeServiceWorkType(visit.importedDetails?.workType))
-    .map((visit) => ({ visit, date: parseStoredDate(visit.visitDate) }))
+    .map((visit) => {
+      const parsed = parseStoredDate(visit.visitDate);
+      return {
+        visit,
+        date: parsed ? new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()) : null,
+      };
+    })
     .filter(({ date }) => date && date >= windowStart && date <= windowEnd)
     .sort((left, right) => left.date - right.date)[0]?.visit || null;
 }

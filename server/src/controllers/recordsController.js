@@ -103,6 +103,19 @@ function importedMobileNumber(visits = []) {
   return null;
 }
 
+function importedCustomerDetail(visits = [], keys = []) {
+  const wantedKeys = new Set(keys.map((key) => key.toLowerCase().replace(/[^a-z0-9]/g, '')));
+  for (const visit of visits) {
+    for (const [key, value] of Object.entries(visit.importedDetails || {})) {
+      if (wantedKeys.has(key.toLowerCase().replace(/[^a-z0-9]/g, ''))
+        && value != null && String(value).trim()) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
 function usableMobileNumber(value) {
   const mobile = String(value ?? '').trim();
   return mobile && mobile !== '-' && mobile !== '—' ? mobile : null;
@@ -1584,6 +1597,9 @@ export async function getCustomers(req, res) {
         mobile: usableMobileNumber(customer.mobileNumber) || importedMobileNumber(visits),
         ccmId: customer.ccmId,
         email: customer.email,
+        address: customer.address || importedCustomerDetail(visits, ['address', 'addressLine', 'customerAddress']),
+        city: customer.city || importedCustomerDetail(visits, ['city', 'customerCity']),
+        pin: customer.pin || importedCustomerDetail(visits, ['pin', 'pinCode', 'customerPin']),
         vehicleCount: customer.vehicles?.length || 0,
         vehicles: (customer.vehicles || []).map((vehicle) => ({
           ...vehicle,

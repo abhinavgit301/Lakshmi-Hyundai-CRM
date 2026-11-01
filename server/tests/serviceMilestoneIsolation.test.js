@@ -119,3 +119,77 @@ test('new milestone completions store the exact completing WorkshopVisit ID', as
   assert.equal(completed.completedByRepairOrderNo, 'RO-FREE-1');
   assert.equal(completed.completedByWorkshopVisitId, 'visit-a');
 });
+
+test('re-import preserves existing milestone dates and completes against the saved date', async () => {
+  const savedDueDate = new Date(2025, 2, 1);
+  const updates = [];
+  const existing = [{
+    id: 'milestone-existing',
+    vehicleId: 'vehicle-a',
+    milestone: 1,
+    dueDate: savedDueDate,
+    status: 'pending',
+  }];
+  const db = {
+    freeServiceMilestone: {
+      findMany: async () => existing,
+      createMany: async () => {},
+      update: async (args) => { updates.push(args); },
+    },
+  };
+  await syncFreeServiceMilestones([{
+    id: 'vehicle-a',
+    saleDate: new Date(2025, 1, 1),
+    physicalVehicleId: 'physical-a',
+    workshopVisits: [{
+      id: 'visit-a',
+      repairOrderNo: 'RO-FREE-1',
+      visitDate: new Date(2025, 2, 10),
+      importedDetails: { workType: 'Free Service' },
+    }],
+  }], db);
+
+  assert.equal(updates.length, 1);
+  assert.equal(Object.hasOwn(updates[0].data, 'dueDate'), false);
+  assert.equal(updates[0].data.status, 'completed');
+  assert.equal(updates[0].where.id, 'milestone-existing');
+});
+
+test('a grace-period free service completes a pending milestone and is not recreated as callable', async () => {
+  const dueDate = new Date(2025, 2, 1);
+  const updates = [];
+  const existing = [{
+    id: 'milestone-grace',
+    vehicleId: 'vehicle-a',
+    milestone: 1,
+    dueDate,
+    status: 'pending',
+  }];
+  const db = {
+    freeServiceMilestone: {
+      findMany: async () => existing,
+      createMany: async () => {},
+      update: async (args) => {
+        updates.push(args);
+        existing[0] = { ...existing[0], ...args.data };
+      },
+    },
+  };
+  const freeServiceVisit = {
+    id: 'visit-in-grace',
+    repairOrderNo: 'RO-GRACE',
+    visitDate: new Date(2025, 4, 1),
+    importedDetails: { workType: 'Free Service' },
+  };
+  const milestones = await syncFreeServiceMilestones([{
+    id: 'vehicle-a',
+    saleDate: new Date(2025, 0, 1),
+    physicalVehicleId: 'physical-a',
+    workshopVisits: [freeServiceVisit],
+  }], db);
+
+  assert.equal(updates.length, 1);
+  assert.equal(milestones[0].status, 'completed');
+  assert.equal(milestones[0].completedByWorkshopVisitId, 'visit-in-grace');
+  assert.deepEqual(milestones.filter((milestone) => milestone.status === 'pending'), []);
+});

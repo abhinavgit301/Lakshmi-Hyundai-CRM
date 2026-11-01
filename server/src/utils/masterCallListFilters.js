@@ -7,8 +7,8 @@ export function validateMasterCallListFilters(query = {}) {
   const repairType = String(query.repairType || '').trim();
   const search = String(query.search || '').trim();
 
-  if (dueCategory && !['6m', '1y', 'allDue'].includes(dueCategory)) {
-    return { error: 'dueCategory must be 6m, 1y, or allDue.' };
+  if (dueCategory && !['6m', '1y', 'allDue', 'pastDue'].includes(dueCategory)) {
+    return { error: 'dueCategory must be 6m, 1y, allDue, or pastDue.' };
   }
   if (repairType && !MASTER_REPAIR_TYPES.includes(repairType)) {
     return { error: 'repairType is not supported.' };
@@ -36,8 +36,9 @@ export function filterMasterCallListRecords(records, filters, role) {
       if (creId === 'unassigned' ? record.assigneeId : record.assigneeId !== creId) return false;
     }
 
+    if (dueCategory === 'pastDue' && !isPastDue(record.dueDate)) return false;
     if (dueCategory === 'allDue' && !DUE_CATEGORIES.includes(record.dueCategory)) return false;
-    if (dueCategory && dueCategory !== 'allDue' && record.dueCategory !== dueCategory) return false;
+    if (dueCategory && !['allDue', 'pastDue'].includes(dueCategory) && record.dueCategory !== dueCategory) return false;
     if (repairType && record.type !== repairType) return false;
 
     if (search) {
@@ -57,4 +58,13 @@ export function filterMasterCallListRecords(records, filters, role) {
 
     return true;
   });
+}
+
+function isPastDue(value) {
+  if (!value) return false;
+  const dueDate = new Date(value);
+  if (Number.isNaN(dueDate.getTime())) return false;
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return dueDate < todayStart;
 }

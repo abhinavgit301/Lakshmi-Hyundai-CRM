@@ -480,27 +480,62 @@ test('Customer endpoint scopes nested vehicles and related records by role', asy
   assert.equal(creWithoutCcmId.query.include.vehicles.include.allocations.where.ccmId, 'no-access');
 });
 
-test('customer profile mobile falls back to the latest imported service-history value', async () => {
+test('customer profile uses saved contact fields and falls back to imported service history', async () => {
   const originalCustomerFindMany = prisma.customer.findMany;
   const originalUserFindMany = prisma.user.findMany;
-  prisma.customer.findMany = async () => [{
-    id: 'customer-mobile',
-    fullName: 'Imported Customer',
-    mobileNumber: null,
-    ccmId: 'ccm-a',
-    email: null,
-    createdAt: new Date('2026-01-01T00:00:00Z'),
-    vehicles: [],
-    visits: [{
-      id: 'visit-mobile',
-      vehicleId: null,
-      repairOrderNo: 'RO-MOBILE',
+  prisma.customer.findMany = async () => [
+    {
+      id: 'customer-mobile',
+      fullName: 'Imported Customer',
+      mobileNumber: null,
       ccmId: 'ccm-a',
-      visitDate: new Date('2026-01-15T00:00:00Z'),
-      createdAt: new Date('2026-01-15T00:00:00Z'),
-      importedDetails: { mobileNumber: '5550100' },
-    }],
-  }];
+      email: null,
+      address: null,
+      city: null,
+      pin: null,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      vehicles: [],
+      visits: [{
+        id: 'visit-mobile',
+        vehicleId: null,
+        repairOrderNo: 'RO-MOBILE',
+        ccmId: 'ccm-a',
+        visitDate: new Date('2026-01-15T00:00:00Z'),
+        createdAt: new Date('2026-01-15T00:00:00Z'),
+        importedDetails: {
+          mobileNumber: '5550100',
+          address: '12 Main Road',
+          city: 'Visakhapatnam',
+          pin: '530046',
+        },
+      }],
+    },
+    {
+      id: 'customer-saved-contact',
+      fullName: 'Saved Contact',
+      mobileNumber: '5550200',
+      ccmId: 'ccm-a',
+      email: 'saved@example.com',
+      address: 'Saved address',
+      city: 'Saved city',
+      pin: '100001',
+      createdAt: new Date('2026-01-02T00:00:00Z'),
+      vehicles: [],
+      visits: [{
+        id: 'visit-old-contact',
+        vehicleId: null,
+        repairOrderNo: 'RO-OLD-CONTACT',
+        ccmId: 'ccm-a',
+        visitDate: new Date('2026-01-15T00:00:00Z'),
+        createdAt: new Date('2026-01-15T00:00:00Z'),
+        importedDetails: {
+          address: 'Old imported address',
+          city: 'Old imported city',
+          pin: '200002',
+        },
+      }],
+    },
+  ];
   prisma.user.findMany = async () => [];
   const res = {
     statusCode: 200,
@@ -511,6 +546,12 @@ test('customer profile mobile falls back to the latest imported service-history 
   try {
     await getCustomers({ user: { role: 'ADMIN' } }, res);
     assert.equal(res.body.customers[0].mobile, '5550100');
+    assert.equal(res.body.customers[0].address, '12 Main Road');
+    assert.equal(res.body.customers[0].city, 'Visakhapatnam');
+    assert.equal(res.body.customers[0].pin, '530046');
+    assert.equal(res.body.customers[1].address, 'Saved address');
+    assert.equal(res.body.customers[1].city, 'Saved city');
+    assert.equal(res.body.customers[1].pin, '100001');
   } finally {
     prisma.customer.findMany = originalCustomerFindMany;
     prisma.user.findMany = originalUserFindMany;

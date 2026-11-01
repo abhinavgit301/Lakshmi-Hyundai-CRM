@@ -90,7 +90,7 @@ export default function MasterCallListPanel(props) {
                     </select>
                   </label>
                 )}
-                <span>{masterListLoading ? 'Loading…' : `${masterRecords.length} records`}</span>
+                <span>{masterListLoading ? 'Loading…' : `${masterListPageInfo.total} total records`}</span>
               </div>
               {['CCM', 'CRE'].includes(currentRole) && (
                 <div className="master-list-filters" aria-label="Master Call List filters">
@@ -128,6 +128,7 @@ export default function MasterCallListPanel(props) {
                       <option value="6m">6 Months Due</option>
                       <option value="1y">1 Year Due</option>
                       <option value="allDue">All Due Customers</option>
+                      <option value="pastDue">Past due</option>
                     </select>
                   </label>
                   <label>

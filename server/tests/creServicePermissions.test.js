@@ -97,6 +97,137 @@ test('paginated follow-up search retains CCM visibility constraints and returns 
   }
 });
 
+test('Free-Service follow-up filters combine dates, milestone, assignee, and search inside CCM scope', async () => {
+  const originalFindMany = prisma.followUp.findMany;
+  const originalCount = prisma.followUp.count;
+  let where;
+  prisma.followUp.findMany = async (args) => {
+    where = args.where;
+    return [];
+  };
+  prisma.followUp.count = async (args) => args.where === where ? 0 : -1;
+  try {
+    const res = mockRes();
+    await listFollowUps({
+      user: { id: 'ccm-user', role: 'CCM', ccmId: 'ccm-a' },
+      query: {
+        source: 'FREE_SERVICE',
+        milestone: '2',
+        graceStatus: 'grace',
+        assigneeId: 'cre-a',
+        saleFrom: '2024-01-01',
+        saleTo: '2024-01-31',
+        dueFrom: '2025-01-01',
+        dueTo: '2025-01-31',
+        followUpFrom: '2025-02-01',
+        search: 'vin',
+        limit: '10',
+      },
+    }, res);
+
+    assert.equal(where.ccmId, 'ccm-a');
+    assert.ok(Array.isArray(where.OR));
+    assert.ok(where.AND.some((condition) => condition.creId === 'cre-a'));
+    assert.ok(where.AND.some((condition) => condition.milestone?.is?.milestone === 2));
+    assert.ok(where.AND.some((condition) => condition.milestone?.is?.dueDate?.gte instanceof Date
+      && condition.milestone.is.dueDate.lt instanceof Date));
+    assert.ok(where.AND.some((condition) => condition.vehicle?.is?.saleDate?.gte instanceof Date));
+    assert.ok(where.AND.some((condition) => condition.milestone?.is?.dueDate?.gte instanceof Date));
+    assert.ok(where.AND.some((condition) => condition.followUpAt?.gte instanceof Date));
+    assert.ok(where.AND.some((condition) => condition.OR?.some((searchCondition) => searchCondition.vehicle?.is?.vin)));
+    assert.deepEqual(res.body.followUps, []);
+  } finally {
+    prisma.followUp.findMany = originalFindMany;
+    prisma.followUp.count = originalCount;
+  }
+});
+
+test('Warranty expiry follow-up date filters invert the calendar-month rule exactly', async () => {
+  const originalFindMany = prisma.followUp.findMany;
+  const originalCount = prisma.followUp.count;
+  let where;
+  prisma.followUp.findMany = async (args) => {
+    where = args.where;
+    return [];
+  };
+  prisma.followUp.count = async () => 0;
+  try {
+    const res = mockRes();
+    await listFollowUps({
+      user: { id: 'ccm-user', role: 'CCM', ccmId: 'ccm-a' },
+      query: {
+        source: 'WARRANTY',
+        expiryFrom: '2027-02-28',
+        expiryTo: '2027-02-28',
+        limit: '10',
+      },
+    }, res);
+
+    const saleDateRange = where.AND.find((condition) => condition.vehicle?.is?.saleDate)?.vehicle.is.saleDate;
+    assert.equal(saleDateRange.gte.getFullYear(), 2024);
+    assert.equal(saleDateRange.gte.getMonth(), 1);
+    assert.equal(saleDateRange.gte.getDate(), 28);
+    assert.equal(saleDateRange.lt.getFullYear(), 2024);
+    assert.equal(saleDateRange.lt.getMonth(), 2);
+    assert.equal(saleDateRange.lt.getDate(), 1);
+  } finally {
+    prisma.followUp.findMany = originalFindMany;
+    prisma.followUp.count = originalCount;
+  }
+});
+
+test('Warranty follow-up contact-status filtering applies expiry timing before pagination', async () => {
+  const originalFollowUpFindMany = prisma.followUp.findMany;
+  const originalCallLogFindMany = prisma.callLog.findMany;
+  let followUpPageCount = 0;
+  prisma.followUp.findMany = async ({ skip }) => {
+    followUpPageCount += 1;
+    return skip === 0 ? [
+      {
+        id: 'contacted-follow-up',
+        customerId: 'customer-a',
+        vehicleId: 'vehicle-a',
+        source: 'WARRANTY',
+        followUpAt: new Date('2026-01-01'),
+        vehicle: { saleDate: new Date('2023-01-10') },
+        customer: { id: 'customer-a', fullName: 'Contacted Customer', mobileNumber: '9876543210' },
+        cre: { id: 'cre-a', name: 'CRE A' },
+      },
+      {
+        id: 'late-follow-up',
+        customerId: 'customer-b',
+        vehicleId: 'vehicle-b',
+        source: 'WARRANTY',
+        followUpAt: new Date('2026-01-02'),
+        vehicle: { saleDate: new Date('2023-01-10') },
+        customer: { id: 'customer-b', fullName: 'Late Customer', mobileNumber: '9876543211' },
+        cre: { id: 'cre-a', name: 'CRE A' },
+      },
+    ] : [];
+  };
+  prisma.callLog.findMany = async () => [{
+    vehicleId: 'vehicle-a',
+    outcome: 'CONTACTED',
+    callSource: 'WARRANTY',
+    createdAt: new Date('2026-01-10T12:00:00'),
+  }];
+  try {
+    const res = mockRes();
+    await listFollowUps({
+      user: { id: 'ccm-user', role: 'CCM', ccmId: 'ccm-a' },
+      query: { source: 'WARRANTY', contactStatus: 'Not contacted', limit: '1', offset: '0' },
+    }, res);
+
+    assert.equal(res.body.total, 1);
+    assert.equal(res.body.followUps[0].id, 'late-follow-up');
+    assert.equal(res.body.followUps[0].contactStatus, 'Not contacted');
+    assert.equal(followUpPageCount, 1);
+  } finally {
+    prisma.followUp.findMany = originalFollowUpFindMany;
+    prisma.callLog.findMany = originalCallLogFindMany;
+  }
+});
+
 test('Free-Service CRE cannot access normal customer-list service sources', () => {
   const user = { role: 'FREE_SERVICE_CRE', freeServiceEnabled: true, warrantyEnabled: true };
   assert.deepEqual(allowedServiceSources(user), []);
@@ -285,6 +416,13 @@ test('regular CRE Master Call List visibility includes only records assigned to 
     assert.deepEqual(filterMasterCallListRecords(records, allDueFilters, 'CCM'), records);
     const { filters: sixMonthFilters } = validateMasterCallListFilters({ dueCategory: '6m' });
     assert.deepEqual(filterMasterCallListRecords(records, sixMonthFilters, 'CCM'), [records[2]]);
+    const today = new Date();
+    const pastDueRecords = [
+      { dueDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1), customerName: 'Past' },
+      { dueDate: new Date(today.getFullYear(), today.getMonth(), today.getDate()), customerName: 'Today' },
+    ];
+    const { filters: pastDueFilters } = validateMasterCallListFilters({ dueCategory: 'pastDue' });
+    assert.deepEqual(filterMasterCallListRecords(pastDueRecords, pastDueFilters, 'CCM'), [pastDueRecords[0]]);
 
     for (const search of ['alex hyu', '987654', 'vin123', 'ka01aa', 'ro-100']) {
       const { filters: searchFilters } = validateMasterCallListFilters({ search: ` ${search} ` });
@@ -311,7 +449,7 @@ test('regular CRE Master Call List visibility includes only records assigned to 
   });
 
   test('Master Call List filter validation rejects unsupported values and oversized searches', () => {
-    assert.equal(validateMasterCallListFilters({ dueCategory: 'recent' }).error, 'dueCategory must be 6m, 1y, or allDue.');
+    assert.equal(validateMasterCallListFilters({ dueCategory: 'recent' }).error, 'dueCategory must be 6m, 1y, allDue, or pastDue.');
     assert.equal(validateMasterCallListFilters({ repairType: 'Unknown' }).error, 'repairType is not supported.');
     assert.equal(validateMasterCallListFilters({ search: 'x'.repeat(201) }).error, 'search must be 200 characters or fewer.');
   });

@@ -1,5 +1,5 @@
-import { Fragment } from 'react';
-import { ClipboardList, PhoneCall } from 'lucide-react';
+import { Fragment, useState } from 'react';
+import { ClipboardList, Pencil, PhoneCall, X } from 'lucide-react';
 import { formatDate, formatVehicleAge, getImportedDetail, getLatestImportedDetails, sortRepairOrderVisits } from '../../utils/crmHelpers.js';
 
 export default function CustomerProfilePage(props) {
@@ -15,10 +15,15 @@ export default function CustomerProfilePage(props) {
     expandedServiceVisit,
     getMasterDetailLabel,
     renderCustomerActionPanel,
+    saveCustomerProfile,
+    customerProfileSaving,
     setCustomerProfileTab,
     setExpandedServiceVisit,
     startCall,
   } = props;
+    const [profileEditOpen, setProfileEditOpen] = useState(false);
+    const [profileEditForm, setProfileEditForm] = useState(null);
+    const [profileEditError, setProfileEditError] = useState('');
     if (!customerProfile) return null;
     const profileName = customerProfile.name || customerProfile.fullName || customerProfile.customerName || 'Customer';
     const profileMobile = customerProfile.mobile || customerProfile.mobileNumber || '';
@@ -26,7 +31,35 @@ export default function CustomerProfilePage(props) {
     const profileCalls = callLogs.filter((call) => call.customer?.id === customerProfile.id || call.customerId === customerProfile.id);
     const serviceVisits = sortRepairOrderVisits(customerProfile.visits || customerProfile.workshopVisits || []);
     const customerImportedDetails = getLatestImportedDetails(serviceVisits);
-    const profileEmail = getImportedDetail(customerImportedDetails, 'email', 'e-mail') || customerProfile.email;
+    const profileEmail = customerProfile.email || getImportedDetail(customerImportedDetails, 'email', 'e-mail') || '';
+    const profileAddress = customerProfile.address || getImportedDetail(customerImportedDetails, 'address', 'addressLine', 'customerAddress') || '';
+    const profileCity = customerProfile.city || getImportedDetail(customerImportedDetails, 'city', 'customerCity') || '';
+    const profilePin = customerProfile.pin || getImportedDetail(customerImportedDetails, 'pin', 'pinCode', 'customerPin') || '';
+    const profilePhoneMissing = !profileMobile.trim() || ['-', '—'].includes(profileMobile.trim());
+
+    function openProfileEditor() {
+      setProfileEditForm({
+        fullName: profileName === 'Customer' ? '' : profileName,
+        mobileNumber: '',
+        email: profileEmail || '',
+        address: profileAddress,
+        city: profileCity,
+        pin: profilePin,
+      });
+      setProfileEditError('');
+      setProfileEditOpen(true);
+    }
+
+    async function submitProfileEdit(event) {
+      event.preventDefault();
+      setProfileEditError('');
+      try {
+        await saveCustomerProfile(profileEditForm);
+        setProfileEditOpen(false);
+      } catch (error) {
+        setProfileEditError(error.response?.data?.message || 'Could not save customer profile.');
+      }
+    }
 
     return (
       <>
@@ -44,23 +77,33 @@ export default function CustomerProfilePage(props) {
               {profileEmail && <span className="customer-profile-email">{profileEmail}</span>}
               <dl className="customer-profile-customer-details">
                 {[
-                  ['Address', getImportedDetail(customerImportedDetails, 'address')],
-                  ['City', getImportedDetail(customerImportedDetails, 'city')],
-                  ['PIN', getImportedDetail(customerImportedDetails, 'pin', 'pinCode')],
+                  ['Address', profileAddress],
+                  ['City', profileCity],
+                  ['PIN', profilePin],
                 ].filter(([, value]) => value != null && value !== '').map(([label, value]) => (
                   <div key={label}><dt>{label}</dt><dd>{String(value)}</dd></div>
                 ))}
               </dl>
               {currentRole === 'CRE' && (
-                <button
-                  type="button"
-                  className="primary-btn customer-profile-call-btn"
-                  disabled={!customerProfile.customerId || !profileMobile}
-                  onClick={() => startCall(
-                    customerProfile,
-                    customerProfileVehicleId || vehicles.find((vehicle) => vehicle.allocations?.some((allocation) => allocation.creId === currentUser?.id))?.id,
-                  )}
-                ><PhoneCall size={16} aria-hidden="true" />Call customer</button>
+                <div className="customer-profile-actions">
+                  <button
+                    type="button"
+                    className="primary-btn customer-profile-call-btn"
+                    disabled={!customerProfile.customerId || !profileMobile}
+                    onClick={() => startCall(
+                      customerProfile,
+                      customerProfileVehicleId || vehicles.find((vehicle) => vehicle.allocations?.some((allocation) => allocation.creId === currentUser?.id))?.id,
+                    )}
+                  ><PhoneCall size={16} aria-hidden="true" />Call customer</button>
+                  <button
+                    type="button"
+                    className="outline-btn customer-profile-edit-btn"
+                    disabled={!profilePhoneMissing}
+                    aria-label={profilePhoneMissing ? 'Edit customer profile' : 'Edit customer profile, disabled because a phone number is on file'}
+                    title={profilePhoneMissing ? 'Add the missing customer contact details' : 'Editing is disabled because a phone number is on file.'}
+                    onClick={openProfileEditor}
+                  ><Pencil size={15} aria-hidden="true" />Edit</button>
+                </div>
               )}
             </div>
           </div>
@@ -276,6 +319,43 @@ export default function CustomerProfilePage(props) {
           )}
         </section>
         {customerPanel.mode === 'call' && renderCustomerActionPanel()}
+        {profileEditOpen && profileEditForm && (
+          <div
+            className="modal-backdrop customer-profile-edit-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget && !customerProfileSaving) setProfileEditOpen(false);
+            }}
+          >
+            <section className="modal-card customer-profile-edit-modal" role="dialog" aria-modal="true" aria-labelledby="customer-profile-edit-title">
+              <header className="customer-profile-edit-heading">
+                <div>
+                  <p className="eyebrow">Customer details</p>
+                  <h2 id="customer-profile-edit-title">Complete customer profile</h2>
+                </div>
+                <button type="button" className="icon-btn" aria-label="Close edit profile dialog" disabled={customerProfileSaving} onClick={() => setProfileEditOpen(false)}>
+                  <X size={18} aria-hidden="true" />
+                </button>
+              </header>
+              <form className="customer-form customer-profile-edit-form" onSubmit={submitProfileEdit}>
+                {profileEditError && <p className="form-alert error" role="alert">{profileEditError}</p>}
+                <p className="performance-note">A phone number is required. After it is saved, profile editing will be disabled.</p>
+                <div className="form-grid">
+                  <label>Name<input required maxLength="200" value={profileEditForm.fullName} onChange={(event) => setProfileEditForm({ ...profileEditForm, fullName: event.target.value })} /></label>
+                  <label>Phone number<input required maxLength="50" type="tel" value={profileEditForm.mobileNumber} onChange={(event) => setProfileEditForm({ ...profileEditForm, mobileNumber: event.target.value })} /></label>
+                  <label>Email<input maxLength="254" type="email" value={profileEditForm.email} onChange={(event) => setProfileEditForm({ ...profileEditForm, email: event.target.value })} /></label>
+                  <label>City<input maxLength="100" value={profileEditForm.city} onChange={(event) => setProfileEditForm({ ...profileEditForm, city: event.target.value })} /></label>
+                  <label>PIN<input maxLength="20" value={profileEditForm.pin} onChange={(event) => setProfileEditForm({ ...profileEditForm, pin: event.target.value })} /></label>
+                  <label className="full-width-field">Address<textarea rows="3" maxLength="500" value={profileEditForm.address} onChange={(event) => setProfileEditForm({ ...profileEditForm, address: event.target.value })} /></label>
+                </div>
+                <div className="form-actions">
+                  <button type="button" className="outline-btn" disabled={customerProfileSaving} onClick={() => setProfileEditOpen(false)}>Cancel</button>
+                  <button type="submit" className="primary-btn" disabled={customerProfileSaving}>{customerProfileSaving ? 'Saving…' : 'Save profile'}</button>
+                </div>
+              </form>
+            </section>
+          </div>
+        )}
       </>
     );
 }

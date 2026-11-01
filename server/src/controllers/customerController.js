@@ -1,11 +1,92 @@
 import { randomUUID } from 'node:crypto';
 import { prisma } from '../config/prisma.js';
 import { validateCustomerPayload } from '../utils/customerRules.js';
+import { creCustomerWhere } from '../utils/creAccess.js';
 import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
 import { normalizeVin } from '../utils/roleAccess.js';
 
 function normalizedRole(role) {
   return String(role || '').toUpperCase();
+}
+
+export async function updateCreCustomerProfile(req, res) {
+  if (normalizedRole(req.user?.role) !== 'CRE') {
+    return res.status(403).json({ message: 'Only CRE users can update this customer profile.' });
+  }
+
+  const body = req.body || {};
+  const editableFields = new Set(['fullName', 'mobileNumber', 'email', 'address', 'city', 'pin']);
+  if (Object.keys(body).some((key) => !editableFields.has(key))) {
+    return res.status(400).json({ message: 'Only name, phone, email, address, city, and PIN can be updated.' });
+  }
+
+  const fullName = String(body.fullName || '').trim();
+  const mobileNumber = String(body.mobileNumber || '').trim();
+  const phoneDigits = mobileNumber.replace(/\D/g, '');
+  const email = String(body.email || '').trim().toLowerCase();
+  const address = String(body.address || '').trim();
+  const city = String(body.city || '').trim();
+  const pin = String(body.pin || '').trim();
+
+  if (!fullName || fullName.length > 200) {
+    return res.status(400).json({ message: 'Customer name is required and must be 200 characters or fewer.' });
+  }
+  if (phoneDigits.length < 7 || phoneDigits.length > 15 || mobileNumber.length > 50) {
+    return res.status(400).json({ message: 'A valid customer phone number is required.' });
+  }
+  if (email.length > 254 || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    return res.status(400).json({ message: 'Email address is invalid.' });
+  }
+  if (address.length > 500 || city.length > 100 || pin.length > 20) {
+    return res.status(400).json({ message: 'Address, city, or PIN exceeds the allowed length.' });
+  }
+
+  const customerWhere = {
+    id: req.params.id,
+    ...creCustomerWhere(req.user),
+  };
+  const customer = await prisma.customer.findFirst({
+    where: customerWhere,
+    select: { id: true, mobileNumber: true },
+  });
+  if (!customer) return res.status(404).json({ message: 'Customer not found or not assigned to your team.' });
+  const existingMobileNumber = String(customer.mobileNumber || '').trim();
+  if (existingMobileNumber && !['-', '—'].includes(existingMobileNumber)) {
+    return res.status(409).json({ message: 'This profile already has a phone number and can no longer be edited.' });
+  }
+
+  const updated = await prisma.customer.updateMany({
+    where: {
+      id: customer.id,
+      mobileNumber: customer.mobileNumber,
+    },
+    data: {
+      fullName,
+      mobileNumber,
+      email: email || null,
+      address: address || null,
+      city: city || null,
+      pin: pin || null,
+    },
+  });
+  if (updated.count !== 1) {
+    return res.status(409).json({ message: 'This profile was updated already. Reload it to view the saved details.' });
+  }
+
+  const savedCustomer = await prisma.customer.findUnique({
+    where: { id: customer.id },
+    select: {
+      id: true,
+      fullName: true,
+      mobileNumber: true,
+      email: true,
+      address: true,
+      city: true,
+      pin: true,
+    },
+  });
+  if (!savedCustomer) return res.status(404).json({ message: 'Customer profile was removed after it was updated.' });
+  return res.json({ customer: savedCustomer });
 }
 
 export async function createCustomer(req, res) {

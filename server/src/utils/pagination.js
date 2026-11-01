@@ -29,14 +29,57 @@ export function filterServiceListRecords(records, query = {}) {
   const search = String(query.search || '').trim().toLocaleLowerCase();
   const dueCategory = String(query.dueCategory || '').trim();
   const repairType = String(query.repairType || '').trim();
-  if (search.length > 200) return { error: 'search must be 200 characters or fewer.' };
-  if (dueCategory && !['6m', '1y', 'allDue'].includes(dueCategory)) {
-    return { error: 'dueCategory must be 6m, 1y, or allDue.' };
+  const milestone = String(query.milestone || '').trim();
+  const graceStatus = String(query.graceStatus || '').trim();
+  const contactStatus = String(query.contactStatus || '').trim();
+  const assigneeId = String(query.assigneeId || '').trim();
+  const followUpStatus = String(query.followUpStatus || '').trim();
+  const pastDue = String(query.pastDue || '').trim();
+  const dateFilters = {};
+  for (const key of ['saleFrom', 'saleTo', 'dueFrom', 'dueTo', 'expiryFrom', 'expiryTo']) {
+    const value = String(query[key] || '').trim();
+    if (!value) continue;
+    const date = parseDateFilter(value);
+    if (!date) return { error: `${key} must be a valid YYYY-MM-DD date.` };
+    dateFilters[key] = date;
   }
+  if (search.length > 200) return { error: 'search must be 200 characters or fewer.' };
+  if (dueCategory && !['6m', '1y', 'allDue', 'pastDue'].includes(dueCategory)) {
+    return { error: 'dueCategory must be 6m, 1y, allDue, or pastDue.' };
+  }
+  if (milestone && !['1', '2', '3'].includes(milestone)) return { error: 'milestone must be 1, 2, or 3.' };
+  if (graceStatus && !['upcoming', 'grace', 'expired'].includes(graceStatus)) return { error: 'graceStatus is not supported.' };
+  if (contactStatus && !['Contacted', 'Not contacted'].includes(contactStatus)) return { error: 'contactStatus is not supported.' };
+  if (followUpStatus && !['scheduled', 'notScheduled'].includes(followUpStatus)) return { error: 'followUpStatus is not supported.' };
+  if (pastDue && !['true', 'false'].includes(pastDue)) return { error: 'pastDue must be true or false.' };
+  for (const [fromKey, toKey] of [['saleFrom', 'saleTo'], ['dueFrom', 'dueTo'], ['expiryFrom', 'expiryTo']]) {
+    if (dateFilters[fromKey] && dateFilters[toKey] && dateFilters[fromKey] > dateFilters[toKey]) {
+      return { error: `${fromKey} must not be after ${toKey}.` };
+    }
+  }
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const inRange = (value, from, to) => {
+    if (!from && !to) return true;
+    const date = parseDateFilter(value);
+    return Boolean(date && (!from || date >= from) && (!to || date <= to));
+  };
   const filtered = records.filter((record) => {
+    if (dueCategory === 'pastDue' && !isPastDue(record.dueDate, todayStart)) return false;
     if (dueCategory === 'allDue' && !['6m', '1y'].includes(record.dueCategory)) return false;
-    if (dueCategory && dueCategory !== 'allDue' && record.dueCategory !== dueCategory) return false;
+    if (dueCategory && !['allDue', 'pastDue'].includes(dueCategory) && record.dueCategory !== dueCategory) return false;
+    if (pastDue === 'true' && !isPastDue(record.dueDate, todayStart)) return false;
+    if (pastDue === 'false' && isPastDue(record.dueDate, todayStart)) return false;
     if (repairType && record.type !== repairType) return false;
+    if (milestone && String(record.milestone) !== milestone) return false;
+    if (graceStatus && record.graceStatus !== graceStatus) return false;
+    if (contactStatus && record.contactStatus !== contactStatus) return false;
+    if (assigneeId && record.assigneeId !== assigneeId) return false;
+    if (followUpStatus === 'scheduled' && !record.followUp) return false;
+    if (followUpStatus === 'notScheduled' && record.followUp) return false;
+    if (!inRange(record.saleDate, dateFilters.saleFrom, dateFilters.saleTo)
+      || !inRange(record.dueDate, dateFilters.dueFrom, dateFilters.dueTo)
+      || !inRange(record.expiryDate || record.warrantyExpiryDate, dateFilters.expiryFrom, dateFilters.expiryTo)) return false;
     if (!search) return true;
     return [
       record.name,
@@ -54,4 +97,19 @@ export function filterServiceListRecords(records, query = {}) {
     ].some((value) => String(value || '').toLocaleLowerCase().includes(search));
   });
   return { records: filtered };
+}
+
+function parseDateFilter(value) {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return date.getFullYear() === Number(match[1]) && date.getMonth() === Number(match[2]) - 1 && date.getDate() === Number(match[3])
+    ? date
+    : null;
+}
+
+function isPastDue(value, todayStart) {
+  const dueDate = parseDateFilter(value);
+  return Boolean(dueDate && dueDate < todayStart);
 }

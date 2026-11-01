@@ -22,10 +22,15 @@ const MasterCallRow = memo(function MasterCallRow({
   index,
 }) {
   const name = record.name || record.customerName;
+  const dueDate = record.dueDate ? new Date(record.dueDate) : null;
+  const today = new Date();
+  const isPastDue = dueDate
+    && !Number.isNaN(dueDate.getTime())
+    && dueDate < new Date(today.getFullYear(), today.getMonth(), today.getDate());
   return (
-    <tr ref={measureRef} data-index={index}>
+    <tr ref={measureRef} data-index={index} className={isPastDue ? 'due-overdue-row' : undefined}>
       <td><RepairTypeBadge type={record.type} /></td>
-      <td className={record.dueDate && new Date(record.dueDate) < new Date() ? 'due-overdue' : undefined}>{record.dueDate ? new Date(record.dueDate).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}</td>
+      <td className={isPastDue ? 'due-overdue' : undefined}>{record.dueDate ? dueDate.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}</td>
       <td>{canOpenProfile ? (
         <button type="button" className="text-link" onClick={() => onOpenProfile(record)}>
           {name || '—'}

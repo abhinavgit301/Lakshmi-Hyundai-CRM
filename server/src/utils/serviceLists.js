@@ -32,9 +32,8 @@ export function filterMilestoneCompletionByVisits(milestones, records) {
   });
 }
 
-// Creates any missing milestone rows for vehicles with a valid sale date, keeps pending due dates
-// aligned with the sale date, and marks a milestone completed only when a free-service repair order
-// reliably establishes it. A completed milestone is never reopened, so re-imports cannot reset it.
+// Creates missing milestones from the original sale date and never rebases existing milestone dates.
+// A completed milestone is never reopened, so re-imports cannot reset its date or completion history.
 export async function syncFreeServiceMilestones(vehicles, db = prisma) {
   const usable = vehicles.filter((vehicle) => vehicle.saleDate);
   if (!usable.length) return [];
@@ -66,20 +65,16 @@ export async function syncFreeServiceMilestones(vehicles, db = prisma) {
         continue;
       }
       if (current.status === 'completed') continue;
-      const visit = findCompletingVisit(dueDate, vehicle.workshopVisits);
-      const dueChanged = current.dueDate.getTime() !== dueDate.getTime();
-      if (visit || dueChanged) {
+      const visit = findCompletingVisit(current.dueDate, vehicle.workshopVisits);
+      if (visit) {
         updates.push(db.freeServiceMilestone.update({
           where: { id: current.id },
           data: {
-            dueDate,
-            ...(visit ? {
-              status: 'completed',
-              completedAt: new Date(visit.visitDate),
-              completedByRepairOrderNo: visit.repairOrderNo,
-              completedByWorkshopVisitId: visit.id,
-              physicalVehicleId: vehicle.physicalVehicleId,
-            } : {}),
+            status: 'completed',
+            completedAt: new Date(visit.visitDate),
+            completedByRepairOrderNo: visit.repairOrderNo,
+            completedByWorkshopVisitId: visit.id,
+            physicalVehicleId: vehicle.physicalVehicleId,
           },
         }));
       }

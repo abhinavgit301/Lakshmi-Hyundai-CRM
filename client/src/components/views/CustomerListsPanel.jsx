@@ -105,9 +105,9 @@ export default function CustomerListsPanel(props) {
               <section className="panel customer-list-panel">
                 <div className="panel-header">
                   <h3>Follow-up queue · {followUpViews[activeView].label}</h3>
-                  <span>{followUpsLoading ? 'Loading…' : `${followUpServiceKind ? visibleFollowUpTableRecords.length : visibleFollowUps.length} records`}</span>
+                  <span>{followUpsLoading ? 'Loading…' : `${followUpPageInfo[followUpViews[activeView].source]?.total ?? 0} total records`}</span>
                 </div>
-                {renderAccordionFilters(followUpSearch, setFollowUpSearch, 'Follow-up filters')}
+                {renderAccordionFilters(followUpSearch, setFollowUpSearch, 'Follow-up filters', followUpServiceKind ? `followup-${followUpServiceKind}` : null)}
                 {followUpServiceKind ? renderServiceListTable(
                   followUpServiceKind,
                   visibleFollowUpTableRecords,
@@ -176,9 +176,9 @@ export default function CustomerListsPanel(props) {
               <section className="panel customer-list-panel">
                 <div className="panel-header">
                   <h3>{dueViews[activeView].label}</h3>
-                  <span>{dueLoading ? 'Loading…' : `${visibleDueRecords.length} records`}</span>
+                  <span>{dueLoading ? 'Loading…' : `${duePageInfo[activeView]?.total ?? 0} total records`}</span>
                 </div>
-                {renderAccordionFilters(dueSearch, setDueSearch, 'Customer filters')}
+                {renderAccordionFilters(dueSearch, setDueSearch, 'Customer filters', dueViews[activeView].kind === 'due' ? 'due' : dueViews[activeView].kind)}
                 {dueError && <p className="form-alert error" role="alert">{dueError}</p>}
                 {dueIssues.length > 0 && (
                   <details className="form-alert info data-issues">

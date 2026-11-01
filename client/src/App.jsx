@@ -214,6 +214,7 @@ function App() {
   const [customerProfileVehicleId, setCustomerProfileVehicleId] = useState('');
   const [customerProfileLoading, setCustomerProfileLoading] = useState(false);
   const [customerProfileError, setCustomerProfileError] = useState('');
+  const [customerProfileSaving, setCustomerProfileSaving] = useState(false);
   const [customerProfileTab, setCustomerProfileTab] = useState('service');
   const [expandedServiceVisit, setExpandedServiceVisit] = useState(null);
   const [masterEntryForm, setMasterEntryForm] = useState({
@@ -282,6 +283,7 @@ function App() {
   const [followUpAppliedFilters, setFollowUpAppliedFilters] = useState({});
   const [accordionDueCategoryFilter, setAccordionDueCategoryFilter] = useState('');
   const [accordionRepairTypeFilter, setAccordionRepairTypeFilter] = useState('');
+  const [serviceListFilters, setServiceListFilters] = useState({});
   const [followUpListRecords, setFollowUpListRecords] = useState([]);
   const [allocationSearch, setAllocationSearch] = useState('');
   const [dueIssues, setDueIssues] = useState([]);
@@ -1152,6 +1154,10 @@ function App() {
       if (search.trim()) params.set('search', search.trim());
       if (dueCategory) params.set('dueCategory', dueCategory);
       if (repairType) params.set('repairType', repairType);
+      for (const [key, value] of Object.entries(serviceListFilters)) {
+        if (value && key !== 'pastDueOnly') params.set(key, value);
+      }
+      if (view.kind === 'due' && serviceListFilters.pastDueOnly === 'true') params.set('pastDue', 'true');
       if (view.kind === 'due') params.set('window', view.window);
       const endpoint = `${view.kind === 'free' ? '/free-service' : view.kind === 'warranty' ? '/warranty' : '/call-list/due'}?${params}`;
       const requests = [api.get(endpoint)];
@@ -1187,7 +1193,7 @@ function App() {
       }
       if (append) dueLoadMoreRef.current[viewName] = false;
     }
-  }, [currentRole, dueSearch, accordionDueCategoryFilter, accordionRepairTypeFilter]);
+  }, [currentRole, dueSearch, accordionDueCategoryFilter, accordionRepairTypeFilter, serviceListFilters]);
 
   async function loadMoreDueData() {
     const page = duePageInfo[activeView];
@@ -1206,6 +1212,7 @@ function App() {
     setDueSearch('');
     setAccordionDueCategoryFilter('');
     setAccordionRepairTypeFilter('');
+    setServiceListFilters({});
     setDueRecords([]);
     setDueIssues([]);
     setDuePageInfo((current) => ({ ...current, [viewName]: { total: 0, hasMore: false, offset: 0 } }));
@@ -1277,6 +1284,37 @@ function App() {
     }
     setCustomerProfileLoading(false);
     setCallLogsLoading(false);
+  }
+
+  async function saveCustomerProfile(profileFields) {
+    if (!customerProfile?.id) throw new Error('Customer profile is not loaded.');
+    setCustomerProfileSaving(true);
+    try {
+      const response = await api.patch(`/customers/${encodeURIComponent(customerProfile.id)}/profile`, profileFields);
+      const savedCustomer = response.data.customer;
+      setCustomerProfile((current) => current && current.id === savedCustomer.id
+        ? {
+          ...current,
+          ...savedCustomer,
+          name: savedCustomer.fullName,
+          customerName: savedCustomer.fullName,
+          mobile: savedCustomer.mobileNumber,
+          customerId: current.customerId || current.id,
+        }
+        : current);
+      setCustomers((current) => current.map((customer) => customer.id === savedCustomer.id
+        ? {
+          ...customer,
+          ...savedCustomer,
+          name: savedCustomer.fullName,
+          customerName: savedCustomer.fullName,
+          mobile: savedCustomer.mobileNumber,
+        }
+        : customer));
+      return savedCustomer;
+    } finally {
+      setCustomerProfileSaving(false);
+    }
   }
 
   async function openCustomerProfile(customer) {
@@ -1435,6 +1473,15 @@ function App() {
     try {
       const params = new URLSearchParams({ source, limit: '50', offset: String(offset) });
       if (search.trim()) params.set('search', search.trim());
+      const sourceKind = source === 'FREE_SERVICE' ? 'free' : source === 'WARRANTY' ? 'warranty' : null;
+      const supportedFilters = sourceKind === 'free'
+        ? ['milestone', 'graceStatus', 'assigneeId', 'saleFrom', 'saleTo', 'dueFrom', 'dueTo', 'expiryFrom', 'expiryTo', 'followUpFrom', 'followUpTo']
+        : sourceKind === 'warranty'
+          ? ['contactStatus', 'assigneeId', 'saleFrom', 'saleTo', 'expiryFrom', 'expiryTo', 'followUpFrom', 'followUpTo']
+          : [];
+      for (const key of supportedFilters) {
+        if (serviceListFilters[key]) params.set(key, serviceListFilters[key]);
+      }
       const requests = [api.get(`/follow-ups?${params}`)];
       if (!append) {
         requests.push(api.get('/call-list?limit=50&offset=0'));
@@ -1469,7 +1516,7 @@ function App() {
       }
       if (append) followUpLoadMoreRef.current[requestKey] = false;
     }
-  }, [followUpSearch]);
+  }, [followUpSearch, serviceListFilters]);
 
   async function loadMoreFollowUps() {
     const key = followUpViews[activeView]?.source;
@@ -1487,6 +1534,7 @@ function App() {
     setFollowUpSearch('');
     setAccordionDueCategoryFilter('');
     setAccordionRepairTypeFilter('');
+    setServiceListFilters({});
     setDueError('');
     setCustomerPanel({ customerId: null, mode: 'options' });
     setCallError('');
@@ -2362,6 +2410,7 @@ function App() {
       search: dueSearch,
       dueCategory: accordionDueCategoryFilter,
       repairType: accordionRepairTypeFilter,
+      serviceListFilters,
     });
     if (signature === dueAppliedFilters[activeView]) return undefined;
     const timeout = window.setTimeout(() => {
@@ -2373,10 +2422,10 @@ function App() {
       });
     }, 300);
     return () => window.clearTimeout(timeout);
-  }, [activeView, dueSearch, accordionDueCategoryFilter, accordionRepairTypeFilter, loadDueData, dueAppliedFilters]);
+  }, [activeView, dueSearch, accordionDueCategoryFilter, accordionRepairTypeFilter, serviceListFilters, loadDueData, dueAppliedFilters]);
   useEffect(() => {
     if (!(activeView in followUpViews)) return undefined;
-    const signature = JSON.stringify({ viewName: activeView, search: followUpSearch });
+    const signature = JSON.stringify({ viewName: activeView, search: followUpSearch, serviceListFilters });
     const source = followUpViews[activeView].source;
     if (signature === followUpAppliedFilters[source]) return undefined;
     const timeout = window.setTimeout(() => {
@@ -2384,7 +2433,7 @@ function App() {
       loadFollowUps(source, { search: followUpSearch });
     }, 300);
     return () => window.clearTimeout(timeout);
-  }, [activeView, followUpSearch, loadFollowUps, followUpAppliedFilters]);
+  }, [activeView, followUpSearch, serviceListFilters, loadFollowUps, followUpAppliedFilters]);
   const masterRecords = masterListTeam ? calls.filter((record) => record.ccmId === masterListTeam) : calls;
   const wpCres = masterListCres.filter((cre) => !wpCcmId || cre.ccmId === wpCcmId);
   const wpMaxDaily = Math.max(1, ...(wpData?.daily || []).map((entry) => Math.max(entry.calls, entry.appointments)));
@@ -2445,6 +2494,7 @@ function App() {
     return (
       <Suspense fallback={<SectionSkeleton />}>
         <CustomerProfilePage
+          key={customerProfile.id}
           callLogs={callLogs}
           callLogsLoading={callLogsLoading}
           currentRole={currentRole}
@@ -2456,6 +2506,8 @@ function App() {
           expandedServiceVisit={expandedServiceVisit}
           getMasterDetailLabel={getMasterDetailLabel}
           renderCustomerActionPanel={renderCustomerActionPanel}
+          saveCustomerProfile={saveCustomerProfile}
+          customerProfileSaving={customerProfileSaving}
           setCustomerProfileTab={setCustomerProfileTab}
           setExpandedServiceVisit={setExpandedServiceVisit}
           startCall={startCall}
@@ -2524,7 +2576,12 @@ function App() {
     } : {}),
   };
   const dueSearchTerm = dueSearch.trim().toLowerCase();
-  const visibleDueRecords = dueRecords.filter((record) => matchesAccordionFilters(record, dueSearchTerm));
+  const activeDueKind = dueViews[activeView]?.kind;
+  const visibleDueRecords = dueRecords.filter((record) => matchesAccordionFilters(
+    record,
+    dueSearchTerm,
+    activeDueKind === 'due' ? 'due' : activeDueKind,
+  ));
   const allocationSearchTerm = allocationSearch.trim().toLowerCase();
   const allocationRecords = currentRole === 'CCM'
     ? masterRecords.filter((record) => Boolean(record.assigneeId) || record.allocationQueue)
@@ -2541,9 +2598,16 @@ function App() {
       || (followUp.vehicleId && calls.find((entry) => entry.vehicleId === followUp.vehicleId))
       || followUpListRecords.find((entry) => entry.customerId === followUp.customer.id)
       || calls.find((entry) => entry.customerId === followUp.customer.id);
-    const fallbackExpiry = sourceRecord?.saleDate ? new Date(sourceRecord.saleDate) : null;
-    if (fallbackExpiry && !Number.isNaN(fallbackExpiry.getTime())) fallbackExpiry.setFullYear(fallbackExpiry.getFullYear() + 3);
-    const expiry = sourceRecord?.warrantyExpiryDate || (fallbackExpiry && !Number.isNaN(fallbackExpiry.getTime()) ? fallbackExpiry : null);
+    const saleDate = followUp.vehicle?.saleDate || sourceRecord?.saleDate;
+    const fallbackExpiry = saleDate ? new Date(saleDate) : null;
+    if (fallbackExpiry && !Number.isNaN(fallbackExpiry.getTime())) {
+      const targetMonth = new Date(fallbackExpiry.getFullYear() + 3, fallbackExpiry.getMonth(), 1);
+      const lastDay = new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 0).getDate();
+      fallbackExpiry.setFullYear(targetMonth.getFullYear(), targetMonth.getMonth(), Math.min(fallbackExpiry.getDate(), lastDay));
+    }
+    const expiryValue = sourceRecord?.warrantyExpiryDate || followUp.warrantyExpiryDate
+      || (fallbackExpiry && !Number.isNaN(fallbackExpiry.getTime()) ? fallbackExpiry : null);
+    const expiry = expiryValue ? new Date(expiryValue) : null;
     const fallbackWindowStart = expiry ? new Date(expiry.getFullYear(), expiry.getMonth() - 1, 1) : null;
     const fallbackWindowEnd = expiry ? new Date(expiry.getFullYear(), expiry.getMonth(), 0) : null;
     return {
@@ -2558,18 +2622,26 @@ function App() {
       model: followUp.vehicle?.model || sourceRecord?.model,
       registrationNumber: followUp.vehicle?.registrationNumber || sourceRecord?.registrationNumber,
       vin: followUp.vehicle?.vin || sourceRecord?.vin,
+      saleDate,
       milestoneName: sourceRecord?.milestoneName || (followUp.milestone?.milestone ? `${['', 'First', 'Second', 'Third'][followUp.milestone.milestone]} free service` : 'Free service'),
       dueDate: followUp.milestone?.dueDate || sourceRecord?.dueDate,
+      expiryDate: sourceRecord?.expiryDate || followUp.expiryDate,
+      graceStatus: sourceRecord?.graceStatus || followUp.graceStatus,
       warrantyExpiryDate: expiry,
       callingWindow: sourceRecord?.callingWindow || (fallbackWindowStart ? { start: fallbackWindowStart, end: fallbackWindowEnd } : null),
       contactStatus: sourceRecord?.contactStatus || 'Not contacted',
       callStatus: sourceRecord?.callStatus || (sourceRecord?.lastCall ? 'Called' : 'Not called'),
       assigneeName: sourceRecord?.assigneeName || followUp.cre?.name || null,
+      assigneeId: sourceRecord?.assigneeId || followUp.cre?.id || null,
       followUp: { id: followUp.id, followUpAt: followUp.followUpAt },
       callSource: followUp.source,
     };
   }) : [];
-  const visibleFollowUpTableRecords = followUpTableRecords.filter((record) => matchesAccordionFilters(record, followUpSearchTerm));
+  const visibleFollowUpTableRecords = followUpTableRecords.filter((record) => matchesAccordionFilters(
+    record,
+    followUpSearchTerm,
+    followUpServiceKind ? `followup-${followUpServiceKind}` : null,
+  ));
   const visibleFollowUps = followUps.filter((followUp) => {
     const record = (followUp.vehicleId && followUpListRecords.find((entry) => entry.vehicleId === followUp.vehicleId))
       || (followUp.vehicleId && calls.find((entry) => entry.vehicleId === followUp.vehicleId))
@@ -2598,14 +2670,19 @@ function App() {
   const dayAppointments = appointments.filter((appointment) => localDateKey(appointment.scheduledAt) === selectedDay);
   const userTree = buildUserTree(managedUsers);
 
-  function matchesAccordionFilters(record, search) {
-    if (accordionDueCategoryFilter) {
+  function matchesAccordionFilters(record, search, kind) {
+    if (kind === 'due' && accordionDueCategoryFilter) {
       const dueCategory = record.dueCategory;
       if (accordionDueCategoryFilter === 'allDue') {
         if (!['6m', '1y'].includes(dueCategory)) return false;
       } else if (dueCategory !== accordionDueCategoryFilter) return false;
     }
-    if (accordionRepairTypeFilter && record.type !== accordionRepairTypeFilter) return false;
+    if (kind === 'due' && accordionRepairTypeFilter && record.type !== accordionRepairTypeFilter) return false;
+    if (kind === 'due' && serviceListFilters.pastDueOnly === 'true') {
+      const dueDate = record.dueDate ? new Date(record.dueDate) : null;
+      const today = new Date();
+      if (!dueDate || Number.isNaN(dueDate.getTime()) || dueDate >= new Date(today.getFullYear(), today.getMonth(), today.getDate())) return false;
+    }
     if (!search) return true;
 
     const searchValues = [
@@ -2628,16 +2705,22 @@ function App() {
     return searchValues.some((value) => String(value || '').toLowerCase().includes(search));
   }
 
-  function renderAccordionFilters(search, setSearch, ariaLabel) {
+  function renderAccordionFilters(search, setSearch, ariaLabel, kind) {
     return (
       <AccordionFilters
         search={search}
         onSearchChange={setSearch}
         ariaLabel={ariaLabel}
+        kind={kind}
         dueCategory={accordionDueCategoryFilter}
         onDueCategoryChange={setAccordionDueCategoryFilter}
         repairType={accordionRepairTypeFilter}
         onRepairTypeChange={setAccordionRepairTypeFilter}
+        filters={serviceListFilters}
+        onFilterChange={(key, value) => setServiceListFilters((current) => ({ ...current, [key]: value }))}
+        onClear={() => setServiceListFilters({})}
+        currentRole={currentRole}
+        allocationCres={allocationCres}
       />
     );
   }
@@ -2784,11 +2867,13 @@ function App() {
     return (
       <main className="auth-loading" aria-live="polite">
         <div className="initial-progress" aria-hidden="true"><span /></div>
-        <div className="initial-load-message">
-          <h1>Workspace is loading</h1>
-          <p>please wait</p>
+        <div className="initial-load-card">
+          <div className="initial-load-message">
+            <h1>Workspace is loading</h1>
+            <p>please wait</p>
+          </div>
+          <button type="button" className="primary-btn" onClick={retryInitialLoad}>Retry</button>
         </div>
-        <button type="button" className="primary-btn" onClick={retryInitialLoad}>Retry</button>
       </main>
     );
   }
@@ -2909,6 +2994,9 @@ function App() {
           <p className="eyebrow">Signed in</p>
           <strong>{currentUser.name}</strong>
           <span>{currentRole === 'FREE_SERVICE_CRE' ? 'Free-Service CRE' : currentUser.role} · {currentUser.username}</span>
+          {['ADMIN', 'CCM', 'CRE'].includes(currentRole) && currentUser.dealerCode && (
+            <span>Dealer code · {currentUser.dealerCode}</span>
+          )}
           <button type="button" className="outline-btn" onClick={signOut}>Sign out</button>
         </div>
       </aside>

@@ -9,7 +9,7 @@ import {
   listFollowUps,
   updateFollowUpStatus,
 } from '../controllers/callWorkflowController.js';
-import { createCustomer } from '../controllers/customerController.js';
+import { createCustomer, updateCreCustomerProfile } from '../controllers/customerController.js';
 import { getPerformanceBoard, getQuotaNotifications } from '../controllers/quotaController.js';
 import { getFreeServiceList, getWarrantyList } from '../controllers/serviceListsController.js';
 import { createAppointment, deleteAppointment, updateAppointment } from '../controllers/appointmentController.js';
@@ -101,6 +101,7 @@ router.get('/call-list/due', authMiddleware, requireRole('CRE', 'CCM'), getDueCa
 router.post('/call-list', authMiddleware, requireRole('Admin', 'GM', 'CCM'), createManualCallListEntry);
 router.get('/customers', authMiddleware, getCustomers);
 router.post('/customers', authMiddleware, requireRole('Admin', 'GM', 'CCM'), createCustomer);
+router.patch('/customers/:id/profile', authMiddleware, requireRole('CRE'), updateCreCustomerProfile);
 router.get('/appointments', authMiddleware, requireRole('Admin', 'GM', 'CCM', 'CRE', 'Free-Service CRE'), getAppointments);
 router.post('/appointments', authMiddleware, requireRole('CCM', 'CRE', 'Free-Service CRE'), createAppointment);
 router.patch('/appointments/:id', authMiddleware, requireRole('CCM', 'CRE', 'Free-Service CRE'), updateAppointment);

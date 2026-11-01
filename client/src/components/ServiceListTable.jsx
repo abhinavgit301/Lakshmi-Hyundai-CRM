@@ -14,8 +14,13 @@ const ServiceListRow = memo(function ServiceListRow({
   measureRef,
   index,
 }) {
+  const graceLabel = record.graceStatus === 'grace' ? 'Grace period' : record.graceStatus === 'expired' ? 'Expired' : 'Upcoming';
   return (
-    <tr ref={measureRef} data-index={index}>
+    <tr
+      ref={measureRef}
+      data-index={index}
+      className={record.graceStatus === 'grace' ? 'service-grace-period-row' : undefined}
+    >
       <td><button type="button" className="text-link" onClick={() => onOpenCustomer(record, 'profile')}>{record.name || '—'}</button></td>
       <td>{record.mobile || '—'}</td>
       <td>{record.registrationNumber || '—'}</td>
@@ -25,6 +30,12 @@ const ServiceListRow = memo(function ServiceListRow({
         <>
           <td>{record.milestoneName}</td>
           <td>{formatDate(record.dueDate)}</td>
+          <td>
+            <div>{formatDate(record.expiryDate)}</div>
+            <span className={`badge ${record.graceStatus === 'grace' ? 'badge-red' : record.graceStatus === 'expired' ? 'badge-neutral' : 'badge-blue'}`}>
+              {graceLabel}
+            </span>
+          </td>
           <td>{formatDate(record.callingStartDate)}</td>
           <td>{record.lastCall ? `${formatDate(record.lastCall.createdAt)} · ${formatOutcome(record.lastCall.outcome)}` : record.callStatus}</td>
         </>
@@ -67,7 +78,7 @@ function ServiceListTableBase({
 }) {
   const isFree = kind === 'free';
   const isCcm = currentRole === 'CCM';
-  const columnCount = 11 + (followUpQueue ? 1 : 0);
+  const columnCount = 11 + (isFree ? 1 : 0) + (followUpQueue ? 1 : 0);
   const { enabled, attachBody, indexes, measureElement, paddingTop, paddingBottom } = useWindowRows(records.length);
   const renderRow = (record, index, measureRef) => (
     <ServiceListRow
@@ -96,6 +107,7 @@ function ServiceListTableBase({
               <>
                 <th>Milestone</th>
                 <th>Due date</th>
+                <th>Expiry / status</th>
                 <th>Calling from</th>
                 <th>Call status</th>
               </>

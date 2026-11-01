@@ -29,3 +29,54 @@ test('service list filtering runs before pagination, including search and due ca
   assert.deepEqual(filtered.records.map(({ id }) => id), ['match']);
   assert.match(filterServiceListRecords([], { search: 'x'.repeat(201) }).error, /200 characters/);
 });
+
+test('service list filters combine milestone, lifecycle status, date ranges, assignee, and follow-up state', () => {
+  const records = [
+    {
+      id: 'grace',
+      name: 'Grace Customer',
+      milestone: 1,
+      graceStatus: 'grace',
+      saleDate: new Date(2024, 0, 15),
+      dueDate: new Date(2024, 2, 15),
+      expiryDate: new Date(2024, 5, 15),
+      assigneeId: 'cre-1',
+      followUp: { id: 'follow-up-1' },
+    },
+    {
+      id: 'expired',
+      name: 'Expired Customer',
+      milestone: 1,
+      graceStatus: 'expired',
+      saleDate: new Date(2024, 0, 15),
+      dueDate: new Date(2024, 2, 15),
+      expiryDate: new Date(2024, 5, 15),
+      assigneeId: 'cre-2',
+    },
+  ];
+  const filtered = filterServiceListRecords(records, {
+    milestone: '1',
+    graceStatus: 'grace',
+    saleFrom: '2024-01-01',
+    saleTo: '2024-01-31',
+    expiryFrom: '2024-06-01',
+    expiryTo: '2024-06-30',
+    assigneeId: 'cre-1',
+    followUpStatus: 'scheduled',
+  });
+  assert.deepEqual(filtered.records.map(({ id }) => id), ['grace']);
+  assert.equal(filterServiceListRecords(records, { milestone: '1', graceStatus: 'grace', assigneeId: 'cre-1', followUpStatus: 'notScheduled' }).records.length, 0);
+  assert.equal(filterServiceListRecords(records, { saleFrom: '2024-02-01', saleTo: '2024-01-01' }).error, 'saleFrom must not be after saleTo.');
+});
+
+test('past-due service filtering is date-based and combines with the cohort', () => {
+  const today = new Date();
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  const records = [
+    { id: 'past', dueDate: yesterday, dueCategory: '6m' },
+    { id: 'future', dueDate: tomorrow, dueCategory: '6m' },
+    { id: 'other', dueDate: yesterday, dueCategory: '1y' },
+  ];
+  assert.deepEqual(filterServiceListRecords(records, { pastDue: 'true', dueCategory: '6m' }).records.map(({ id }) => id), ['past']);
+});

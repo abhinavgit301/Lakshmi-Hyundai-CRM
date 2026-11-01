@@ -1,5 +1,5 @@
 import { PhoneCall, Plus, Trash2 } from 'lucide-react';
-import { dueViews, followUpViews, formatVehicleAge } from '../../utils/crmHelpers.js';
+import { dueViews, followUpViews, formatVehicleAge, isPastDueDate } from '../../utils/crmHelpers.js';
 
 export default function CustomerListsPanel(props) {
   const {
@@ -141,7 +141,7 @@ export default function CustomerListsPanel(props) {
                         return (
                           <tr key={followUp.id}>
                             <td>{typeLabel || '—'}</td>
-                            <td className={dueValue && new Date(dueValue) < new Date() ? 'due-overdue' : undefined}>{dueValue ? new Date(dueValue).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}</td>
+                            <td className={isPastDueDate(dueValue) ? 'due-overdue' : undefined}>{dueValue ? new Date(dueValue).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}</td>
                             <td><button type="button" className="text-link" onClick={() => openDueCustomer({ customerId: followUp.customer.id, vehicleId: record?.vehicleId }, 'profile')}>{followUp.customer.fullName}</button></td>
                             <td>{followUp.customer.mobileNumber || '—'}</td>
                             <td>{followUp.vehicle?.model || record?.model || '—'}</td>

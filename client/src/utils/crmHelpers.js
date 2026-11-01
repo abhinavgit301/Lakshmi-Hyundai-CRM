@@ -105,6 +105,15 @@ export function localDateKey(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+export function isPastDueDate(value, today = new Date()) {
+  if (!value) return false;
+  const dueDate = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(dueDate.getTime())) return false;
+  const dueDay = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return dueDay < todayStart;
+}
+
 export function buildUserTree(users) {
   const gms = users.filter((user) => user.role === 'GM');
   const ccms = users.filter((user) => user.role === 'CCM');

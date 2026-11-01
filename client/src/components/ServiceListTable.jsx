@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import { PhoneCall } from 'lucide-react';
-import { formatDate, formatOutcome } from '../utils/crmHelpers.js';
+import { formatDate, formatOutcome, isPastDueDate } from '../utils/crmHelpers.js';
 import SpacerRow from './SpacerRow.jsx';
 import { useWindowRows } from '../hooks/useWindowRows.js';
 
@@ -16,11 +16,7 @@ const ServiceListRow = memo(function ServiceListRow({
 }) {
   const graceLabel = record.graceStatus === 'grace' ? 'Grace period' : record.graceStatus === 'expired' ? 'Expired' : 'Upcoming';
   return (
-    <tr
-      ref={measureRef}
-      data-index={index}
-      className={record.graceStatus === 'grace' ? 'service-grace-period-row' : undefined}
-    >
+    <tr ref={measureRef} data-index={index}>
       <td><button type="button" className="text-link" onClick={() => onOpenCustomer(record, 'profile')}>{record.name || '—'}</button></td>
       <td>{record.mobile || '—'}</td>
       <td>{record.registrationNumber || '—'}</td>
@@ -29,7 +25,7 @@ const ServiceListRow = memo(function ServiceListRow({
       {isFree ? (
         <>
           <td>{record.milestoneName}</td>
-          <td>{formatDate(record.dueDate)}</td>
+          <td className={isPastDueDate(record.dueDate) ? 'due-overdue' : undefined}>{formatDate(record.dueDate)}</td>
           <td>
             <div>{formatDate(record.expiryDate)}</div>
             <span className={`badge ${record.graceStatus === 'grace' ? 'badge-red' : record.graceStatus === 'expired' ? 'badge-neutral' : 'badge-blue'}`}>

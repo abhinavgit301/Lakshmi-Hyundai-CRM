@@ -1346,9 +1346,7 @@ tbody tr:hover td { background: #fafbfb; }
 .master-call-list-table th:nth-child(10) { width: calc(var(--crm-density-scale, 1) * 180px); }
 .master-call-list-table th:nth-child(11) { width: calc(var(--crm-density-scale, 1) * 150px); }
 .master-call-list-table .due-overdue { color: #c62828; font-weight: 700; }
-.master-call-list-table tr.due-overdue-row td { background: #fff0f0; }
-.master-call-list-table tr.service-grace-period-row td { background: #fff0f0; }
-.master-call-list-table .badge-red { color: #a61b1b; background: #fde0e0; }
+.master-call-list-table .badge-red { color: #a61b1b; background: transparent; }
 .accordion-advanced-filters { grid-column: 1 / -1; }
 .accordion-advanced-filters > summary { cursor: pointer; color: var(--color-primary); font-size: 0.9rem; }
 .accordion-advanced-filter-grid { padding-top: 0.75rem; }

@@ -11,7 +11,7 @@ import MasterCallTable from './components/MasterCallTable.jsx';
 import ServiceListTable from './components/ServiceListTable.jsx';
 import { useStableCallback } from './hooks/useStableCallback.js';
 import { monthOptions } from './utils/months.js';
-import { buildUserTree, dueViews, followUpViews, localDateKey, masterCsvLabels, masterListQuery } from './utils/crmHelpers.js';
+import { buildUserTree, dueViews, followUpViews, isPastDueDate, localDateKey, masterCsvLabels, masterListQuery } from './utils/crmHelpers.js';
 
 const UserManagementPanel = lazy(() => import('./components/UserManagementPanel.jsx'));
 const CcmProfilePanel = lazy(() => import('./components/CcmProfilePanel.jsx'));
@@ -2679,9 +2679,7 @@ function App() {
     }
     if (kind === 'due' && accordionRepairTypeFilter && record.type !== accordionRepairTypeFilter) return false;
     if (kind === 'due' && serviceListFilters.pastDueOnly === 'true') {
-      const dueDate = record.dueDate ? new Date(record.dueDate) : null;
-      const today = new Date();
-      if (!dueDate || Number.isNaN(dueDate.getTime()) || dueDate >= new Date(today.getFullYear(), today.getMonth(), today.getDate())) return false;
+      if (!isPastDueDate(record.dueDate)) return false;
     }
     if (!search) return true;
 

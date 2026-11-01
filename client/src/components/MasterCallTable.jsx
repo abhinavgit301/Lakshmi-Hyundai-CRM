@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import { PhoneCall } from 'lucide-react';
-import { formatVehicleAge } from '../utils/crmHelpers.js';
+import { formatVehicleAge, isPastDueDate } from '../utils/crmHelpers.js';
 import { RepairTypeBadge, RepairTypeLegend } from './RepairTypeParts.jsx';
 import SpacerRow from './SpacerRow.jsx';
 import { useWindowRows } from '../hooks/useWindowRows.js';
@@ -23,14 +23,10 @@ const MasterCallRow = memo(function MasterCallRow({
 }) {
   const name = record.name || record.customerName;
   const dueDate = record.dueDate ? new Date(record.dueDate) : null;
-  const today = new Date();
-  const isPastDue = dueDate
-    && !Number.isNaN(dueDate.getTime())
-    && dueDate < new Date(today.getFullYear(), today.getMonth(), today.getDate());
   return (
-    <tr ref={measureRef} data-index={index} className={isPastDue ? 'due-overdue-row' : undefined}>
+    <tr ref={measureRef} data-index={index}>
       <td><RepairTypeBadge type={record.type} /></td>
-      <td className={isPastDue ? 'due-overdue' : undefined}>{record.dueDate ? dueDate.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}</td>
+      <td className={isPastDueDate(dueDate) ? 'due-overdue' : undefined}>{record.dueDate ? dueDate.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}</td>
       <td>{canOpenProfile ? (
         <button type="button" className="text-link" onClick={() => onOpenProfile(record)}>
           {name || '—'}

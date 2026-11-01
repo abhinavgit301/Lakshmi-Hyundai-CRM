@@ -28,6 +28,7 @@ const createSnapshotFields = {
 };
 
 const createSnapshotOptionalFields = {
+  Customer: ['address', 'city', 'pin'],
   MasterCallList: ['assignmentNeedsReview', 'vehicleId'],
   Vehicle: ['physicalVehicleId'],
   WorkshopVisit: ['normalizedRepairOrderNo', 'physicalVehicleId'],
@@ -35,7 +36,7 @@ const createSnapshotOptionalFields = {
 };
 
 const updateSnapshotFields = {
-  Customer: new Set(['customerCode', 'fullName', 'mobileNumber', 'alternatePhone', 'email', 'ccmId', 'updatedAt']),
+  Customer: new Set(['customerCode', 'fullName', 'mobileNumber', 'alternatePhone', 'email', 'address', 'city', 'pin', 'ccmId', 'updatedAt']),
   Vehicle: new Set(['vin', 'registrationNumber', 'make', 'model', 'variant', 'year', 'saleDate', 'status', 'customerId', 'ccmId', 'updatedAt']),
   WorkshopVisit: new Set(['repairOrderNo', 'customerId', 'vehicleId', 'ccmId', 'totalLaborCost', 'totalPartsCost', 'totalAmount', 'visitDate', 'closingDate', 'gpDate', 'importedDetails', 'updatedAt']),
   MasterCallList: new Set(['customerName', 'mobileNumber', 'vin', 'registrationNumber', 'ccmId', 'vehicleId', 'ownerUserId', 'assignmentNeedsReview', 'status', 'updatedAt']),

@@ -292,3 +292,27 @@ function groupRows(rows, by) {
     _count: { _all: count },
   }));
 }
+
+test('created row evidence accepts the full Customer snapshot including profile address fields', () => {
+  const timestamp = '2025-01-01T00:00:00.000Z';
+  const create = (entityType, after) => ({
+    entityType, entityId: after.id, operation: 'CREATE', before: {}, after,
+  });
+  const customer = {
+    id: 'customer-1', customerCode: 'CUS-1', fullName: 'Customer', mobileNumber: '123',
+    alternatePhone: null, email: null, address: null, city: null, pin: null,
+    ccmId: 'ccm-1', createdAt: timestamp, updatedAt: timestamp,
+  };
+  const visit = {
+    id: 'visit-1', repairOrderNo: 'RO-1', normalizedRepairOrderNo: 'RO-1', customerId: 'customer-1',
+    vehicleId: 'vehicle-1', physicalVehicleId: 'pv-1', ccmId: 'ccm-1', totalLaborCost: null,
+    totalPartsCost: null, totalAmount: null, visitDate: null, closingDate: null, gpDate: null,
+    importedDetails: {}, createdAt: timestamp, updatedAt: timestamp,
+  };
+  assert.equal(importChangeLogIsComplete(create('Customer', customer)), true);
+  assert.equal(importChangeLogIsComplete(create('Customer', { ...customer, unexpected: 'x' })), false);
+  assert.equal(importRowMutationEvidenceIsComplete('created', [
+    create('Customer', customer),
+    create('WorkshopVisit', visit),
+  ]), true);
+});

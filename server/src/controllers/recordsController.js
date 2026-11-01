@@ -30,6 +30,11 @@ import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
 
 const CALL_LIST_QUERY_CHUNK_SIZE = 100;
 const RELATED_ID_QUERY_CHUNK_SIZE = 500;
+// Keeps each nested Prisma relation load far below PostgreSQL's 32,767 bind-parameter limit.
+const CUSTOMER_QUERY_BATCH_SIZE = Math.min(
+  Math.max(Number.parseInt(process.env.CUSTOMER_QUERY_BATCH_SIZE, 10) || 500, 1),
+  2000,
+);
 
 function normalizeRole(role) {
   return String(role || '').toUpperCase();
@@ -140,6 +145,27 @@ export function getVisibilityWhere(user) {
   }
 
   return { id: 'no-access' };
+}
+
+export async function resolveMasterCallListVisibility(user, requestedCcmId = '', database = prisma) {
+  const role = normalizeRole(user?.role);
+  if (role === 'ADMIN') return { where: requestedCcmId ? { ccmId: requestedCcmId } : {} };
+  if (role !== 'GM') return { where: getVisibilityWhere(user) };
+
+  const teams = await database.user.findMany({
+    where: {
+      role: 'CCM',
+      status: 'active',
+      OR: [{ gmId: user?.id || 'no-access' }, { gmId: null }],
+    },
+    select: { ccmId: true },
+  });
+  const allowedCcmIds = teams.map(({ ccmId }) => ccmId).filter(Boolean);
+  if (requestedCcmId && !allowedCcmIds.includes(requestedCcmId)) {
+    return { error: 'You are not permitted to view this CCM team.' };
+  }
+  if (requestedCcmId) return { where: { ccmId: requestedCcmId } };
+  return { where: allowedCcmIds.length ? { ccmId: { in: allowedCcmIds } } : { id: 'no-access' } };
 }
 
 export function operationalReadScope(user) {
@@ -1010,6 +1036,12 @@ export async function getCallList(req, res) {
   if (validated.error) return res.status(400).json({ message: validated.error });
   const paginationResult = parsePagination(req.query);
   if (paginationResult.error) return res.status(400).json({ message: paginationResult.error });
+  const role = normalizeRole(req.user?.role);
+  const scope = await resolveMasterCallListVisibility(
+    req.user,
+    ['ADMIN', 'GM'].includes(role) ? String(req.query.ccmId || '').trim() : '',
+  );
+  if (scope.error) return res.status(403).json({ message: scope.error });
   const memoryTracker = createCallListMemoryTracker();
   let allocationQueueRecords = [];
   if (normalizeRole(req.user?.role) === 'CCM') {
@@ -1035,7 +1067,7 @@ export async function getCallList(req, res) {
     allocationQueueRecords = buildAllocationQueueRecords([], unassignedAllocations, ccmId);
   }
   const response = await loadCallListRecords(
-    getVisibilityWhere(req.user),
+    scope.where,
     new Date(),
     req.user,
     {
@@ -1505,8 +1537,15 @@ export async function getCustomers(req, res) {
         ? { ccmId: user?.ccmId || 'no-access', creId: user?.id || 'no-access', status: 'assigned' }
         : { id: 'no-access' };
 
-  const rows = await prisma.customer.findMany({
+  const customerIds = (await prisma.customer.findMany({
     where,
+    select: { id: true },
+    orderBy: { createdAt: 'desc' },
+  })).map((customer) => customer.id);
+
+  const rows = [];
+  const loadCustomerBatch = (ids) => prisma.customer.findMany({
+    where: { AND: [where, { id: { in: ids } }] },
     include: {
       vehicles: {
         ...(role === 'CCM'
@@ -1559,8 +1598,26 @@ export async function getCustomers(req, res) {
         },
       },
     },
-    orderBy: { createdAt: 'desc' },
   });
+  // Ordered relation loads are not chunked by Prisma, so a batch whose vehicles exceed the
+  // bind-parameter limit is split in half and retried instead of failing the request.
+  const loadCustomerBatchSafely = async (ids) => {
+    try {
+      return await loadCustomerBatch(ids);
+    } catch (error) {
+      if (error?.code !== 'P2029' || ids.length < 2) throw error;
+      const middle = Math.ceil(ids.length / 2);
+      return [
+        ...await loadCustomerBatchSafely(ids.slice(0, middle)),
+        ...await loadCustomerBatchSafely(ids.slice(middle)),
+      ];
+    }
+  };
+  for (const idChunk of splitIntoChunks([...new Set(customerIds)], CUSTOMER_QUERY_BATCH_SIZE)) {
+    const batch = await loadCustomerBatchSafely(idChunk);
+    const position = new Map(idChunk.map((id, index) => [id, index]));
+    rows.push(...batch.sort((left, right) => position.get(left.id) - position.get(right.id)));
+  }
   const historyVisits = rows.flatMap((customer) => [
     ...(customer.visits || []),
     ...(customer.vehicles || []).flatMap((vehicle) => vehicle.physicalVehicle?.workshopVisits || []),

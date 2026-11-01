@@ -153,6 +153,7 @@ export function masterListQuery(filters) {
   params.set('limit', String(filters.limit || 50));
   params.set('offset', String(filters.offset || 0));
   if (filters.search.trim()) params.set('search', filters.search.trim());
+  if (filters.ccmId) params.set('ccmId', filters.ccmId);
   if (filters.creId) params.set('creId', filters.creId);
   if (filters.dueCategory) params.set('dueCategory', filters.dueCategory);
   if (filters.repairType) params.set('repairType', filters.repairType);

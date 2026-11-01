@@ -406,7 +406,8 @@ async function captureCustomerQuery(user) {
   const original = prisma.customer.findMany;
   let captured;
   prisma.customer.findMany = async (args) => {
-    captured = args;
+    if (args.select) return [{ id: 'customer-1' }];
+    captured = { ...args, where: args.where.AND[0], idFilter: args.where.AND[1] };
     return [];
   };
   const res = {
@@ -483,7 +484,7 @@ test('Customer endpoint scopes nested vehicles and related records by role', asy
 test('customer profile uses saved contact fields and falls back to imported service history', async () => {
   const originalCustomerFindMany = prisma.customer.findMany;
   const originalUserFindMany = prisma.user.findMany;
-  prisma.customer.findMany = async () => [
+  const customerRows = [
     {
       id: 'customer-mobile',
       fullName: 'Imported Customer',
@@ -536,6 +537,9 @@ test('customer profile uses saved contact fields and falls back to imported serv
       }],
     },
   ];
+  prisma.customer.findMany = async (args) => (args.select
+    ? customerRows.map(({ id }) => ({ id }))
+    : customerRows.filter(({ id }) => args.where.AND[1].id.in.includes(id)));
   prisma.user.findMany = async () => [];
   const res = {
     statusCode: 200,
@@ -555,6 +559,73 @@ test('customer profile uses saved contact fields and falls back to imported serv
   } finally {
     prisma.customer.findMany = originalCustomerFindMany;
     prisma.user.findMany = originalUserFindMany;
+  }
+});
+
+test('Customer endpoint loads relations in bounded batches and preserves order and scope', async () => {
+  const original = prisma.customer.findMany;
+  const originalUser = prisma.user.findMany;
+  const total = 1250;
+  const ids = Array.from({ length: total }, (_, index) => `customer-${index}`);
+  const detailCalls = [];
+  prisma.customer.findMany = async (args) => {
+    if (args.select) return [...ids, ids[0]].map((id) => ({ id }));
+    detailCalls.push(args);
+    // Return in reverse order to prove the controller restores the id-query order.
+    return [...args.where.AND[1].id.in].reverse().map((id) => ({
+      id, fullName: id, mobileNumber: null, ccmId: 'ccm-a', vehicles: [], visits: [],
+    }));
+  };
+  prisma.user.findMany = async () => [];
+  const res = { status() { return this; }, json(body) { this.body = body; return this; } };
+  try {
+    await getCustomers({ user: { role: 'CCM', ccmId: 'ccm-a' } }, res);
+  } finally {
+    prisma.customer.findMany = original;
+    prisma.user.findMany = originalUser;
+  }
+  assert.equal(detailCalls.length, 3);
+  for (const call of detailCalls) {
+    assert.ok(call.where.AND[1].id.in.length <= 500);
+    assert.deepEqual(call.where.AND[0].OR[0], { ccmId: 'ccm-a' });
+  }
+  assert.deepEqual(res.body.customers.map((customer) => customer.id), ids);
+});
+
+test('Customer endpoint splits a batch and retries when Prisma reports P2029', async () => {
+  const original = prisma.customer.findMany;
+  const originalUser = prisma.user.findMany;
+  const ids = Array.from({ length: 7 }, (_, index) => `customer-${index}`);
+  const detailSizes = [];
+  prisma.customer.findMany = async (args) => {
+    if (args.select) return ids.map((id) => ({ id }));
+    const requested = args.where.AND[1].id.in;
+    detailSizes.push(requested.length);
+    if (requested.length > 2) throw Object.assign(new Error('limit'), { code: 'P2029' });
+    return [...requested].reverse().map((id) => ({ id, fullName: id, mobileNumber: null, ccmId: 'ccm-a', vehicles: [], visits: [] }));
+  };
+  prisma.user.findMany = async () => [];
+  const res = { status() { return this; }, json(body) { this.body = body; return this; } };
+  try {
+    await getCustomers({ user: { role: 'ADMIN' } }, res);
+    assert.deepEqual(res.body.customers.map((customer) => customer.id), ids);
+    assert.ok(detailSizes.every((size, index) => size <= 7 && (index === 0 || size < 7)));
+
+    prisma.customer.findMany = async (args) => {
+      if (args.select) return [{ id: 'only' }];
+      throw Object.assign(new Error('limit'), { code: 'P2029' });
+    };
+    await assert.rejects(() => getCustomers({ user: { role: 'ADMIN' } }, res), { code: 'P2029' });
+
+    prisma.customer.findMany = async (args) => {
+      if (args.select) return [];
+      throw new Error('detail query must not run for empty results');
+    };
+    await getCustomers({ user: { role: 'ADMIN' } }, res);
+    assert.deepEqual(res.body.customers, []);
+  } finally {
+    prisma.customer.findMany = original;
+    prisma.user.findMany = originalUser;
   }
 });
 

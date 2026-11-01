@@ -60,9 +60,16 @@ export default function ReportsPanel(props) {
                     ['Customers reached', wpData.totals.customersReached],
                     ['Appointments booked', wpData.totals.appointmentsBooked],
                     ['Call-to-appointment', `${wpData.totals.conversionPercent}%`],
+                    ['Due customers', wpData.totals.dueCustomers],
                     ['Assigned records', wpData.totals.assignedRecords],
                     ['Reach of assigned', `${wpData.totals.reachPercent}%`],
-                  ].map(([label, value]) => <article key={label} className="stat-card"><p>{label}</p><strong>{value}</strong></article>)}
+                  ].map(([label, value]) => (
+                    <article key={label} className="stat-card">
+                      <p>{label}</p>
+                      <strong>{value}</strong>
+                      {label === 'Due customers' && <span>CRE-assigned Master Call List · 6-month + 1-year cohorts</span>}
+                    </article>
+                  ))}
                 </section>
 
                 <section className="panel">
@@ -114,8 +121,8 @@ export default function ReportsPanel(props) {
                 {wpData.breakdown.length > 0 && (
                   <section className="panel customer-list-panel">
                     <div className="panel-header"><h3>Detailed breakdown</h3><span>Select a team or CRE above to drill down</span></div>
-                    <div className="table-scroll"><table><thead><tr><th>Name</th><th>Role</th><th>Calls</th><th>Customers reached</th><th>Appointments booked</th><th>Assigned</th><th>Reach</th></tr></thead><tbody>
-                      {wpData.breakdown.map((entry) => <tr key={entry.id}><td>{entry.name}</td><td>{entry.kind}</td><td>{entry.calls}</td><td>{entry.customersReached}</td><td>{entry.appointmentsBooked}</td><td>{entry.assignedRecords}</td><td>{entry.reachPercent}%</td></tr>)}
+                    <div className="table-scroll"><table><thead><tr><th>Name</th><th>Role</th><th>Calls</th><th>Customers reached</th><th>Appointments booked</th><th>Due customers</th><th>Assigned</th><th>Reach</th></tr></thead><tbody>
+                      {wpData.breakdown.map((entry) => <tr key={entry.id}><td>{entry.name}</td><td>{entry.kind}</td><td>{entry.calls}</td><td>{entry.customersReached}</td><td>{entry.appointmentsBooked}</td><td>{entry.dueCustomers}</td><td>{entry.assignedRecords}</td><td>{entry.reachPercent}%</td></tr>)}
                     </tbody></table></div>
                   </section>
                 )}

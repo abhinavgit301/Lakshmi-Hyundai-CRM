@@ -1,4 +1,6 @@
 import { prisma } from '../config/prisma.js';
+import { consolidateMasterCallListEntries } from '../utils/masterCallList.js';
+import { classifyServiceDue, getLatestServiceDate } from '../utils/serviceDue.js';
 
 const OUTCOMES = ['CONTACTED', 'CALLBACK', 'NOT_INTERESTED', 'WRONG_NUMBER', 'APPOINTMENT_SET', 'FOLLOW_UP_LATER', 'NO_RESPONSE', 'OTHER'];
 
@@ -6,7 +8,14 @@ function percent(part, whole) {
   return whole ? Math.min(100, Math.round((part / whole) * 100)) : 0;
 }
 
-export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmId = '', creId = '' }, database = prisma) {
+export async function queryWorkshopReportsData({
+  year,
+  month,
+  tzOffset = 0,
+  ccmId = '',
+  creId = '',
+  now = new Date(),
+}, database = prisma) {
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12 || year < 2000 || year > 2100 || !Number.isFinite(tzOffset)) {
     return null;
   }
@@ -48,7 +57,7 @@ export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmI
   }
 
   const userIds = scopeUsers.map((user) => user.id);
-  const [calls, appointments, assigned] = await Promise.all([
+  const [calls, appointments, assigned, masterCallListEntries] = await Promise.all([
     database.callLog.findMany({
       where: {
         OR: [{ createdById: { in: userIds } }, { createdByIdSnapshot: { in: userIds } }],
@@ -68,6 +77,30 @@ export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmI
       where: { ownerUserId: { in: userIds } },
       _count: { _all: true },
     }),
+    database.masterCallList.findMany({
+      where: { ccmId: { in: [...new Set(scopeUsers.map((user) => user.ccmId))] } },
+      select: {
+        id: true,
+        ccmId: true,
+        vin: true,
+        ownerUserId: true,
+        createdAt: true,
+        vehicle: {
+          select: {
+            physicalVehicle: {
+              select: {
+                workshopVisits: {
+                  where: { visitDate: { lte: now } },
+                  orderBy: { visitDate: 'desc' },
+                  take: 1,
+                  select: { visitDate: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    }),
   ]);
 
   const dayKey = (date) => new Date(date.getTime() - tzOffset * 60000).toISOString().slice(0, 10);
@@ -84,18 +117,31 @@ export async function queryWorkshopReportsData({ year, month, tzOffset = 0, ccmI
   calls.forEach((call) => outcomeCounts.set(call.outcome, (outcomeCounts.get(call.outcome) || 0) + 1));
 
   const assignedByUser = new Map(assigned.map((row) => [row.ownerUserId, row._count._all]));
+  const reportCreIds = new Set(scopeUsers.filter((user) => user.role === 'CRE').map((user) => user.id));
+  const dueCustomersByUser = new Map();
+  const canonicalMasterCallListEntries = consolidateMasterCallListEntries(
+    masterCallListEntries.map((entry) => ({ ...entry, assigneeId: entry.ownerUserId })),
+  );
+  for (const entry of canonicalMasterCallListEntries) {
+    if (!reportCreIds.has(entry.ownerUserId)) continue;
+    const visits = entry.vehicle?.physicalVehicle?.workshopVisits || [];
+    const dueCategory = classifyServiceDue(getLatestServiceDate(visits, now), now);
+    if (dueCategory) dueCustomersByUser.set(entry.ownerUserId, (dueCustomersByUser.get(entry.ownerUserId) || 0) + 1);
+  }
 
   function summarize(members) {
     const ids = new Set(members.map((member) => member.id));
     const memberCalls = calls.filter((call) => ids.has(call.createdById || call.createdByIdSnapshot));
     const reached = new Set(memberCalls.map((call) => call.customerId)).size;
     const assignedCount = members.reduce((sum, member) => sum + (assignedByUser.get(member.id) || 0), 0);
+    const dueCustomers = members.reduce((sum, member) => sum + (dueCustomersByUser.get(member.id) || 0), 0);
     return {
       calls: memberCalls.length,
       customersReached: reached,
       appointmentsSet: memberCalls.filter((call) => call.outcome === 'APPOINTMENT_SET').length,
       appointmentsBooked: appointments.filter((appointment) => ids.has(appointment.createdById || appointment.createdByIdSnapshot)).length,
       assignedRecords: assignedCount,
+      dueCustomers,
       reachPercent: percent(reached, assignedCount),
     };
   }

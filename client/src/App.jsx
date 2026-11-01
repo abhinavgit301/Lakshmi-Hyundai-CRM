@@ -127,7 +127,7 @@ function canAccessRoute(view, role, user, ccmId = '') {
   const commonRoutes = ['Dashboard'];
   if (view === 'CustomerProfile') return Boolean(user) && ['ADMIN', 'GM', 'CCM', 'CRE'].includes(role);
   if (commonRoutes.includes(view)) return true;
-  if (view === 'Master list') return teamRoles.includes(role);
+  if (view === 'Master list') return ['GM', ...teamRoles].includes(role);
   if (view === 'Customers') return teamRoles.includes(role);
   if (view === 'Appointments') return ['CCM', 'CRE', 'FREE_SERVICE_CRE'].includes(role);
   if (view === 'Allocations') return ['ADMIN', 'CCM'].includes(role);
@@ -668,6 +668,7 @@ function App() {
         creId: masterListCreFilter,
         dueCategory: masterListDueFilter,
         repairType: masterListRepairFilter,
+        ccmId: ['ADMIN', 'GM'].includes(currentRole) ? masterListTeam : '',
       }, { offset: masterListPageInfo.offset + 50, append: true });
     } finally {
       masterListLoadMoreRef.current = false;
@@ -681,6 +682,7 @@ function App() {
       creId: masterListCreFilter,
       dueCategory: masterListDueFilter,
       repairType: masterListRepairFilter,
+      ccmId: ['ADMIN', 'GM'].includes(currentRole) ? masterListTeam : '',
     };
     try {
       const requests = [refreshMasterList(filters)];
@@ -695,6 +697,17 @@ function App() {
     } catch (error) {
       setMasterListError(error.response?.data?.message || 'Could not load the master call list.');
     }
+  }
+
+  function changeMasterListTeam(ccmId) {
+    setMasterListTeam(ccmId);
+    refreshMasterList({
+      search: masterListSearch,
+      creId: masterListCreFilter,
+      dueCategory: masterListDueFilter,
+      repairType: masterListRepairFilter,
+      ccmId,
+    });
   }
 
   async function changeMasterListAssignee(recordId, assigneeId, record) {
@@ -2390,19 +2403,20 @@ function App() {
     (view !== 'Follow-up Free Service' || canAccessFreeService) && (view !== 'Follow-up Warranty' || canAccessWarranty)
   )));
   useEffect(() => {
-    if (activeView !== 'Master list' || !['CCM', 'CRE'].includes(currentRole)) return undefined;
+    if (activeView !== 'Master list' || !['ADMIN', 'GM', 'CCM', 'CRE'].includes(currentRole)) return undefined;
     const filters = {
       search: masterListSearch,
       creId: masterListCreFilter,
       dueCategory: masterListDueFilter,
       repairType: masterListRepairFilter,
+      ccmId: ['ADMIN', 'GM'].includes(currentRole) ? masterListTeam : '',
     };
     if (JSON.stringify(filters) === masterListAppliedFiltersRef.current) return undefined;
     const timeout = window.setTimeout(() => {
       refreshMasterList(filters);
     }, 300);
     return () => window.clearTimeout(timeout);
-  }, [activeView, currentRole, masterListSearch, masterListCreFilter, masterListDueFilter, masterListRepairFilter, refreshMasterList]);
+  }, [activeView, currentRole, masterListSearch, masterListCreFilter, masterListDueFilter, masterListRepairFilter, masterListTeam, refreshMasterList]);
   useEffect(() => {
     if (!(activeView in dueViews)) return undefined;
     const signature = JSON.stringify({
@@ -2434,7 +2448,7 @@ function App() {
     }, 300);
     return () => window.clearTimeout(timeout);
   }, [activeView, followUpSearch, serviceListFilters, loadFollowUps, followUpAppliedFilters]);
-  const masterRecords = masterListTeam ? calls.filter((record) => record.ccmId === masterListTeam) : calls;
+  const masterRecords = calls;
   const wpCres = masterListCres.filter((cre) => !wpCcmId || cre.ccmId === wpCcmId);
   const wpMaxDaily = Math.max(1, ...(wpData?.daily || []).map((entry) => Math.max(entry.calls, entry.appointments)));
   const wpMaxOutcome = Math.max(1, ...(wpData?.outcomes || []).map((entry) => entry.count));
@@ -2449,7 +2463,7 @@ function App() {
       : currentRole === 'CCM'
         ? ['Dashboard', 'Master list', ...navItems.filter((item) => !['Dashboard', 'Reports'].includes(item)), 'Performance', 'Workshop Performance']
         : ['ADMIN', 'GM'].includes(currentRole)
-          ? navItems.filter((item) => !['Customers', 'Follow-ups', 'Appointments', ...(currentRole === 'GM' ? ['Allocations'] : [])].includes(item)).flatMap((item) => item === 'Reports' ? [item, 'Workshop Performance'] : [item])
+          ? [...(currentRole === 'GM' ? ['Master list'] : []), ...navItems.filter((item) => !['Customers', 'Follow-ups', 'Appointments', ...(currentRole === 'GM' ? ['Allocations'] : [])].includes(item)).flatMap((item) => item === 'Reports' ? [item, 'Workshop Performance'] : [item])]
           : navItems.filter((item) => item !== 'Reports')),
     ...(currentRole === 'ADMIN' ? ['User Management'] : []),
   ];
@@ -3397,7 +3411,7 @@ function App() {
               setMasterListDueFilter={setMasterListDueFilter}
               setMasterListRepairFilter={setMasterListRepairFilter}
               setMasterListSearch={setMasterListSearch}
-              setMasterListTeam={setMasterListTeam}
+              setMasterListTeam={changeMasterListTeam}
               submitMasterEntry={submitMasterEntry}
             />
           </Suspense>

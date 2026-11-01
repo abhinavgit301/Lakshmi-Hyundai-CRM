@@ -633,7 +633,8 @@ async function snapshotDeletedUserReferences(transaction, user) {
 export async function listTeams(req, res) {
   const role = String(req.user?.role || '').toUpperCase();
   const teamScope = role === 'CCM' ? { ccmId: req.user.ccmId || 'no-access' } : {};
-  const ccmWhere = { role: 'CCM', status: 'active', ...teamScope };
+  const gmTeamScope = role === 'GM' ? { OR: [{ gmId: req.user?.id || 'no-access' }, { gmId: null }] } : {};
+  const ccmWhere = { role: 'CCM', status: 'active', ...teamScope, ...gmTeamScope };
   const ccms = await prisma.user.findMany({
     where: ccmWhere,
     select: { id: true, name: true, username: true, ccmId: true, gmId: true, dealerCode: true },
@@ -647,7 +648,12 @@ export async function listTeams(req, res) {
   });
 
   const cres = await prisma.user.findMany({
-    where: { role: 'CRE', status: 'active', ...teamScope },
+    where: {
+      role: 'CRE',
+      status: 'active',
+      ...teamScope,
+      ...(role === 'GM' ? { ccmId: { in: ccms.map(({ ccmId }) => ccmId).filter(Boolean) } } : {}),
+    },
     select: { id: true, name: true, username: true, ccmId: true, dealerCode: true },
     orderBy: { name: 'asc' },
   });

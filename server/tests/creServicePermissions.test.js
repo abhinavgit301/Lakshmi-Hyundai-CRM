@@ -8,7 +8,13 @@ import {
 import { callLogVisibility, createCallLog, createFollowUp, getCrePerformanceSummary, listFollowUps } from '../src/controllers/callWorkflowController.js';
 import { isVehicleAssignedToCre, workshopVisitVisibilityWhere } from '../src/utils/creAccess.js';
 import { getFreeServiceList, getWarrantyList } from '../src/controllers/serviceListsController.js';
-import { getCallList, getCustomers, getVisibilityWhere, operationalReadScope } from '../src/controllers/recordsController.js';
+import {
+  getCallList,
+  getCustomers,
+  getVisibilityWhere,
+  operationalReadScope,
+  resolveMasterCallListVisibility,
+} from '../src/controllers/recordsController.js';
 import { listAllocations } from '../src/controllers/allocationController.js';
 import { prisma } from '../src/config/prisma.js';
 import {
@@ -250,6 +256,41 @@ test('Free-Service CRE is blocked from Master Call List, customer, allocation, a
     await handler({ user, query: {} }, res);
     assert.equal(res.statusCode, 403);
   }
+});
+
+test('GM Master Call List scope only includes teams assigned to that GM or unassigned teams', async () => {
+  let teamWhere;
+  const database = {
+    user: {
+      findMany: async ({ where }) => {
+        teamWhere = where;
+        return [{ ccmId: 'ccm-owned' }, { ccmId: 'ccm-unassigned' }];
+      },
+    },
+  };
+  const user = { id: 'gm-1', role: 'GM' };
+
+  const allTeams = await resolveMasterCallListVisibility(user, '', database);
+  assert.deepEqual(teamWhere, {
+    role: 'CCM',
+    status: 'active',
+    OR: [{ gmId: 'gm-1' }, { gmId: null }],
+  });
+  assert.deepEqual(allTeams.where, { ccmId: { in: ['ccm-owned', 'ccm-unassigned'] } });
+
+  const selectedTeam = await resolveMasterCallListVisibility(user, 'ccm-owned', database);
+  assert.deepEqual(selectedTeam.where, { ccmId: 'ccm-owned' });
+
+  const unauthorizedTeam = await resolveMasterCallListVisibility(user, 'ccm-other', database);
+  assert.equal(unauthorizedTeam.error, 'You are not permitted to view this CCM team.');
+});
+
+test('Admin Master Call List scope remains unrestricted unless a team is selected', async () => {
+  const database = { user: { findMany: async () => assert.fail('Admin scope should not query team membership.') } };
+  assert.deepEqual(await resolveMasterCallListVisibility({ role: 'ADMIN' }, '', database), { where: {} });
+  assert.deepEqual(await resolveMasterCallListVisibility({ role: 'ADMIN' }, 'ccm-1', database), {
+    where: { ccmId: 'ccm-1' },
+  });
 });
 
 test('regular CRE Master Call List visibility includes only records assigned to that CRE', () => {

@@ -8,7 +8,7 @@ process.env.JWT_SECRET ||= 'user-controller-test-secret';
 
 const [
   { prisma },
-  { createUser, updateManagedUser, updateUserStatus, deleteManagedUser },
+  { createUser, updateManagedUser, updateUserStatus, deleteManagedUser, listTeams },
   { login },
   { authMiddleware, requireRole },
 ] = await Promise.all([
@@ -69,6 +69,7 @@ function setupUserStore(t) {
         condition.username === user.username || condition.email === user.email
       ))) || null;
     }
+
     if (where?.id && where.role === 'GM') return { id: where.id };
     if (where?.role === 'CCM' && where.status === 'active') {
       return users.find((user) => user.role === 'CCM' && user.ccmId === where.ccmId && user.status === 'active') || null;
@@ -118,6 +119,34 @@ function setupUserStore(t) {
   }));
   return users;
 }
+
+test('GM team picker returns only teams in that GM scope and CREs within those teams', async (t) => {
+  const queries = [];
+  replaceMethod(t, prisma.user, 'findMany', async ({ where }) => {
+    queries.push(where);
+    if (where.role === 'CCM') {
+      return [{ id: 'ccm-user-1', ccmId: 'ccm-1' }, { id: 'ccm-user-2', ccmId: 'ccm-2' }];
+    }
+    if (where.role === 'CRE') return [{ id: 'cre-1', ccmId: 'ccm-1' }];
+    return [];
+  });
+  const res = responseRecorder();
+
+  await listTeams({ user: { id: 'gm-1', role: 'GM' } }, res);
+
+  assert.deepEqual(queries[0], {
+    role: 'CCM',
+    status: 'active',
+    OR: [{ gmId: 'gm-1' }, { gmId: null }],
+  });
+  assert.deepEqual(queries[2], {
+    role: 'CRE',
+    status: 'active',
+    ccmId: { in: ['ccm-1', 'ccm-2'] },
+  });
+  assert.equal(res.body.ccms.length, 2);
+  assert.deepEqual(res.body.cres.map(({ id }) => id), ['cre-1']);
+});
 
 test('Admin can create an ADMIN account that can log in; response omits password hash', async (t) => {
   const users = setupUserStore(t);

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { queryWorkshopReportsData } from '../src/controllers/workshopPerformanceController.js';
 
-function createReportDatabase({ users, calls = [], appointments = [], assigned = [] }) {
+function createReportDatabase({ users, calls = [], appointments = [], assigned = [], masterCallListEntries = [] }) {
   return {
     user: {
       findMany: async () => users,
@@ -34,6 +34,7 @@ function createReportDatabase({ users, calls = [], appointments = [], assigned =
       groupBy: async ({ where }) => assigned
         .filter((entry) => where.ownerUserId.in.includes(entry.ownerUserId))
         .map((entry) => ({ ownerUserId: entry.ownerUserId, _count: { _all: entry.count } })),
+      findMany: async ({ where }) => masterCallListEntries.filter((entry) => where.ccmId.in.includes(entry.ccmId)),
     },
   };
 }
@@ -69,7 +70,7 @@ const reportAssigned = [
 ];
 
 function queryOptions(overrides = {}) {
-  return { year: 2026, month: 1, tzOffset: 0, ...overrides };
+  return { year: 2026, month: 1, tzOffset: 0, now: new Date('2026-12-15T12:00:00Z'), ...overrides };
 }
 
 test('whole CCM team report aggregates the CCM and its CREs once', async () => {
@@ -90,6 +91,7 @@ test('whole CCM team report aggregates the CCM and its CREs once', async () => {
     appointmentsSet: 2,
     appointmentsBooked: 3,
     assignedRecords: 11,
+    dueCustomers: 0,
     reachPercent: 18,
     conversionPercent: 75,
   });
@@ -113,9 +115,34 @@ test('individual CRE report only includes the CRE assigned to the selected CCM',
   assert.equal(report.totals.customersReached, 1);
   assert.equal(report.totals.appointmentsBooked, 1);
   assert.equal(report.totals.assignedRecords, 2);
+  assert.equal(report.totals.dueCustomers, 0);
 
   const wrongTeamReport = await queryWorkshopReportsData(queryOptions({ ccmId: 'ccm-1', creId: 'cre-3' }), database);
   assert.equal(wrongTeamReport.error, 'CRE is not assigned to the selected CCM.');
+});
+
+test('due-customer totals count canonical CRE-owned 6-month and 1-year Master Call List records', async () => {
+  const visit = (date) => ({ visitDate: new Date(`${date}T12:00:00Z`) });
+  const masterCallListEntries = [
+    { id: 'mcl-cre1-1y', ccmId: 'ccm-1', vin: 'VIN-1', ownerUserId: 'cre-1', createdAt: new Date('2026-01-01'), vehicle: { physicalVehicle: { workshopVisits: [visit('2025-12-01')] } } },
+    { id: 'mcl-cre2-6m', ccmId: 'ccm-1', vin: 'VIN-2', ownerUserId: 'cre-2', createdAt: new Date('2026-01-01'), vehicle: { physicalVehicle: { workshopVisits: [visit('2026-06-01')] } } },
+    { id: 'mcl-cre2-not-due', ccmId: 'ccm-1', vin: 'VIN-3', ownerUserId: 'cre-2', createdAt: new Date('2026-01-01'), vehicle: { physicalVehicle: { workshopVisits: [visit('2026-11-01')] } } },
+    { id: 'mcl-ccm-due', ccmId: 'ccm-1', vin: 'VIN-4', ownerUserId: 'ccm-1-user', createdAt: new Date('2026-01-01'), vehicle: { physicalVehicle: { workshopVisits: [visit('2025-12-01')] } } },
+    { id: 'mcl-unassigned-due', ccmId: 'ccm-1', vin: 'VIN-5', ownerUserId: null, createdAt: new Date('2026-01-01'), vehicle: { physicalVehicle: { workshopVisits: [visit('2025-12-01')] } } },
+    { id: 'mcl-duplicate-unassigned', ccmId: 'ccm-1', vin: 'VIN-1', ownerUserId: null, createdAt: new Date('2025-01-01'), vehicle: { physicalVehicle: { workshopVisits: [visit('2025-12-01')] } } },
+    { id: 'mcl-other-team', ccmId: 'ccm-2', vin: 'VIN-6', ownerUserId: 'cre-3', createdAt: new Date('2026-01-01'), vehicle: { physicalVehicle: { workshopVisits: [visit('2025-12-01')] } } },
+  ];
+  const database = createReportDatabase({ users: reportUsers, masterCallListEntries });
+
+  const teamReport = await queryWorkshopReportsData(queryOptions({ ccmId: 'ccm-1' }), database);
+
+  assert.equal(teamReport.totals.dueCustomers, 2);
+  assert.equal(teamReport.breakdown.find(({ id }) => id === 'cre-1').dueCustomers, 1);
+  assert.equal(teamReport.breakdown.find(({ id }) => id === 'cre-2').dueCustomers, 1);
+  assert.equal(teamReport.breakdown.find(({ id }) => id === 'ccm-1-user').dueCustomers, 0);
+
+  const creReport = await queryWorkshopReportsData(queryOptions({ ccmId: 'ccm-1', creId: 'cre-1' }), database);
+  assert.equal(creReport.totals.dueCustomers, 1);
 });
 
 test('whole-team report remains available when a CCM has no assigned CREs', async () => {

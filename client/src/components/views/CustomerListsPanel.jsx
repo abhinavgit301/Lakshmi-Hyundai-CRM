@@ -19,6 +19,9 @@ export default function CustomerListsPanel(props) {
     customerSaving,
     customers,
     customersLoading,
+    customersLoadingMore,
+    customersPageInfo,
+    loadMoreCustomers,
     dueError,
     dueIssues,
     dueLoading,
@@ -201,7 +204,7 @@ export default function CustomerListsPanel(props) {
             <section className="panel customer-list-panel">
               <div className="panel-header">
                 <h3>Customer directory</h3>
-                <span>{customersLoading ? 'Loading…' : `${customers.length} records`}</span>
+                <span>{customersLoading ? 'Loading…' : `${customers.length}${customersPageInfo?.total > customers.length ? ` of ${customersPageInfo.total}` : ''} records`}</span>
               </div>
               <div className="table-scroll">
                 <table>
@@ -219,6 +222,11 @@ export default function CustomerListsPanel(props) {
                   </tbody>
                 </table>
               </div>
+              {customersPageInfo?.hasMore && (
+                <button type="button" className="secondary-button" disabled={customersLoadingMore} onClick={loadMoreCustomers}>
+                  {customersLoadingMore ? 'Loading…' : 'Load more'}
+                </button>
+              )}
             </section>
             )}
 

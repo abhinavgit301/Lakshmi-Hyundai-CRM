@@ -81,6 +81,22 @@ function memoryInMegabytes(bytes) {
   return Math.round((bytes / (1024 * 1024)) * 10) / 10;
 }
 
+// Opt-in (CUSTOMERS_MEMORY_LOG=true). Logs only counts and process memory, never customer data.
+function createCustomerMemoryLogger(enabled = process.env.CUSTOMERS_MEMORY_LOG === 'true') {
+  if (!enabled) return () => {};
+  const startedAt = Date.now();
+  return (phase, counts = {}) => {
+    const { rss, heapUsed } = process.memoryUsage();
+    console.info('[customers-memory]', JSON.stringify({
+      phase,
+      ...counts,
+      rssMb: memoryInMegabytes(rss),
+      heapUsedMb: memoryInMegabytes(heapUsed),
+      elapsedMs: Date.now() - startedAt,
+    }));
+  };
+}
+
 function logCallListMemory(phase, metrics, peak = metrics) {
   console.info('[call-list-memory]', JSON.stringify({
     phase,
@@ -1510,13 +1526,8 @@ export async function createManualCallListEntry(req, res) {
   }
 }
 
-export async function getCustomers(req, res) {
-  if (normalizeRole(req.user?.role) === 'FREE_SERVICE_CRE') {
-    return res.status(403).json({ message: 'Customer records are not available to the Free-Service CRE role.' });
-  }
-  const user = req.user;
+function customerReadScope(user) {
   const role = normalizeRole(user?.role);
-
   const where = role === 'ADMIN' || role === 'GM'
     ? {}
     : role === 'CCM'
@@ -1536,14 +1547,11 @@ export async function getCustomers(req, res) {
       : role === 'CRE'
         ? { ccmId: user?.ccmId || 'no-access', creId: user?.id || 'no-access', status: 'assigned' }
         : { id: 'no-access' };
+  return { role, where, allocationWhere };
+}
 
-  const customerIds = (await prisma.customer.findMany({
-    where,
-    select: { id: true },
-    orderBy: { createdAt: 'desc' },
-  })).map((customer) => customer.id);
-
-  const rows = [];
+function createCustomerBatchLoader(user) {
+  const { role, where, allocationWhere } = customerReadScope(user);
   const loadCustomerBatch = (ids) => prisma.customer.findMany({
     where: { AND: [where, { id: { in: ids } }] },
     include: {
@@ -1613,21 +1621,33 @@ export async function getCustomers(req, res) {
       ];
     }
   };
-  for (const idChunk of splitIntoChunks([...new Set(customerIds)], CUSTOMER_QUERY_BATCH_SIZE)) {
+  return async (idChunk) => {
     const batch = await loadCustomerBatchSafely(idChunk);
     const position = new Map(idChunk.map((id, index) => [id, index]));
-    rows.push(...batch.sort((left, right) => position.get(left.id) - position.get(right.id)));
-  }
-  const historyVisits = rows.flatMap((customer) => [
-    ...(customer.visits || []),
-    ...(customer.vehicles || []).flatMap((vehicle) => vehicle.physicalVehicle?.workshopVisits || []),
-  ]);
+    return batch.sort((left, right) => position.get(left.id) - position.get(right.id));
+  };
+}
+
+const SLIM_VISIT_FIELDS = ['id', 'vehicleId', 'repairOrderNo', 'ccmId', 'visitDate', 'createdAt', 'closingDate', 'gpDate', 'totalAmount'];
+
+function slimVisit(visit) {
+  return Object.fromEntries(SLIM_VISIT_FIELDS.map((field) => [field, visit[field]]));
+}
+
+// `detail` keeps the full repair-order history (importedDetails, dealer codes) for one customer;
+// the list form drops it so large customer lists stay small in memory and on the wire.
+async function serializeCustomerBatch(rows, { detail }) {
+  const now = new Date();
+  const historyVisits = detail
+    ? rows.flatMap((customer) => [
+      ...(customer.visits || []),
+      ...(customer.vehicles || []).flatMap((vehicle) => vehicle.physicalVehicle?.workshopVisits || []),
+    ])
+    : [];
   const visitsWithDealerCodes = await addOriginatingDealerCodes(historyVisits);
   const dealerCodeByVisitId = new Map(visitsWithDealerCodes.map((visit) => [visit.id, visit]));
-  const now = new Date();
 
-  return res.json({
-    customers: rows.map((customer) => {
+  return rows.map((customer) => {
       const allVisits = new Map((customer.visits || []).map((visit) => [
         visit.id,
         dealerCodeByVisitId.get(visit.id) || { ...visit, dealerCode: null },
@@ -1658,20 +1678,72 @@ export async function getCustomers(req, res) {
         city: customer.city || importedCustomerDetail(visits, ['city', 'customerCity']),
         pin: customer.pin || importedCustomerDetail(visits, ['pin', 'pinCode', 'customerPin']),
         vehicleCount: customer.vehicles?.length || 0,
-        vehicles: (customer.vehicles || []).map((vehicle) => ({
+        vehicles: (customer.vehicles || []).map(({ physicalVehicle, ...vehicle }) => ({
           ...vehicle,
           vehicleAgeMonths: getAgeInMonths(vehicle.saleDate, now),
-          workshopVisits: (vehicle.physicalVehicle?.workshopVisits || [])
-            .map((visit) => dealerCodeByVisitId.get(visit.id) || { ...visit, dealerCode: null }),
+          ...(detail ? {
+            workshopVisits: (physicalVehicle?.workshopVisits || [])
+              .map((visit) => dealerCodeByVisitId.get(visit.id) || { ...visit, dealerCode: null }),
+          } : {}),
           freeServicesRemaining: countRemainingFreeServiceMilestones({
             saleDate: vehicle.saleDate,
-            workshopVisits: vehicle.physicalVehicle?.workshopVisits || [],
+            workshopVisits: physicalVehicle?.workshopVisits || [],
           }, now),
         })),
-        visits,
+        visits: detail ? visits : visits.map(slimVisit),
       };
-    }),
   });
+}
+
+function customersForbidden(req, res) {
+  if (normalizeRole(req.user?.role) !== 'FREE_SERVICE_CRE') return false;
+  res.status(403).json({ message: 'Customer records are not available to the Free-Service CRE role.' });
+  return true;
+}
+
+export async function getCustomers(req, res) {
+  if (customersForbidden(req, res)) return undefined;
+  const query = req.query || {};
+  const pagination = Object.hasOwn(query, 'limit') || Object.hasOwn(query, 'offset') ? parsePagination(query) : null;
+  if (pagination?.error) return res.status(400).json({ message: pagination.error });
+
+  const logMemory = createCustomerMemoryLogger();
+  logMemory('start');
+  const { where } = customerReadScope(req.user);
+  const loadBatch = createCustomerBatchLoader(req.user);
+  const allIds = [...new Set((await prisma.customer.findMany({
+    where,
+    select: { id: true },
+    orderBy: { createdAt: 'desc' },
+  })).map((customer) => customer.id))];
+  const pageIds = pagination ? allIds.slice(pagination.offset, pagination.offset + pagination.limit) : allIds;
+  logMemory('ids-loaded', { totalIds: allIds.length, pageIds: pageIds.length });
+
+  const customers = [];
+  let batchNumber = 0;
+  for (const idChunk of splitIntoChunks(pageIds, CUSTOMER_QUERY_BATCH_SIZE)) {
+    customers.push(...await serializeCustomerBatch(await loadBatch(idChunk), { detail: false }));
+    batchNumber += 1;
+    logMemory('batch-done', { batch: batchNumber, customers: customers.length });
+  }
+  logMemory('response-ready', { customers: customers.length });
+  return res.json({
+    customers,
+    ...(pagination ? {
+      total: allIds.length,
+      limit: pagination.limit,
+      offset: pagination.offset,
+      hasMore: pagination.offset + pageIds.length < allIds.length,
+    } : {}),
+  });
+}
+
+export async function getCustomerById(req, res) {
+  if (customersForbidden(req, res)) return undefined;
+  const rows = await createCustomerBatchLoader(req.user)([String(req.params?.id || '')]);
+  if (!rows.length) return res.status(404).json({ message: 'Customer not found.' });
+  const [customer] = await serializeCustomerBatch(rows, { detail: true });
+  return res.json({ customer });
 }
 
 export async function getAppointments(req, res) {

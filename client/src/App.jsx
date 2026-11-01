@@ -22,6 +22,7 @@ const ReportsPanel = lazy(() => import('./components/views/ReportsPanel.jsx'));
 const ImportsPanel = lazy(() => import('./components/views/ImportsPanel.jsx'));
 const AppointmentsPanel = lazy(() => import('./components/views/AppointmentsPanel.jsx'));
 const MasterCallListPanel = lazy(() => import('./components/views/MasterCallListPanel.jsx'));
+const CUSTOMER_PAGE_SIZE = 50;
 const CustomerListsPanel = lazy(() => import('./components/views/CustomerListsPanel.jsx'));
 const FreeServiceCreDashboard = lazy(() => import('./components/views/FreeServiceCreDashboard.jsx'));
 const CreDashboard = lazy(() => import('./components/views/CreDashboard.jsx'));
@@ -262,6 +263,9 @@ function App() {
   const [allocationForm, setAllocationForm] = useState({ vehicleId: '', creId: '', serviceType: '', category: '' });
   const [customers, setCustomers] = useState([]);
   const [customersLoading, setCustomersLoading] = useState(false);
+  const [customersLoadingMore, setCustomersLoadingMore] = useState(false);
+  const [customersPageInfo, setCustomersPageInfo] = useState({ total: 0, hasMore: false });
+  const customersRequestRef = useRef(0);
   const [callLogs, setCallLogs] = useState([]);
   const [callLogsLoading, setCallLogsLoading] = useState(false);
   const [callForm, setCallForm] = useState({ customerId: '', vehicleId: '', outcome: 'CONTACTED', notes: '', nextAction: 'none', scheduledAt: '' });
@@ -395,6 +399,7 @@ function App() {
   const [monthlyFile, setMonthlyFile] = useState(null);
   const [monthlyPreview, setMonthlyPreview] = useState(null);
   const [monthlyBusy, setMonthlyBusy] = useState(false);
+  const customerProfileRequestRef = useRef({ id: 0, customerId: null, promise: null });
   const routeActionsRef = useRef({});
   const userFormDialogRef = useRef(null);
   const userFormCloseButtonRef = useRef(null);
@@ -544,13 +549,38 @@ function App() {
     setCustomerPanel({ customerId: null, mode: 'options' });
     setCustomersLoading(true);
     setCustomerError('');
+    const requestId = customersRequestRef.current + 1;
+    customersRequestRef.current = requestId;
     try {
-      const response = await api.get('/customers');
+      const response = await api.get(`/customers?limit=${CUSTOMER_PAGE_SIZE}&offset=0`);
+      if (customersRequestRef.current !== requestId) return;
       setCustomers(response.data.customers || []);
+      setCustomersPageInfo({ total: response.data.total || 0, hasMore: response.data.hasMore === true });
     } catch (error) {
+      if (customersRequestRef.current !== requestId) return;
       setCustomerError(error.response?.data?.message || 'Could not load customers. Sign in and try again.');
     } finally {
-      setCustomersLoading(false);
+      if (customersRequestRef.current === requestId) setCustomersLoading(false);
+    }
+  }
+
+  async function loadMoreCustomers() {
+    if (customersLoadingMore || customersLoading || !customersPageInfo.hasMore) return;
+    const requestId = customersRequestRef.current;
+    setCustomersLoadingMore(true);
+    setCustomerError('');
+    try {
+      const response = await api.get(`/customers?limit=${CUSTOMER_PAGE_SIZE}&offset=${customers.length}`);
+      if (customersRequestRef.current !== requestId) return;
+      setCustomers((current) => {
+        const seen = new Set(current.map((customer) => customer.id));
+        return [...current, ...(response.data.customers || []).filter((customer) => !seen.has(customer.id))];
+      });
+      setCustomersPageInfo({ total: response.data.total || 0, hasMore: response.data.hasMore === true });
+    } catch (error) {
+      if (customersRequestRef.current === requestId) setCustomerError(error.response?.data?.message || 'Could not load more customers.');
+    } finally {
+      setCustomersLoadingMore(false);
     }
   }
 
@@ -1128,12 +1158,11 @@ function App() {
     let customer = customers.find((entry) => entry.id === record.customerId);
     if (!customer) {
       try {
-        const response = await api.get('/customers');
-        const records = response.data.customers || [];
-        setCustomers(records);
-        customer = records.find((entry) => entry.id === record.customerId);
+        const response = await api.get(`/customers/${encodeURIComponent(record.customerId)}`);
+        customer = response.data.customer;
+        if (customer) setCustomers((current) => [customer, ...current.filter((entry) => entry.id !== customer.id)]);
       } catch (error) {
-        setCallError(error.response?.data?.message || 'Could not load this assigned customer.');
+        setCallError(error.response?.status === 404 ? 'This assigned customer is not available. Reload the Master Call List and try again.' : error.response?.data?.message || 'Could not load this assigned customer.');
         return;
       }
     }
@@ -1240,12 +1269,11 @@ function App() {
     if (mode === 'call') {
       if (!customer) {
         try {
-          const response = await api.get('/customers');
-          const records = response.data.customers || [];
-          setCustomers(records);
-          customer = records.find((entry) => entry.id === record.customerId);
+          const response = await api.get(`/customers/${encodeURIComponent(record.customerId)}`);
+          customer = response.data.customer;
+          if (customer) setCustomers((current) => [customer, ...current.filter((entry) => entry.id !== customer.id)]);
         } catch (error) {
-          setDueError(error.response?.data?.message || 'Could not load this customer.');
+          setDueError(error.response?.status === 404 ? 'This customer is not available. Reload the list and try again.' : error.response?.data?.message || 'Could not load this customer.');
           return;
         }
       }
@@ -1260,7 +1288,21 @@ function App() {
     } else await openCustomerProfile({ ...record, ...(customer || {}) });
   }
 
-  async function loadCustomerProfile(customerId) {
+  function loadCustomerProfile(customerId) {
+    // Opening a profile also changes the route, which triggers a second load; share the in-flight request.
+    const inFlight = customerProfileRequestRef.current;
+    if (customerId && inFlight.customerId === customerId && inFlight.promise) return inFlight.promise;
+    const requestId = inFlight.id + 1;
+    const request = { id: requestId, customerId, promise: null };
+    customerProfileRequestRef.current = request;
+    request.promise = runCustomerProfileLoad(customerId, () => customerProfileRequestRef.current.id === requestId)
+      .finally(() => {
+        if (customerProfileRequestRef.current.id === requestId) request.promise = null;
+      });
+    return request.promise;
+  }
+
+  async function runCustomerProfileLoad(customerId, isCurrent) {
     if (!customerId) {
       setCustomerProfileError('This customer does not have a profile linked to the CRM.');
       setCustomerProfileLoading(false);
@@ -1275,18 +1317,19 @@ function App() {
     setCallLogs([]);
     setCallLogsLoading(true);
     const [customerResult, callLogResult] = await Promise.allSettled([
-      api.get('/customers'),
+      api.get(`/customers/${encodeURIComponent(customerId)}`),
       api.get(`/call-logs?customerId=${encodeURIComponent(customerId)}`),
     ]);
+    if (!isCurrent()) return;
     if (customerResult.status === 'fulfilled') {
-      const availableCustomers = customerResult.value.data.customers || [];
-      setCustomers(availableCustomers);
-      const matchedCustomer = availableCustomers.find((entry) => entry.id === customerId);
+      const matchedCustomer = customerResult.value.data.customer;
       if (matchedCustomer) {
         setCustomerProfile({ ...matchedCustomer, customerId });
       } else {
         setCustomerProfileError('This customer is not available to your account.');
       }
+    } else if (customerResult.reason.response?.status === 404) {
+      setCustomerProfileError('This customer is not available to your account.');
     } else {
       setCustomerProfileError(customerResult.reason.response?.data?.message || 'Could not load this customer profile.');
     }
@@ -3434,6 +3477,9 @@ function App() {
               customerSaving={customerSaving}
               customers={customers}
               customersLoading={customersLoading}
+              customersLoadingMore={customersLoadingMore}
+              customersPageInfo={customersPageInfo}
+              loadMoreCustomers={loadMoreCustomers}
               dueError={dueError}
               dueIssues={dueIssues}
               dueLoading={dueLoading}

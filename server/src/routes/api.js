@@ -46,6 +46,7 @@ import {
   getAppointments,
   getCallList,
   getCustomers,
+  getCustomerById,
   getDashboardSummary,
   getDueCallList,
   createManualCallListEntry,
@@ -100,6 +101,7 @@ router.get('/call-list', authMiddleware, getCallList);
 router.get('/call-list/due', authMiddleware, requireRole('CRE', 'CCM'), getDueCallList);
 router.post('/call-list', authMiddleware, requireRole('Admin', 'GM', 'CCM'), createManualCallListEntry);
 router.get('/customers', authMiddleware, getCustomers);
+router.get('/customers/:id', authMiddleware, getCustomerById);
 router.post('/customers', authMiddleware, requireRole('Admin', 'GM', 'CCM'), createCustomer);
 router.patch('/customers/:id/profile', authMiddleware, requireRole('CRE'), updateCreCustomerProfile);
 router.get('/appointments', authMiddleware, requireRole('Admin', 'GM', 'CCM', 'CRE', 'Free-Service CRE'), getAppointments);

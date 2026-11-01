@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prisma } from '../src/config/prisma.js';
-import { getCallList, getCustomers, getDashboardSummary, getVisibilityWhere, loadCallListRecords, operationalReadScope } from '../src/controllers/recordsController.js';
+import { getCallList, getCustomerById, getCustomers, getDashboardSummary, getVisibilityWhere, loadCallListRecords, operationalReadScope } from '../src/controllers/recordsController.js';
 import { getCrePerformanceSummary } from '../src/controllers/callWorkflowController.js';
 import { getCreCallCounts } from '../src/utils/callMetrics.js';
 import { workshopDayRange } from '../src/utils/workshopTime.js';
@@ -623,6 +623,67 @@ test('Customer endpoint splits a batch and retries when Prisma reports P2029', a
     };
     await getCustomers({ user: { role: 'ADMIN' } }, res);
     assert.deepEqual(res.body.customers, []);
+  } finally {
+    prisma.customer.findMany = original;
+    prisma.user.findMany = originalUser;
+  }
+});
+
+test('Customer list is slim while the single-customer endpoint keeps full repair history', async () => {
+  const original = prisma.customer.findMany;
+  const originalUser = prisma.user.findMany;
+  const visit = {
+    id: 'visit-1', vehicleId: 'vehicle-1', repairOrderNo: 'RO-1', ccmId: 'ccm-a',
+    visitDate: new Date('2026-01-10T00:00:00Z'), createdAt: new Date('2026-01-10T00:00:00Z'),
+    closingDate: null, gpDate: null, totalAmount: 10, importedDetails: { mobileNumber: '5550100', bulky: 'x'.repeat(500) },
+  };
+  const rowFor = (id) => ({
+    id, fullName: id, mobileNumber: null, ccmId: 'ccm-a', createdAt: new Date('2026-01-01T00:00:00Z'),
+    vehicles: [{ id: 'vehicle-1', saleDate: null, physicalVehicle: { id: 'pv-1', workshopVisits: [visit] }, allocations: [] }],
+    visits: [visit],
+  });
+  const ids = Array.from({ length: 5 }, (_, index) => `customer-${index}`);
+  const calls = [];
+  prisma.customer.findMany = async (args) => {
+    calls.push(args);
+    if (args.select) return ids.map((id) => ({ id }));
+    return args.where.AND[1].id.in.map(rowFor);
+  };
+  prisma.user.findMany = async () => [{ ccmId: 'ccm-a', dealerCode: 'D1' }];
+  const res = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+  try {
+    await getCustomers({ user: { role: 'ADMIN' }, query: {} }, res);
+    const [first] = res.body.customers;
+    assert.equal(res.body.customers.length, 5);
+    assert.equal(first.mobile, '5550100');
+    assert.equal(first.visits[0].importedDetails, undefined);
+    assert.equal(first.vehicles[0].physicalVehicle, undefined);
+    assert.equal(first.vehicles[0].workshopVisits, undefined);
+    assert.equal(first.visits.length, 1);
+    assert.ok(!('total' in res.body));
+
+    await getCustomers({ user: { role: 'ADMIN' }, query: { limit: '2', offset: '1' } }, res);
+    assert.deepEqual(res.body.customers.map((customer) => customer.id), ['customer-1', 'customer-2']);
+    assert.deepEqual([res.body.total, res.body.hasMore, res.body.offset], [5, true, 1]);
+
+    await getCustomers({ user: { role: 'ADMIN' }, query: { limit: '999' } }, res);
+    assert.equal(res.statusCode, 400);
+
+    calls.length = 0;
+    res.statusCode = 200;
+    await getCustomerById({ user: { role: 'CCM', ccmId: 'ccm-a' }, params: { id: 'customer-3' } }, res);
+    assert.equal(res.body.customer.id, 'customer-3');
+    assert.equal(res.body.customer.visits[0].importedDetails.bulky.length, 500);
+    assert.equal(res.body.customer.visits[0].dealerCode, 'D1');
+    assert.equal(res.body.customer.vehicles[0].workshopVisits.length, 1);
+    assert.deepEqual(calls[0].where.AND[1], { id: { in: ['customer-3'] } });
+    assert.deepEqual(calls[0].where.AND[0].OR[0], { ccmId: 'ccm-a' });
+
+    prisma.customer.findMany = async () => [];
+    await getCustomerById({ user: { role: 'CRE', id: 'cre-1', ccmId: 'ccm-a' }, params: { id: 'other' } }, res);
+    assert.equal(res.statusCode, 404);
+    await getCustomerById({ user: { role: 'FREE_SERVICE_CRE' }, params: { id: 'x' } }, res);
+    assert.equal(res.statusCode, 403);
   } finally {
     prisma.customer.findMany = original;
     prisma.user.findMany = originalUser;

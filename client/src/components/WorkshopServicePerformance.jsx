@@ -199,6 +199,8 @@ export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId })
     previous: analysisRows.reduce((sum, row) => sum + row.previous, 0),
     current: analysisRows.reduce((sum, row) => sum + row.current, 0),
   }), [analysisRows]);
+  const analysisTotalChange = analysisTotals.current - analysisTotals.previous;
+  const analysisTotalPercent = getPercentChange(analysisTotals.current, analysisTotals.previous);
 
   const trendRangeMonths = useMemo(() => {
     const result = [];
@@ -302,7 +304,7 @@ export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId })
                 <>
                   <section className="panel">
                     <div className="panel-header"><h3>Service volume by category</h3><span>{baseLabel} vs {currentLabel}</span></div>
-                    <div className="service-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={analysisRows} margin={{ top: 12, right: 12, left: 0, bottom: 12 }}>
+                    <div className="service-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={[...analysisRows, { category: 'Total services', previous: analysisTotals.previous, current: analysisTotals.current }]} margin={{ top: 12, right: 12, left: 0, bottom: 12 }}>
                       <CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="category" /><YAxis allowDecimals={false} /><Tooltip /><Legend />
                       <Bar dataKey="previous" name={baseLabel} fill="#aeb8bc" radius={[4, 4, 0, 0]} />
                       <Bar dataKey="current" name={currentLabel} fill="#145a62" radius={[4, 4, 0, 0]} />
@@ -312,6 +314,7 @@ export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId })
                     <div className="panel-header">                    <h3>Period comparison</h3></div>
                                         <div className="table-scroll"><table><thead><tr><th>Service category</th><th>{baseLabel}</th><th>{currentLabel}</th><th>Change</th><th>Change %</th></tr></thead><tbody>
                       {analysisRows.map((row) => <tr key={row.category}><td>{row.category}</td><td>{row.previous}</td><td>{row.current}</td><td className={row.change > 0 ? 'service-increase' : row.change < 0 ? 'service-decrease' : ''}>{row.change > 0 ? '+' : ''}{row.change}</td><td>{row.percent == null ? (row.current > 0 ? 'New' : 'N/A') : changeLabel(row.percent)}</td></tr>)}
+                      <tr><td>Total services</td><td>{analysisTotals.previous}</td><td>{analysisTotals.current}</td><td className={analysisTotalChange > 0 ? 'service-increase' : analysisTotalChange < 0 ? 'service-decrease' : ''}>{analysisTotalChange > 0 ? '+' : ''}{analysisTotalChange}</td><td>{analysisTotalPercent == null ? (analysisTotals.current > 0 ? 'New' : 'N/A') : changeLabel(analysisTotalPercent)}</td></tr>
                     </tbody></table></div>
                   </section>
                 </>

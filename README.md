@@ -2,6 +2,19 @@
 
 Lakshmi Hyundai CRM is an internal customer and workshop management application for Hyundai dealership service operations. It supports customer and vehicle records, repair-order history, service follow-ups, calls, appointments, allocations, imports, performance analytics, and PDF reports.
 
+## Technology stack
+
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-ES_Modules-339933?logo=nodedotjs&logoColor=white)
+![Express](https://img.shields.io/badge/Express-5-000000?logo=express&logoColor=white)
+![Prisma](https://img.shields.io/badge/Prisma-7-2D3748?logo=prisma&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-4169E1?logo=postgresql&logoColor=white)
+![JWT](https://img.shields.io/badge/JWT-Authentication-000000?logo=jsonwebtokens&logoColor=white)
+![ESLint](https://img.shields.io/badge/ESLint-Linting-4B32C3?logo=eslint&logoColor=white)
+
+**Also used:** React Router, Axios, Recharts, Lucide React, TanStack React Virtual, bcrypt, PDFKit, CSV Parse, ExcelJS, and Node's built-in test runner.
+
 ## Repository structure
 
 - `client/` — React and Vite frontend.

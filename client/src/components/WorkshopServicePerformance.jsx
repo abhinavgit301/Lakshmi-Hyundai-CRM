@@ -16,6 +16,21 @@ import api from '../lib/api.js';
 const CATEGORIES = ['Free Service', 'PMS', 'Accidental Repair', 'Running Repair', 'Others'];
 const COLORS = ['#145a62', '#398b80', '#d28a39', '#7b6ba8', '#8a969b'];
 const TABS = ['Load Analysis', 'Load Trend', 'MTD Load'];
+const FIRST_DATA_YEAR = 2015;
+const MONTH_NUMBERS = Array.from({ length: 12 }, (_, index) => index + 1);
+
+function mergeResponses(responses) {
+  if (responses.length === 1) return responses[0];
+  const daily = new Map();
+  responses.forEach((response) => response.daily.forEach((entry) => daily.set(entry.date, entry)));
+  return {
+    ...responses[0],
+    rangeCount: responses.reduce((sum, response) => sum + response.rangeCount, 0),
+    filteredRangeCount: responses.reduce((sum, response) => sum + response.filteredRangeCount, 0),
+    months: responses.flatMap((response) => response.months),
+    daily: [...daily.values()],
+  };
+}
 
 function monthKey(year, month) {
   return `${year}-${String(month).padStart(2, '0')}`;
@@ -76,7 +91,7 @@ export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId })
   const [activeTab, setActiveTab] = useState(TABS[0]);
   const now = useMemo(() => new Date(), []);
   const currentMonth = monthKey(now.getFullYear(), now.getMonth() + 1);
-  const years = Array.from({ length: 10 }, (_, index) => now.getFullYear() - index);
+  const years = Array.from({ length: now.getFullYear() - FIRST_DATA_YEAR + 1 }, (_, index) => now.getFullYear() - index);
   const months = useMemo(() => monthOptions(), []);
   const isTeamScoped = role === 'CCM';
   const [teamCcmId, setTeamCcmId] = useState('');
@@ -92,33 +107,43 @@ export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId })
 
   const [analysisPeriod, setAnalysisPeriod] = useState('year');
   const [analysisYear, setAnalysisYear] = useState(now.getFullYear());
+  const [baseYear, setBaseYear] = useState(Math.max(now.getFullYear() - 1, FIRST_DATA_YEAR));
+  const [baseMonth, setBaseMonth] = useState(now.getMonth() + 1);
   const [analysisMonth, setAnalysisMonth] = useState(now.getMonth() + 1);
   const [trendStart, setTrendStart] = useState(shiftMonth(currentMonth, -11));
   const [trendEnd, setTrendEnd] = useState(currentMonth);
   const [trendType, setTrendType] = useState('All');
-  const [mtdPeriod, setMtdPeriod] = useState(currentMonth);
+  const defaultMtdPeriod = shiftMonth(currentMonth, -1);
+  const [mtdPeriod, setMtdPeriod] = useState(defaultMtdPeriod);
+  const [mtdComparisonYear, setMtdComparisonYear] = useState(Math.max(Number(defaultMtdPeriod.slice(0, 4)) - 1, FIRST_DATA_YEAR));
   const [mtdType, setMtdType] = useState('All');
   const [result, setResult] = useState(null);
   const [requestError, setRequestError] = useState(null);
 
-  const requestRange = useMemo(() => {
+  // Each compared side is its own request: the API caps a range at 122 months, including the comparison month.
+  const requestRanges = useMemo(() => {
     if (activeTab === 'Load Analysis') {
-      const endMonth = analysisYear === now.getFullYear() ? now.getMonth() + 1 : 12;
-      return analysisPeriod === 'year'
-        ? { startMonth: `${analysisYear - 1}-01`, endMonth: monthKey(analysisYear, endMonth), serviceType: 'All' }
-        : {
-          startMonth: monthKey(analysisYear - 1, analysisMonth),
-          endMonth: monthKey(analysisYear, analysisMonth),
-          serviceType: 'All',
-        };
+      const sideRange = (year, month) => (analysisPeriod === 'year'
+        ? { startMonth: `${year}-01`, endMonth: `${year}-12`, serviceType: 'All' }
+        : { startMonth: monthKey(year, month), endMonth: monthKey(year, month), serviceType: 'All' });
+      const current = sideRange(analysisYear, analysisMonth);
+      const base = sideRange(baseYear, baseMonth);
+      return current.startMonth === base.startMonth ? [current] : [base, current];
     }
     if (activeTab === 'Load Trend') {
-      return { startMonth: shiftMonth(trendStart, -1), endMonth: trendEnd, serviceType: trendType };
+      return [{ startMonth: shiftMonth(trendStart, -1), endMonth: trendEnd, serviceType: trendType }];
     }
-    return { startMonth: shiftMonth(mtdPeriod, -12), endMonth: mtdPeriod, serviceType: mtdType };
-  }, [activeTab, analysisPeriod, analysisYear, analysisMonth, trendStart, trendEnd, trendType, mtdPeriod, mtdType, now]);
+    const [, selectedMonth] = mtdPeriod.split('-').map(Number);
+    const comparisonMonth = monthKey(mtdComparisonYear, selectedMonth);
+    const selected = { startMonth: mtdPeriod, endMonth: mtdPeriod, serviceType: mtdType };
+    const comparison = { startMonth: comparisonMonth, endMonth: comparisonMonth, serviceType: mtdType };
+    return comparisonMonth === mtdPeriod ? [selected] : [comparison, selected];
+  }, [activeTab, analysisPeriod, analysisYear, analysisMonth, baseYear, baseMonth, trendStart, trendEnd, trendType, mtdPeriod, mtdComparisonYear, mtdType]);
 
-  const requestParams = useMemo(() => ({ ...requestRange, ...(ccmId ? { ccmId } : {}) }), [requestRange, ccmId]);
+  const requestParams = useMemo(
+    () => requestRanges.map((range) => ({ ...range, ...(ccmId ? { ccmId } : {}) })),
+    [requestRanges, ccmId],
+  );
   const requestKey = JSON.stringify(requestParams);
   const data = result?.key === requestKey ? result.data : null;
   const error = requestError?.key === requestKey ? requestError.message : '';
@@ -126,11 +151,11 @@ export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId })
 
   useEffect(() => {
     let isCurrent = true;
-    api.get('/performance/workshop-services', { params: requestParams })
-      .then((response) => {
+    Promise.all(requestParams.map((params) => api.get('/performance/workshop-services', { params })))
+      .then((responses) => {
         if (isCurrent) {
           setRequestError(null);
-          setResult({ key: requestKey, data: response.data });
+          setResult({ key: requestKey, data: mergeResponses(responses.map((response) => response.data)) });
         }
       })
       .catch((requestError) => {
@@ -145,24 +170,31 @@ export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId })
   const byMonth = useMemo(() => new Map((data?.months || []).map((entry) => [entry.month, entry])), [data]);
   const availableMonths = months.filter((month) => month <= currentMonth);
 
+  const periodLabel = (year, month) => (analysisPeriod === 'year' ? String(year) : monthLabel(monthKey(year, month)));
+  const currentLabel = periodLabel(analysisYear, analysisMonth);
+  const baseLabel = periodLabel(baseYear, baseMonth);
+
   const analysisRows = useMemo(() => CATEGORIES.map((category) => {
-    const monthStart = analysisPeriod === 'year' ? 1 : analysisMonth;
-    const monthEnd = analysisPeriod === 'year'
-      ? (analysisYear === now.getFullYear() ? now.getMonth() + 1 : 12)
-      : analysisMonth;
-    const isPartial = analysisYear === now.getFullYear()
-      && (analysisPeriod === 'year' || analysisMonth === now.getMonth() + 1);
-    const cutoffDay = isPartial ? now.getDate() : 31;
-    const sumPeriod = (year) => (data?.daily || []).reduce((sum, entry) => {
+    const side = (year, month) => {
+      const start = analysisPeriod === 'year' ? 1 : month;
+      const end = analysisPeriod === 'year' ? (year === now.getFullYear() ? now.getMonth() + 1 : 12) : month;
+      return { year, start, end, partial: year === now.getFullYear() && end === now.getMonth() + 1 };
+    };
+    const currentSide = side(analysisYear, analysisMonth);
+    const baseSide = side(baseYear, baseMonth);
+    // Equivalent-day cutoff applies only when both sides cover the same months and one is still in progress.
+    const likeForLike = currentSide.start === baseSide.start && currentSide.end === baseSide.end
+      && (currentSide.partial || baseSide.partial);
+    const sumPeriod = ({ year, start, end }) => (data?.daily || []).reduce((sum, entry) => {
       const [entryYear, entryMonth, entryDay] = entry.date.split('-').map(Number);
-      if (entryYear !== year || entryMonth < monthStart || entryMonth > monthEnd) return sum;
-      if (isPartial && entryMonth === monthEnd && entryDay > cutoffDay) return sum;
+      if (entryYear !== year || entryMonth < start || entryMonth > end) return sum;
+      if (likeForLike && entryMonth === end && entryDay > now.getDate()) return sum;
       return sum + (entry.categories[category] || 0);
     }, 0);
-    const previous = sumPeriod(analysisYear - 1);
-    const current = sumPeriod(analysisYear);
+    const previous = sumPeriod(baseSide);
+    const current = sumPeriod(currentSide);
     return { category, previous, current, change: current - previous, percent: getPercentChange(current, previous) };
-  }), [analysisPeriod, analysisYear, analysisMonth, data, now]);
+  }), [analysisPeriod, analysisYear, analysisMonth, baseYear, baseMonth, data, now]);
   const analysisTotals = useMemo(() => ({
     previous: analysisRows.reduce((sum, row) => sum + row.previous, 0),
     current: analysisRows.reduce((sum, row) => sum + row.current, 0),
@@ -189,38 +221,41 @@ export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId })
 
   const mtdValues = useMemo(() => {
     const [selectedYear, selectedMonth] = mtdPeriod.split('-').map(Number);
-    const previousYear = selectedYear - 1;
     const selectedMonthDays = new Date(selectedYear, selectedMonth, 0).getDate();
-    const previousMonthDays = new Date(previousYear, selectedMonth, 0).getDate();
+    const comparisonMonthDays = new Date(mtdComparisonYear, selectedMonth, 0).getDate();
     const isCurrentMonth = selectedYear === now.getFullYear() && selectedMonth === now.getMonth() + 1;
-    const days = Math.min(selectedMonthDays, previousMonthDays, isCurrentMonth ? now.getDate() : selectedMonthDays);
+    const days = Math.min(selectedMonthDays, comparisonMonthDays, isCurrentMonth ? now.getDate() : selectedMonthDays);
     const dailyCurrent = new Map();
-    const dailyPrevious = new Map();
+    const dailyComparison = new Map();
     (data?.daily || []).forEach((entry) => {
       const [year, month, day] = entry.date.split('-').map(Number);
-      const target = year === selectedYear && month === selectedMonth ? dailyCurrent
-        : year === previousYear && month === selectedMonth ? dailyPrevious : null;
-      if (target) target.set(day, getMonthCount({ total: entry.total, categories: entry.categories }, mtdType));
+      const value = getMonthCount({ total: entry.total, categories: entry.categories }, mtdType);
+      if (year === selectedYear && month === selectedMonth) {
+        dailyCurrent.set(day, value);
+        if (mtdComparisonYear === selectedYear) dailyComparison.set(day, value);
+      } else if (year === mtdComparisonYear && month === selectedMonth) {
+        dailyComparison.set(day, value);
+      }
     });
     const dailyChartRows = Array.from({ length: days }, (_, index) => index + 1).reduce((rows, day) => {
-      const prior = rows.at(-1) || { current: 0, previous: 0 };
+      const prior = rows.at(-1) || { current: 0, comparison: 0 };
       return [...rows, {
         day,
         current: prior.current + (dailyCurrent.get(day) || 0),
-        previous: prior.previous + (dailyPrevious.get(day) || 0),
+        comparison: prior.comparison + (dailyComparison.get(day) || 0),
       }];
     }, []);
     const currentTotal = dailyChartRows.at(-1)?.current || 0;
-    const previousTotal = dailyChartRows.at(-1)?.previous || 0;
+    const comparisonTotal = dailyChartRows.at(-1)?.comparison || 0;
     return {
       days,
       chartRows: dailyChartRows,
       currentTotal,
-      previousTotal,
-      change: currentTotal - previousTotal,
-      percent: getPercentChange(currentTotal, previousTotal),
+      comparisonTotal,
+      change: currentTotal - comparisonTotal,
+      percent: getPercentChange(currentTotal, comparisonTotal),
     };
-  }, [mtdPeriod, mtdType, data, now]);
+  }, [mtdPeriod, mtdComparisonYear, mtdType, data, now]);
 
   const hasDataInActiveRange = (data?.filteredRangeCount || 0) > 0;
 
@@ -248,32 +283,34 @@ export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId })
       {activeTab === 'Load Analysis' && (
         <>
           <FilterPanel>
-            <label>Compare<select value={analysisPeriod} onChange={(event) => setAnalysisPeriod(event.target.value)}><option value="year">Full year</option><option value="month">Same month</option></select></label>
+            <label>Compare<select value={analysisPeriod} onChange={(event) => setAnalysisPeriod(event.target.value)}><option value="year">Full year</option><option value="month">Single month</option></select></label>
             <label>Year<select value={analysisYear} onChange={(event) => setAnalysisYear(Number(event.target.value))}>{years.map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
-            {analysisPeriod === 'month' && <label>Month<select value={analysisMonth} onChange={(event) => setAnalysisMonth(Number(event.target.value))}>{Array.from({ length: 12 }, (_, index) => index + 1).map((month) => <option key={month} value={month} disabled={analysisYear === now.getFullYear() && month > now.getMonth() + 1}>{new Date(2000, month - 1, 1).toLocaleDateString(undefined, { month: 'long' })}</option>)}</select></label>}
+            {analysisPeriod === 'month' && <label>Month<select value={analysisMonth} onChange={(event) => setAnalysisMonth(Number(event.target.value))}>{MONTH_NUMBERS.map((month) => <option key={month} value={month} disabled={analysisYear === now.getFullYear() && month > now.getMonth() + 1}>{new Date(2000, month - 1, 1).toLocaleDateString(undefined, { month: 'long' })}</option>)}</select></label>}
+            <label>Compare with year<select value={baseYear} onChange={(event) => setBaseYear(Number(event.target.value))}>{years.map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
+            {analysisPeriod === 'month' && <label>Compare with month<select value={baseMonth} onChange={(event) => setBaseMonth(Number(event.target.value))}>{MONTH_NUMBERS.map((month) => <option key={month} value={month} disabled={baseYear === now.getFullYear() && month > now.getMonth() + 1}>{new Date(2000, month - 1, 1).toLocaleDateString(undefined, { month: 'long' })}</option>)}</select></label>}
           </FilterPanel>
           {error && <p className="form-alert error" role="alert">{error}</p>}
-          <DataNotice data={data} selectedRange={`${analysisYear - 1}–${analysisYear}`} />
+          <DataNotice data={data} selectedRange={`${baseLabel} vs ${currentLabel}`} />
           {loading ? <p className="panel service-empty">Loading service history…</p> : (
             <>
               <section className="stats-grid">
-                <article className="stat-card"><p>{analysisYear - 1} service volume</p><strong>{analysisTotals.previous}</strong></article>
-                <article className="stat-card"><p>{analysisYear} service volume</p><strong>{analysisTotals.current}</strong></article>
+                <article className="stat-card">                <p>{baseLabel} service volume</p><strong>{analysisTotals.previous}</strong></article>
+                                <article className="stat-card"><p>{currentLabel} service volume</p><strong>{analysisTotals.current}</strong></article>
               </section>
               {!analysisTotals.previous && !analysisTotals.current && data?.rangeCount > 0 && <p className="form-alert info" role="status">No service records were found through the equivalent day in either selected period.</p>}
               {(analysisTotals.previous > 0 || analysisTotals.current > 0) && (
                 <>
                   <section className="panel">
-                    <div className="panel-header"><h3>Service volume by category</h3><span>{analysisPeriod === 'year' ? `${analysisYear === now.getFullYear() ? `Jan–${new Date(2000, now.getMonth(), 1).toLocaleDateString(undefined, { month: 'short' })} ` : ''}${analysisYear - 1} vs ${analysisYear}` : `${monthLabel(monthKey(analysisYear - 1, analysisMonth))} vs ${monthLabel(monthKey(analysisYear, analysisMonth))}`}</span></div>
+                    <div className="panel-header"><h3>Service volume by category</h3><span>{baseLabel} vs {currentLabel}</span></div>
                     <div className="service-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={analysisRows} margin={{ top: 12, right: 12, left: 0, bottom: 12 }}>
                       <CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="category" /><YAxis allowDecimals={false} /><Tooltip /><Legend />
-                      <Bar dataKey="previous" name={String(analysisYear - 1)} fill="#aeb8bc" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="current" name={String(analysisYear)} fill="#145a62" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="previous" name={baseLabel} fill="#aeb8bc" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="current" name={currentLabel} fill="#145a62" radius={[4, 4, 0, 0]} />
                     </BarChart></ResponsiveContainer></div>
                   </section>
                   <section className="panel customer-list-panel">
-                    <div className="panel-header"><h3>Year-over-year comparison</h3></div>
-                    <div className="table-scroll"><table><thead><tr><th>Service category</th><th>Previous period</th><th>Current period</th><th>Change</th><th>Change %</th></tr></thead><tbody>
+                    <div className="panel-header">                    <h3>Period comparison</h3></div>
+                                        <div className="table-scroll"><table><thead><tr><th>Service category</th><th>{baseLabel}</th><th>{currentLabel}</th><th>Change</th><th>Change %</th></tr></thead><tbody>
                       {analysisRows.map((row) => <tr key={row.category}><td>{row.category}</td><td>{row.previous}</td><td>{row.current}</td><td className={row.change > 0 ? 'service-increase' : row.change < 0 ? 'service-decrease' : ''}>{row.change > 0 ? '+' : ''}{row.change}</td><td>{row.percent == null ? (row.current > 0 ? 'New' : 'N/A') : changeLabel(row.percent)}</td></tr>)}
                     </tbody></table></div>
                   </section>
@@ -320,26 +357,27 @@ export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId })
         <>
           <FilterPanel>
             <label>Month<input type="month" value={mtdPeriod} max={currentMonth} min={availableMonths.at(-1)} onChange={(event) => setMtdPeriod(event.target.value)} /></label>
+            <label>Compare with year<select value={mtdComparisonYear} onChange={(event) => setMtdComparisonYear(Number(event.target.value))}>{years.map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
             <label>Service type<select value={mtdType} onChange={(event) => setMtdType(event.target.value)}><option value="All">All services</option>{CATEGORIES.map((category) => <option key={category}>{category}</option>)}</select></label>
           </FilterPanel>
           {error && <p className="form-alert error" role="alert">{error}</p>}
-          <DataNotice data={data} selectedRange={`${shiftMonth(mtdPeriod, -12)} to ${mtdPeriod}`} />
+          <DataNotice data={data} selectedRange={`${monthKey(mtdComparisonYear, Number(mtdPeriod.slice(5)))} vs ${mtdPeriod}`} />
           {loading ? <p className="panel service-empty">Loading service history…</p> : (
             <>
-              <p className="service-comparison-label">Comparing equivalent days: {mtdPeriod} vs {shiftMonth(mtdPeriod, -12)} · through day {mtdValues.days}</p>
+              <p className="service-comparison-label">Comparing equivalent days: {mtdPeriod} vs {monthKey(mtdComparisonYear, Number(mtdPeriod.slice(5)))} · through day {mtdValues.days}</p>
               <section className="stats-grid">
                 <article className="stat-card"><p>Current MTD · {mtdPeriod}</p><strong>{mtdValues.currentTotal}</strong></article>
-                <article className="stat-card"><p>Previous-year MTD · {shiftMonth(mtdPeriod, -12)}</p><strong>{mtdValues.previousTotal}</strong></article>
+                <article className="stat-card"><p>Comparison-year MTD · {monthKey(mtdComparisonYear, Number(mtdPeriod.slice(5)))}</p><strong>{mtdValues.comparisonTotal}</strong></article>
                 <article className="stat-card"><p>Absolute difference</p><strong className={mtdValues.change > 0 ? 'service-increase' : mtdValues.change < 0 ? 'service-decrease' : ''}>{mtdValues.change > 0 ? '+' : ''}{mtdValues.change}</strong></article>
                 <article className="stat-card"><p>Percentage change</p><strong>{mtdValues.percent == null ? (mtdValues.currentTotal > 0 ? 'New' : 'N/A') : changeLabel(mtdValues.percent)}</strong></article>
               </section>
-              {!mtdValues.currentTotal && !mtdValues.previousTotal && hasDataInActiveRange && <p className="form-alert info" role="status">No service records were found through the equivalent day in either selected period.</p>}
-              {(mtdValues.currentTotal > 0 || mtdValues.previousTotal > 0) && <section className="panel">
+              {!mtdValues.currentTotal && !mtdValues.comparisonTotal && hasDataInActiveRange && <p className="form-alert info" role="status">No service records were found through the equivalent day in either selected period.</p>}
+              {(mtdValues.currentTotal > 0 || mtdValues.comparisonTotal > 0) && <section className="panel">
                 <div className="panel-header"><h3>Cumulative daily service volume</h3><span>{mtdType === 'All' ? 'All services' : mtdType}</span></div>
                 <div className="service-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={mtdValues.chartRows} margin={{ top: 12, right: 18, left: 0, bottom: 12 }}>
                   <CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="day" label={{ value: 'Day of month', position: 'insideBottom', offset: -4 }} /><YAxis allowDecimals={false} /><Tooltip /><Legend />
                   <Line type="monotone" dataKey="current" name={mtdPeriod} stroke="#145a62" strokeWidth={3} dot={false} />
-                  <Line type="monotone" dataKey="previous" name={shiftMonth(mtdPeriod, -12)} stroke="#aeb8bc" strokeWidth={3} dot={false} />
+                  <Line type="monotone" dataKey="comparison" name={monthKey(mtdComparisonYear, Number(mtdPeriod.slice(5)))} stroke="#aeb8bc" strokeWidth={3} dot={false} />
                 </LineChart></ResponsiveContainer></div>
               </section>}
             </>

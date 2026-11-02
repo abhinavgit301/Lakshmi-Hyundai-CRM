@@ -731,9 +731,11 @@ function App() {
 
   function changeMasterListTeam(ccmId) {
     setMasterListTeam(ccmId);
+    // A CRE from the previous team would no longer match, so the CRE filter resets with the team.
+    setMasterListCreFilter('');
     refreshMasterList({
       search: masterListSearch,
-      creId: masterListCreFilter,
+      creId: '',
       dueCategory: masterListDueFilter,
       repairType: masterListRepairFilter,
       ccmId,

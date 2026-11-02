@@ -32,7 +32,7 @@ export function filterMasterCallListRecords(records, filters, role) {
   const { creId, dueCategory, repairType, search } = filters;
 
   return records.filter((record) => {
-    if (normalizedRole === 'CCM' && creId) {
+    if (['CCM', 'ADMIN', 'GM'].includes(normalizedRole) && creId) {
       if (creId === 'unassigned' ? record.assigneeId : record.assigneeId !== creId) return false;
     }
 

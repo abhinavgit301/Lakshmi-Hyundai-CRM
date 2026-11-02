@@ -23,8 +23,8 @@ export default function CcmDashboard(props) {
               <section className="customer-workspace ccm-dashboard">
                 <section className="content-grid quota-notices" aria-label="Previous-day call target alerts">
                   {[
-                    { key: 'callsMadeMissed', title: 'Calls made target missed', noun: 'calls made', allMet: 'All CREs met the calls-made target yesterday' },
-                    { key: 'callsPickedUpMissed', title: 'Calls picked up target missed', noun: 'calls picked up', allMet: 'All CREs met the calls-picked-up target yesterday' },
+                    { key: 'callsMadeMissed', title: 'Calls made', noun: 'calls made', allMet: 'All CREs met the calls-made target yesterday' },
+                    { key: 'callsPickedUpMissed', title: 'Calls picked up', noun: 'calls picked up', allMet: 'All CREs met the calls-picked-up target yesterday' },
                   ].map(({ key, title, noun, allMet }) => {
                     const notices = dashboardData?.ccm?.quotaNotices || quotaNotices;
                     return (

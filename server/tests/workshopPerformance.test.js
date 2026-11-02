@@ -102,6 +102,7 @@ test('whole CCM team report aggregates the CCM and its CREs once', async () => {
     dueCustomers: 0,
     reachPercent: 18,
     conversionPercent: 75,
+    dueServices: 0,
   });
   assert.deepEqual(report.breakdown.map(({ id }) => id).sort(), ['ccm-1-user', 'cre-1', 'cre-2']);
   assert.equal(report.daily.reduce((sum, day) => sum + day.calls, 0), 4);

@@ -61,6 +61,7 @@ export default function ReportsPanel(props) {
                     ['Appointments booked', wpData.totals.appointmentsBooked],
                     ['Call-to-appointment', `${wpData.totals.conversionPercent}%`],
                     ['Due customers', wpData.totals.dueCustomers],
+                    ['Due services', wpData.totals.dueServices ?? 0],
                     ['Assigned records', wpData.totals.assignedRecords],
                     ['Reach of assigned', `${wpData.totals.reachPercent}%`],
                   ].map(([label, value]) => (
@@ -68,6 +69,7 @@ export default function ReportsPanel(props) {
                       <p>{label}</p>
                       <strong>{value}</strong>
                       {label === 'Due customers' && <span>CRE-assigned Master Call List · 6-month + 1-year cohorts</span>}
+                      {label === 'Due services' && <span>Master Call List · overdue now, same as CRE performance</span>}
                     </article>
                   ))}
                 </section>

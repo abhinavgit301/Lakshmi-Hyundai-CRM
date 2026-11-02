@@ -1,6 +1,6 @@
 import { prisma } from '../config/prisma.js';
 import { consolidateMasterCallListEntries } from '../utils/masterCallList.js';
-import { classifyServiceDue, getLatestServiceDate } from '../utils/serviceDue.js';
+import { classifyServiceDue, getLatestServiceDate, getYearlyDueDate } from '../utils/serviceDue.js';
 
 const OUTCOMES = ['CONTACTED', 'CALLBACK', 'NOT_INTERESTED', 'WRONG_NUMBER', 'APPOINTMENT_SET', 'FOLLOW_UP_LATER', 'NO_RESPONSE', 'OTHER'];
 
@@ -159,11 +159,18 @@ export async function queryWorkshopReportsData({
   const canonicalMasterCallListEntries = consolidateMasterCallListEntries(
     masterCallListEntries.map((entry) => ({ ...entry, assigneeId: entry.ownerUserId })),
   );
+  // Same rule as the CRE performance "Due services" card: the yearly due date (latest service + 12
+  // months) has passed. Counted across the whole Master Call List in scope, including unassigned records.
+  let dueServices = 0;
   for (const entry of canonicalMasterCallListEntries) {
-    if (!reportCreIds.has(entry.ownerUserId)) continue;
+    const isScopedCre = reportCreIds.has(entry.ownerUserId);
+    if (scope.type === 'cre' && !isScopedCre) continue;
     const visits = entry.vehicle?.physicalVehicle?.workshopVisits || [];
-    const dueCategory = classifyServiceDue(getLatestServiceDate(visits, now), now);
-    if (dueCategory) dueCustomersByUser.set(entry.ownerUserId, (dueCustomersByUser.get(entry.ownerUserId) || 0) + 1);
+    const yearlyDueDate = getYearlyDueDate(visits);
+    if (yearlyDueDate && yearlyDueDate < now) dueServices += 1;
+    if (isScopedCre && classifyServiceDue(getLatestServiceDate(visits, now), now)) {
+      dueCustomersByUser.set(entry.ownerUserId, (dueCustomersByUser.get(entry.ownerUserId) || 0) + 1);
+    }
   }
 
   function summarize(members) {
@@ -185,6 +192,7 @@ export async function queryWorkshopReportsData({
 
   const totals = summarize(scopeUsers);
   totals.conversionPercent = percent(totals.appointmentsBooked, totals.calls);
+  totals.dueServices = dueServices;
 
   let breakdown;
   if (scope.type === 'all') {

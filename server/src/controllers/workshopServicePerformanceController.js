@@ -27,7 +27,7 @@ export async function queryWorkshopServiceData({ startMonth, endMonth, serviceTy
   const startDate = new Date(start.year, start.month - 1, 1);
   const endDateExclusive = new Date(end.year, end.month, 1);
   const monthCount = (end.year - start.year) * 12 + end.month - start.month + 1;
-  if (endDateExclusive <= startDate || monthCount > 120) return null;
+  if (endDateExclusive <= startDate || monthCount > 122) return null;
 
   const [visits, historyCount, undatedHistoryCount] = await Promise.all([
     ccmId
@@ -132,7 +132,7 @@ export async function getWorkshopServicePerformance(req, res) {
   });
 
   if (!result) {
-    return res.status(400).json({ message: 'The selected date range must be chronological and no longer than 120 months.' });
+    return res.status(400).json({ message: 'The selected date range must be chronological and no longer than 10 years.' });
   }
 
   return res.json(result);

@@ -92,7 +92,7 @@ export default function MasterCallListPanel(props) {
                 )}
                 <span>{masterListLoading ? 'Loading…' : `${masterListPageInfo.total} total records`}</span>
               </div>
-              {['CCM', 'CRE'].includes(currentRole) && (
+              {['CCM', 'CRE', 'ADMIN', 'GM'].includes(currentRole) && (
                 <div className="master-list-filters" aria-label="Master Call List filters">
                   <label className="master-list-search">
                     Search customers
@@ -111,13 +111,15 @@ export default function MasterCallListPanel(props) {
                       )}
                     </span>
                   </label>
-                  {currentRole === 'CCM' && (
+                  {['CCM', 'ADMIN', 'GM'].includes(currentRole) && (
                     <label>
                       CRE
                       <select value={masterListCreFilter} onChange={(event) => setMasterListCreFilter(event.target.value)}>
                         <option value="">All CREs</option>
                         <option value="unassigned">Unassigned customers</option>
-                        {masterListCres.map((cre) => <option key={cre.id} value={cre.id}>{cre.name || cre.username}</option>)}
+                        {masterListCres
+                          .filter((cre) => currentRole === 'CCM' || !masterListTeam || cre.ccmId === masterListTeam)
+                          .map((cre) => <option key={cre.id} value={cre.id}>{cre.name || cre.username}</option>)}
                       </select>
                     </label>
                   )}

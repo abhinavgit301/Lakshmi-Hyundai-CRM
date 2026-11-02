@@ -10,9 +10,26 @@ function percent(part, whole) {
 
 // The nested latest-visit load is not chunked by Prisma, so its IN list grows with the page size.
 const REPORT_MASTER_LIST_PAGE_SIZE = Math.min(
-  Math.max(Number.parseInt(process.env.REPORT_MASTER_LIST_PAGE_SIZE, 10) || 2000, 1),
-  5000,
+  Math.max(Number.parseInt(process.env.REPORT_MASTER_LIST_PAGE_SIZE, 10) || 10000, 1),
+  20000,
 );
+
+// Short-lived response cache (Admin/GM only route, identical data for both roles).
+const parsedCacheTtl = Number.parseInt(process.env.REPORT_CACHE_TTL_SECONDS, 10);
+const REPORT_CACHE_TTL_MS = (Number.isFinite(parsedCacheTtl) ? Math.max(parsedCacheTtl, 0) : 60) * 1000;
+const REPORT_CACHE_MAX_ENTRIES = 100;
+const reportCache = new Map();
+const reportInFlight = new Map();
+
+function rememberReport(key, data) {
+  if (reportCache.size >= REPORT_CACHE_MAX_ENTRIES) reportCache.delete(reportCache.keys().next().value);
+  reportCache.set(key, { data, expiresAt: Date.now() + REPORT_CACHE_TTL_MS });
+}
+
+export function clearWorkshopPerformanceCache() {
+  reportCache.clear();
+  reportInFlight.clear();
+}
 
 async function loadMasterCallListEntriesPaged(database, ccmIds, now) {
   const entries = [];
@@ -199,7 +216,29 @@ export async function getWorkshopPerformance(req, res) {
   const ccmId = req.query.ccmId ? String(req.query.ccmId) : '';
   const creId = req.query.creId ? String(req.query.creId) : '';
 
-  const data = await queryWorkshopReportsData({ year, month, tzOffset, ccmId, creId });
+  const cacheKey = [year, month, tzOffset, ccmId, creId].join('|');
+  let data;
+  if (REPORT_CACHE_TTL_MS > 0) {
+    const cached = reportCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      data = cached.data;
+    } else {
+      // Concurrent identical requests share one query.
+      let pending = reportInFlight.get(cacheKey);
+      if (!pending) {
+        pending = queryWorkshopReportsData({ year, month, tzOffset, ccmId, creId })
+          .then((result) => {
+            if (result && !result.error) rememberReport(cacheKey, result);
+            return result;
+          })
+          .finally(() => reportInFlight.delete(cacheKey));
+        reportInFlight.set(cacheKey, pending);
+      }
+      data = await pending;
+    }
+  } else {
+    data = await queryWorkshopReportsData({ year, month, tzOffset, ccmId, creId });
+  }
   if (!data) return res.status(400).json({ message: 'A valid year and month are required.' });
   if (data.error) return res.status(404).json({ message: data.error });
 

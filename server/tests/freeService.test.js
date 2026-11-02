@@ -69,14 +69,15 @@ test('customers are excluded before the calling eligibility date', () => {
   assert.equal(isFreeServiceCallable(due, d(2026, 12, 16)), false, 'past due is no longer in the window');
 });
 
-test('free-service list adds grace and expired milestones without widening future calling eligibility', () => {
+test('free-service list shows pre-due and grace milestones and drops them once the grace period ends', () => {
   const due = d(2026, 12, 15);
   const expiry = freeServiceExpiryDate(due);
   assert.equal(isFreeServiceListVisible(due, d(2026, 11, 30)), false);
   assert.equal(isFreeServiceListVisible(due, d(2026, 12, 1)), true);
   assert.equal(isFreeServiceListVisible(due, due), true);
   assert.equal(isFreeServiceListVisible(due, d(2027, 1, 1)), true);
-  assert.equal(isFreeServiceListVisible(due, d(2027, 3, 16)), true);
+  assert.equal(isFreeServiceListVisible(due, expiry), true, 'expiry day is the last grace day');
+  assert.equal(isFreeServiceListVisible(due, d(2027, 3, 16)), false, 'expired milestones leave the list');
   assert.equal(isFreeServiceListVisible(d(2027, 1, 15), d(2026, 12, 15)), false);
   assert.equal(classifyFreeServiceStatus(due, expiry), 'grace');
 });

@@ -48,7 +48,7 @@ export function filterServiceListRecords(records, query = {}) {
     return { error: 'dueCategory must be 6m, 1y, allDue, or pastDue.' };
   }
   if (milestone && !['1', '2', '3'].includes(milestone)) return { error: 'milestone must be 1, 2, or 3.' };
-  if (graceStatus && !['upcoming', 'grace', 'expired'].includes(graceStatus)) return { error: 'graceStatus is not supported.' };
+  if (graceStatus && !['active', 'upcoming', 'grace', 'expired'].includes(graceStatus)) return { error: 'graceStatus is not supported.' };
   if (contactStatus && !['Contacted', 'Not contacted'].includes(contactStatus)) return { error: 'contactStatus is not supported.' };
   if (followUpStatus && !['scheduled', 'notScheduled'].includes(followUpStatus)) return { error: 'followUpStatus is not supported.' };
   if (pastDue && !['true', 'false'].includes(pastDue)) return { error: 'pastDue must be true or false.' };
@@ -72,7 +72,7 @@ export function filterServiceListRecords(records, query = {}) {
     if (pastDue === 'false' && isPastDue(record.dueDate, todayStart)) return false;
     if (repairType && record.type !== repairType) return false;
     if (milestone && String(record.milestone) !== milestone) return false;
-    if (graceStatus && record.graceStatus !== graceStatus) return false;
+    if (graceStatus === 'active' ? !['upcoming', 'grace'].includes(record.graceStatus) : graceStatus && record.graceStatus !== graceStatus) return false;
     if (contactStatus && record.contactStatus !== contactStatus) return false;
     if (assigneeId && record.assigneeId !== assigneeId) return false;
     if (followUpStatus === 'scheduled' && !record.followUp) return false;

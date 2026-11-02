@@ -68,8 +68,9 @@ export function isFreeServiceCallable(dueDate, today) {
   return today >= freeServiceCallStart(dueDate) && dueDate >= today && dueDate <= addMonths(today, 1);
 }
 
+// Shown from the calling window until the end of the grace period; expired milestones leave the list.
 export function isFreeServiceListVisible(dueDate, today) {
-  return isFreeServiceCallable(dueDate, today) || today > dueDate;
+  return isFreeServiceCallable(dueDate, today) || (today > dueDate && today <= freeServiceExpiryDate(dueDate));
 }
 
 // A free-service repair order completes the milestone from one month before its due date through

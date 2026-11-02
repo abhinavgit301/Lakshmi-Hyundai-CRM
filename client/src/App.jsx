@@ -1254,7 +1254,7 @@ function App() {
     setDueSearch('');
     setAccordionDueCategoryFilter('');
     setAccordionRepairTypeFilter('');
-    setServiceListFilters({});
+    setServiceListFilters(viewName === 'Free Service' ? { graceStatus: 'active' } : {});
     setDueRecords([]);
     setDueIssues([]);
     setDuePageInfo((current) => ({ ...current, [viewName]: { total: 0, hasMore: false, offset: 0 } }));
@@ -1531,9 +1531,9 @@ function App() {
       if (search.trim()) params.set('search', search.trim());
       const sourceKind = source === 'FREE_SERVICE' ? 'free' : source === 'WARRANTY' ? 'warranty' : null;
       const supportedFilters = sourceKind === 'free'
-        ? ['milestone', 'graceStatus', 'assigneeId', 'saleFrom', 'saleTo', 'dueFrom', 'dueTo', 'expiryFrom', 'expiryTo', 'followUpFrom', 'followUpTo']
+        ? ['milestone', 'graceStatus', 'assigneeId']
         : sourceKind === 'warranty'
-          ? ['contactStatus', 'assigneeId', 'saleFrom', 'saleTo', 'expiryFrom', 'expiryTo', 'followUpFrom', 'followUpTo']
+          ? ['contactStatus', 'assigneeId']
           : [];
       for (const key of supportedFilters) {
         if (serviceListFilters[key]) params.set(key, serviceListFilters[key]);
@@ -1590,7 +1590,7 @@ function App() {
     setFollowUpSearch('');
     setAccordionDueCategoryFilter('');
     setAccordionRepairTypeFilter('');
-    setServiceListFilters({});
+    setServiceListFilters(viewName === 'Follow-up Free Service' ? { graceStatus: 'active' } : {});
     setDueError('');
     setCustomerPanel({ customerId: null, mode: 'options' });
     setCallError('');
@@ -2497,7 +2497,8 @@ function App() {
   const wpMaxOutcome = Math.max(1, ...(wpData?.outcomes || []).map((entry) => entry.count));
   const wpMaxBreakdown = Math.max(1, ...(wpData?.breakdown || []).map((entry) => entry.calls));
   const wpNow = new Date();
-  const wpYears = [wpNow.getFullYear(), wpNow.getFullYear() - 1, wpNow.getFullYear() - 2];
+  // Data starts in 2015, so offer every year from now back to 2015.
+  const wpYears = Array.from({ length: Math.max(1, wpNow.getFullYear() - 2015 + 1) }, (_, index) => wpNow.getFullYear() - index);
   const visibleNavItems = [
     ...(currentRole === 'FREE_SERVICE_CRE'
       ? ['Dashboard', 'Import', 'Customer', 'Follow-up', 'Appointments', 'Performance']
@@ -2760,7 +2761,12 @@ function App() {
     return searchValues.some((value) => String(value || '').toLowerCase().includes(search));
   }
 
+  function serviceListDefaultFilters(kind) {
+    return kind === 'free' || kind === 'followup-free' ? { graceStatus: 'active' } : {};
+  }
+
   function renderAccordionFilters(search, setSearch, ariaLabel, kind) {
+    const defaultFilters = serviceListDefaultFilters(kind);
     return (
       <AccordionFilters
         search={search}
@@ -2772,8 +2778,9 @@ function App() {
         repairType={accordionRepairTypeFilter}
         onRepairTypeChange={setAccordionRepairTypeFilter}
         filters={serviceListFilters}
+        defaultFilters={defaultFilters}
         onFilterChange={(key, value) => setServiceListFilters((current) => ({ ...current, [key]: value }))}
-        onClear={() => setServiceListFilters({})}
+        onClear={() => setServiceListFilters(defaultFilters)}
         currentRole={currentRole}
         allocationCres={allocationCres}
       />
@@ -3474,6 +3481,7 @@ function App() {
               customerForm={customerForm}
               customerFormOpen={customerFormOpen}
               customerMessage={customerMessage}
+              customerPanel={customerPanel}
               customerSaving={customerSaving}
               customers={customers}
               customersLoading={customersLoading}

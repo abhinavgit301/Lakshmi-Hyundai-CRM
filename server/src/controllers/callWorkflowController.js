@@ -706,7 +706,7 @@ export async function listFollowUps(req, res) {
     return res.status(400).json({ message: 'milestone must be 1, 2, or 3.' });
   }
   const graceStatus = String(req.query.graceStatus || '').trim();
-  if (graceStatus && !['upcoming', 'grace', 'expired'].includes(graceStatus)) {
+  if (graceStatus && !['active', 'upcoming', 'grace', 'expired'].includes(graceStatus)) {
     return res.status(400).json({ message: 'graceStatus is not supported.' });
   }
   const contactStatus = String(req.query.contactStatus || '').trim();
@@ -737,7 +737,9 @@ export async function listFollowUps(req, res) {
     const today = workshopToday();
     const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
     const graceStart = firstFreeServiceDueDateWithExpiryOnOrAfter(today);
-    const dueDate = graceStatus === 'upcoming'
+    const dueDate = graceStatus === 'active'
+      ? { gte: graceStart }
+      : graceStatus === 'upcoming'
       ? { gte: tomorrow }
       : graceStatus === 'grace'
         ? { gte: graceStart, lt: tomorrow }

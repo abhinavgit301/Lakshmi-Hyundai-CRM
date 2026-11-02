@@ -16,6 +16,7 @@ export default function CustomerListsPanel(props) {
     customerForm,
     customerFormOpen,
     customerMessage,
+    customerPanel,
     customerSaving,
     customers,
     customersLoading,
@@ -230,7 +231,7 @@ export default function CustomerListsPanel(props) {
             </section>
             )}
 
-            {renderCustomerActionPanel()}
+            {customerPanel.mode === 'call' && renderCustomerActionPanel()}
           </section>
     </>
   );

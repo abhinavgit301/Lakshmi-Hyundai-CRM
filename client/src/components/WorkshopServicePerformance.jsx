@@ -87,7 +87,7 @@ function FilterPanel({ children }) {
   return <section className="panel service-filters">{children}</section>;
 }
 
-export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId }) {
+export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId, onExportFiltersChange }) {
   const [activeTab, setActiveTab] = useState(TABS[0]);
   const now = useMemo(() => new Date(), []);
   const currentMonth = monthKey(now.getFullYear(), now.getMonth() + 1);
@@ -119,6 +119,19 @@ export default function WorkshopServicePerformance({ role, ccmId: forcedCcmId })
   const [mtdType, setMtdType] = useState('All');
   const [result, setResult] = useState(null);
   const [requestError, setRequestError] = useState(null);
+
+  useEffect(() => {
+    onExportFiltersChange?.({
+      analysisPeriod,
+      analysisYear,
+      analysisCompareYear: baseYear,
+      analysisMonth,
+      analysisCompareMonth: baseMonth,
+      mtdPeriod,
+      mtdComparisonYear,
+      serviceType: activeTab === 'Load Trend' ? trendType : mtdType,
+    });
+  }, [onExportFiltersChange, activeTab, analysisPeriod, analysisYear, baseYear, analysisMonth, baseMonth, mtdPeriod, mtdComparisonYear, mtdType, trendType]);
 
   // Each compared side is its own request: the API caps a range at 122 months, including the comparison month.
   const requestRanges = useMemo(() => {

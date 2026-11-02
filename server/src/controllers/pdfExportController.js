@@ -130,18 +130,60 @@ export async function exportWorkshopPerformancePdf(req, res) {
   const currentMonthNum = now.getMonth() + 1;
   const currentMonthKey = `${currentYear}-${String(currentMonthNum).padStart(2, '0')}`;
   const prevYearStart = `${currentYear - 1}-01`;
-
-  // Fetch 24-month span to power all 3 charts identically
-  const serviceData = await queryWorkshopServiceData({
-    startMonth: prevYearStart,
-    endMonth: currentMonthKey,
-    serviceType: String(req.query.serviceType || 'All'),
-    ccmId,
-  });
-
-  if (!serviceData) {
+  const validYear = (value, fallback) => {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= 2015 && parsed <= currentYear ? parsed : fallback;
+  };
+  const validMonth = (value, fallback) => {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= 1 && parsed <= 12 ? parsed : fallback;
+  };
+  const requestedAnalysisPeriod = req.query.analysisPeriod === 'month' ? 'month' : 'year';
+  const analysisYear = validYear(req.query.analysisYear, currentYear);
+  const analysisCompareYear = validYear(req.query.analysisCompareYear, Math.max(analysisYear - 1, 2015));
+  const analysisMonth = validMonth(req.query.analysisMonth, currentMonthNum);
+  const analysisCompareMonth = validMonth(req.query.analysisCompareMonth, analysisMonth);
+  const defaultMtdDate = new Date(currentYear, currentMonthNum - 2, 1);
+  const requestedMtdPeriod = /^\d{4}-\d{2}$/.test(String(req.query.mtdPeriod || ''))
+    ? String(req.query.mtdPeriod)
+    : `${defaultMtdDate.getFullYear()}-${String(defaultMtdDate.getMonth() + 1).padStart(2, '0')}`;
+  const [requestedMtdYear, requestedMtdMonth] = requestedMtdPeriod.split('-').map(Number);
+  const safeMtdYear = validYear(requestedMtdYear, defaultMtdDate.getFullYear());
+  const safeMtdMonth = validMonth(requestedMtdMonth, defaultMtdDate.getMonth() + 1);
+  const mtdComparisonYear = validYear(req.query.mtdComparisonYear, Math.max(safeMtdYear - 1, 2015));
+  const requestedServiceType = String(req.query.serviceType || 'All');
+  const serviceType = SERVICE_CATEGORIES.includes(requestedServiceType) ? requestedServiceType : 'All';
+  const periodKey = (year, month) => `${year}-${String(month).padStart(2, '0')}`;
+  const rangeSpecs = [
+    { startMonth: prevYearStart, endMonth: currentMonthKey },
+    requestedAnalysisPeriod === 'year'
+      ? { startMonth: `${analysisYear}-01`, endMonth: `${analysisYear}-12` }
+      : { startMonth: periodKey(analysisYear, analysisMonth), endMonth: periodKey(analysisYear, analysisMonth) },
+    requestedAnalysisPeriod === 'year'
+      ? { startMonth: `${analysisCompareYear}-01`, endMonth: `${analysisCompareYear}-12` }
+      : { startMonth: periodKey(analysisCompareYear, analysisCompareMonth), endMonth: periodKey(analysisCompareYear, analysisCompareMonth) },
+    { startMonth: periodKey(safeMtdYear, safeMtdMonth), endMonth: periodKey(safeMtdYear, safeMtdMonth) },
+    { startMonth: periodKey(mtdComparisonYear, safeMtdMonth), endMonth: periodKey(mtdComparisonYear, safeMtdMonth) },
+  ];
+  const uniqueRanges = [...new Map(rangeSpecs.map((range) => [`${range.startMonth}|${range.endMonth}`, range])).values()];
+  const responses = await Promise.all(uniqueRanges.map((range) => queryWorkshopServiceData({ ...range, serviceType, ccmId })));
+  if (responses.some((response) => !response)) {
     return res.status(500).json({ message: 'Failed to retrieve workshop service data.' });
   }
+  const mergedMonths = new Map();
+  const mergedDaily = new Map();
+  responses.forEach((response) => {
+    response.months.forEach((month) => mergedMonths.set(month.month, month));
+    response.daily.forEach((entry) => {
+      const existing = mergedDaily.get(entry.date);
+      if (!existing) mergedDaily.set(entry.date, { ...entry, categories: { ...entry.categories } });
+      else {
+        existing.total += entry.total;
+        SERVICE_CATEGORIES.forEach((category) => { existing.categories[category] += entry.categories[category] || 0; });
+      }
+    });
+  });
+  const serviceData = { ...responses[0], serviceType, months: [...mergedMonths.values()].sort((a, b) => a.month.localeCompare(b.month)), daily: [...mergedDaily.values()].sort((a, b) => a.date.localeCompare(b.date)) };
 
   const doc = new PDFDocument({ margin: 40, size: 'A4', bufferPages: true });
   const filename = `Workshop_Performance_${now.toISOString().slice(0, 10)}.pdf`;
@@ -162,9 +204,14 @@ export async function exportWorkshopPerformancePdf(req, res) {
     meta: metaText,
   });
 
-  // Calculate Load Analysis figures
-  const prevYearDaily = (serviceData.daily || []).filter((d) => d.date.startsWith(String(currentYear - 1)));
-  const currYearDaily = (serviceData.daily || []).filter((d) => d.date.startsWith(String(currentYear)));
+  // Calculate Load Analysis figures using the selected comparison periods.
+  const periodMatches = (date, year, month) => requestedAnalysisPeriod === 'year'
+    ? date.startsWith(String(year))
+    : date.startsWith(periodKey(year, month));
+  const prevYearDaily = (serviceData.daily || []).filter((d) => periodMatches(d.date, analysisCompareYear, requestedAnalysisPeriod === 'year' ? 1 : analysisCompareMonth));
+  const currYearDaily = (serviceData.daily || []).filter((d) => periodMatches(d.date, analysisYear, requestedAnalysisPeriod === 'year' ? 1 : analysisMonth));
+  const analysisPreviousLabel = requestedAnalysisPeriod === 'year' ? String(analysisCompareYear) : new Date(`${periodKey(analysisCompareYear, analysisCompareMonth)}-01`).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+  const analysisCurrentLabel = requestedAnalysisPeriod === 'year' ? String(analysisYear) : new Date(`${periodKey(analysisYear, analysisMonth)}-01`).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 
   const analysisRows = SERVICE_CATEGORIES.map((cat) => {
     const prev = prevYearDaily.reduce((acc, d) => acc + (d.categories[cat] || 0), 0);
@@ -182,11 +229,11 @@ export async function exportWorkshopPerformancePdf(req, res) {
   // KPI boxes for Load Analysis
   drawKpiBox(doc, {
     x: 40, y: 130, width: 165, height: 58,
-    label: `${currentYear - 1} Total Volume`, value: formatNumber(totalPrev), subtext: 'Previous Year', color: SECONDARY_COLOR,
+    label: `${analysisPreviousLabel} Total Volume`, value: formatNumber(totalPrev), subtext: 'Previous Year', color: SECONDARY_COLOR,
   });
   drawKpiBox(doc, {
     x: 215, y: 130, width: 165, height: 58,
-    label: `${currentYear} Total Volume`, value: formatNumber(totalCurr), subtext: 'Current Period (YTD)', color: PRIMARY_COLOR,
+    label: `${analysisCurrentLabel} Total Volume`, value: formatNumber(totalCurr), subtext: 'Current Period (YTD)', color: PRIMARY_COLOR,
   });
   drawKpiBox(doc, {
     x: 390, y: 130, width: 165, height: 58,
@@ -199,16 +246,17 @@ export async function exportWorkshopPerformancePdf(req, res) {
 
   // Chart Legend
   doc.rect(370, 204, 10, 8).fill(SECONDARY_COLOR);
-  doc.fontSize(8).fillColor(TEXT_MUTED).font('Helvetica').text(String(currentYear - 1), 385, 204);
+  doc.fontSize(8).fillColor(TEXT_MUTED).font('Helvetica').text(analysisPreviousLabel, 385, 204);
   doc.rect(450, 204, 10, 8).fill(PRIMARY_COLOR);
-  doc.fontSize(8).fillColor(TEXT_MUTED).font('Helvetica').text(String(currentYear), 465, 204);
+  doc.fontSize(8).fillColor(TEXT_MUTED).font('Helvetica').text(analysisCurrentLabel, 465, 204);
 
   // Draw grouped bars
   const chartX = 40;
   const chartY = 220;
   const chartW = 515;
   const chartH = 150;
-  const maxVal = Math.max(1, ...analysisRows.map((r) => Math.max(r.prev, r.curr)));
+  const analysisChartRows = [...analysisRows, { category: 'Total services', prev: totalPrev, curr: totalCurr }];
+  const maxVal = Math.max(1, ...analysisChartRows.map((r) => Math.max(r.prev, r.curr)));
 
   // Grid lines
   for (let step = 0; step <= 4; step += 1) {
@@ -218,10 +266,10 @@ export async function exportWorkshopPerformancePdf(req, res) {
     doc.fontSize(7).fillColor(TEXT_MUTED).text(String(tickVal), chartX - 25, yLine - 4, { width: 20, align: 'right' });
   }
 
-  const catWidth = chartW / analysisRows.length;
+  const catWidth = chartW / analysisChartRows.length;
   const barW = 20;
 
-  analysisRows.forEach((r, idx) => {
+  analysisChartRows.forEach((r, idx) => {
     const groupX = chartX + idx * catWidth + (catWidth - (barW * 2 + 4)) / 2;
     const h1 = (r.prev / maxVal) * chartH;
     const h2 = (r.curr / maxVal) * chartH;
@@ -239,8 +287,8 @@ export async function exportWorkshopPerformancePdf(req, res) {
   // Table below Chart 1
   const tableHeaders = [
     { text: 'Service Category', align: 'left' },
-    { text: `${currentYear - 1} Count`, align: 'right' },
-    { text: `${currentYear} Count`, align: 'right' },
+    { text: `${analysisPreviousLabel} Count`, align: 'right' },
+    { text: `${analysisCurrentLabel} Count`, align: 'right' },
     { text: 'Absolute Change', align: 'right' },
     { text: 'YoY Change %', align: 'right' },
   ];
@@ -252,7 +300,7 @@ export async function exportWorkshopPerformancePdf(req, res) {
     { text: formatPercent(r.pct), color: r.pct >= 0 ? '#16a34a' : ACCENT_COLOR },
   ]);
   tableRows.push([
-    { text: 'Total Workshop Volume', bold: true },
+    { text: 'Total services', bold: true },
     { text: formatNumber(totalPrev), bold: true },
     { text: formatNumber(totalCurr), bold: true },
     { text: `${totalDiff > 0 ? '+' : ''}${formatNumber(totalDiff)}`, bold: true, color: totalDiff >= 0 ? '#16a34a' : ACCENT_COLOR },
@@ -366,17 +414,20 @@ export async function exportWorkshopPerformancePdf(req, res) {
     meta: metaText,
   });
 
-  // Current Month MTD vs Previous Year Same Month MTD
-  const prevYearSameMonthKey = `${currentYear - 1}-${String(currentMonthNum).padStart(2, '0')}`;
-  const daysInMonth = new Date(currentYear, currentMonthNum, 0).getDate();
-  const cutoffDay = now.getDate();
+  // Match the UI default: previous completed month versus the same month in the comparison year.
+  const mtdYear = safeMtdYear;
+  const mtdMonthNum = safeMtdMonth;
+  const mtdMonthKey = `${mtdYear}-${String(mtdMonthNum).padStart(2, '0')}`;
+  const prevYearSameMonthKey = `${mtdYear - 1}-${String(mtdMonthNum).padStart(2, '0')}`;
+  const daysInMonth = new Date(mtdYear, mtdMonthNum, 0).getDate();
+  const cutoffDay = daysInMonth;
 
   const dailyCurrMap = new Map();
   const dailyPrevMap = new Map();
   (serviceData.daily || []).forEach((d) => {
     const [y, m, dayNum] = d.date.split('-').map(Number);
-    if (y === currentYear && m === currentMonthNum) dailyCurrMap.set(dayNum, d.total);
-    if (y === currentYear - 1 && m === currentMonthNum) dailyPrevMap.set(dayNum, d.total);
+    if (y === mtdYear && m === mtdMonthNum) dailyCurrMap.set(dayNum, d.total);
+    if (y === mtdYear - 1 && m === mtdMonthNum) dailyPrevMap.set(dayNum, d.total);
   });
 
   let cumCurr = 0;
@@ -405,7 +456,7 @@ export async function exportWorkshopPerformancePdf(req, res) {
   });
   drawKpiBox(doc, {
     x: 215, y: 130, width: 165, height: 58,
-    label: `${new Date(`${currentMonthKey}-01`).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })} MTD (Day ${cutoffDay})`,
+    label: `${new Date(`${mtdMonthKey}-01`).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })} MTD (Day ${cutoffDay})`,
     value: formatNumber(mtdCurrTotal), subtext: 'Current Month Cumulative', color: PRIMARY_COLOR,
   });
   drawKpiBox(doc, {
@@ -419,9 +470,9 @@ export async function exportWorkshopPerformancePdf(req, res) {
     .text(`Chart 3: Cumulative Daily MTD Trajectory (Through Day ${cutoffDay})`, 40, 202);
 
   doc.rect(370, 204, 10, 8).fill(SECONDARY_COLOR);
-  doc.fontSize(8).fillColor(TEXT_MUTED).font('Helvetica').text(String(currentYear - 1), 385, 204);
+  doc.fontSize(8).fillColor(TEXT_MUTED).font('Helvetica').text(String(mtdYear - 1), 385, 204);
   doc.rect(450, 204, 10, 8).fill(PRIMARY_COLOR);
-  doc.fontSize(8).fillColor(TEXT_MUTED).font('Helvetica').text(String(currentYear), 465, 204);
+  doc.fontSize(8).fillColor(TEXT_MUTED).font('Helvetica').text(String(mtdYear), 465, 204);
 
   const mChartX = 40;
   const mChartY = 220;
@@ -446,7 +497,7 @@ export async function exportWorkshopPerformancePdf(req, res) {
   }
   doc.strokeColor(SECONDARY_COLOR).lineWidth(1.8).stroke();
 
-  // Current year curve (up to cutoff day)
+  // Selected completed month curve
   doc.moveTo(mChartX, mChartY + mChartH - (mtdDays[0].curr / maxMtd) * mChartH);
   for (let i = 1; i < cutoffDay; i += 1) {
     doc.lineTo(mChartX + i * mStepX, mChartY + mChartH - (mtdDays[i].curr / maxMtd) * mChartH);
@@ -462,8 +513,8 @@ export async function exportWorkshopPerformancePdf(req, res) {
   // MTD Table
   const mtdTableHeaders = [
     { text: 'Day of Month', align: 'left' },
-    { text: `${currentYear - 1} Cumulative`, align: 'right' },
-    { text: `${currentYear} Cumulative`, align: 'right' },
+    { text: `${mtdYear - 1} Cumulative`, align: 'right' },
+    { text: `${mtdYear} Cumulative`, align: 'right' },
     { text: 'Variance', align: 'right' },
     { text: 'Status', align: 'center' },
   ];

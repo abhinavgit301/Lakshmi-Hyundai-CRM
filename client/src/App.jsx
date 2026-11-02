@@ -316,6 +316,7 @@ function App() {
   const [wpYear, setWpYear] = useState(new Date().getFullYear());
   const [wpMonth, setWpMonth] = useState(new Date().getMonth() + 1);
   const [wpCcmId, setWpCcmId] = useState('');
+  const [workshopExportFilters, setWorkshopExportFilters] = useState(null);
   const [wpCreId, setWpCreId] = useState('');
   const [wpData, setWpData] = useState(null);
   const [wpLoading, setWpLoading] = useState(false);
@@ -1630,7 +1631,8 @@ function App() {
       const params = new URLSearchParams({
         startMonth: `${currentYear - 1}-01`,
         endMonth: currentMonthKey,
-        serviceType: 'All',
+        serviceType: workshopExportFilters?.serviceType || 'All',
+        ...(workshopExportFilters || {}),
         ...(currentRole === 'CCM' ? {} : wpCcmId ? { ccmId: wpCcmId } : {}),
       });
 
@@ -3349,7 +3351,7 @@ function App() {
           </Suspense>
         ) : activeView === 'Workshop Performance' ? (
           <Suspense fallback={<p className="panel service-empty">Loading Workshop Performance…</p>}>
-            <WorkshopServicePerformance role={currentRole} ccmId={currentUser?.ccmId} />
+            <WorkshopServicePerformance role={currentRole} ccmId={currentUser?.ccmId} onExportFiltersChange={setWorkshopExportFilters} />
           </Suspense>
         ) : activeView === 'Free-Service Import' || activeView.startsWith('Free-Service Customer ·') || activeView.startsWith('Free-Service Follow-up ·') ? (
           <section className="customer-workspace">

@@ -139,11 +139,24 @@ test('remaining free-service count uses sale-date milestones and only matching f
     { visitDate: d(2024, 4, 10), importedDetails: { workType: 'FOC Service' } },
     { visitDate: d(2025, 1, 20), importedDetails: { workType: 'Paid Service' } },
   ];
-  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2026, 10, 30)), 2);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2024, 5, 1)), 2);
 
   visits[1].importedDetails.workType = 'Free Service';
-  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2026, 10, 30)), 1);
-  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, d(2026, 10, 30)), 3);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2024, 5, 1)), 1);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, d(2024, 5, 1)), 3);
+});
+
+test('expired free-service milestones are not remaining whether or not the customer came', () => {
+  const saleDate = d(2020, 3, 6);
+  const visits = [
+    { visitDate: d(2020, 12, 20), importedDetails: { workType: 'Free Service' } },
+    { visitDate: d(2021, 2, 17), importedDetails: { workType: 'Free Service' } },
+  ];
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2026, 11, 1)), 0);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, d(2026, 11, 1)), 0);
+  // 5 months after sale the first milestone is expired; the other two are still open.
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, d(2020, 8, 7)), 2);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, d(2020, 8, 6)), 3);
 });
 
 test('a grace-period free service reduces the available milestone count', () => {
@@ -153,8 +166,9 @@ test('a grace-period free service reduces the available milestone count', () => 
     visitDate: d(firstServiceDue.getFullYear(), firstServiceDue.getMonth() + 2, firstServiceDue.getDate()),
     importedDetails: { workType: 'Free Service' },
   };
-  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }), 3);
-  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [visit] }), 2);
+  const now = d(2026, 3, 1);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, now), 3);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [visit] }, now), 2);
 });
 
 test('remaining free-service count is unknown without a valid sale date', () => {

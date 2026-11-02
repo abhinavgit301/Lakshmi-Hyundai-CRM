@@ -8,6 +8,49 @@ function percent(part, whole) {
   return whole ? Math.min(100, Math.round((part / whole) * 100)) : 0;
 }
 
+// The nested latest-visit load is not chunked by Prisma, so its IN list grows with the page size.
+const REPORT_MASTER_LIST_PAGE_SIZE = Math.min(
+  Math.max(Number.parseInt(process.env.REPORT_MASTER_LIST_PAGE_SIZE, 10) || 2000, 1),
+  5000,
+);
+
+async function loadMasterCallListEntriesPaged(database, ccmIds, now) {
+  const entries = [];
+  let cursor;
+  for (;;) {
+    const page = await database.masterCallList.findMany({
+      where: { ccmId: { in: ccmIds } },
+      orderBy: { id: 'asc' },
+      take: REPORT_MASTER_LIST_PAGE_SIZE,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      select: {
+        id: true,
+        ccmId: true,
+        vin: true,
+        ownerUserId: true,
+        createdAt: true,
+        vehicle: {
+          select: {
+            physicalVehicle: {
+              select: {
+                workshopVisits: {
+                  where: { visitDate: { lte: now } },
+                  orderBy: { visitDate: 'desc' },
+                  take: 1,
+                  select: { visitDate: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    entries.push(...page);
+    if (page.length < REPORT_MASTER_LIST_PAGE_SIZE) return entries;
+    cursor = page[page.length - 1].id;
+  }
+}
+
 export async function queryWorkshopReportsData({
   year,
   month,
@@ -77,30 +120,7 @@ export async function queryWorkshopReportsData({
       where: { ownerUserId: { in: userIds } },
       _count: { _all: true },
     }),
-    database.masterCallList.findMany({
-      where: { ccmId: { in: [...new Set(scopeUsers.map((user) => user.ccmId))] } },
-      select: {
-        id: true,
-        ccmId: true,
-        vin: true,
-        ownerUserId: true,
-        createdAt: true,
-        vehicle: {
-          select: {
-            physicalVehicle: {
-              select: {
-                workshopVisits: {
-                  where: { visitDate: { lte: now } },
-                  orderBy: { visitDate: 'desc' },
-                  take: 1,
-                  select: { visitDate: true },
-                },
-              },
-            },
-          },
-        },
-      },
-    }),
+    loadMasterCallListEntriesPaged(database, [...new Set(scopeUsers.map((user) => user.ccmId))], now),
   ]);
 
   const dayKey = (date) => new Date(date.getTime() - tzOffset * 60000).toISOString().slice(0, 10);

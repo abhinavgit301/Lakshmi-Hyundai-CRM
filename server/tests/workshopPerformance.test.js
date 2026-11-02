@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { queryWorkshopReportsData } from '../src/controllers/workshopPerformanceController.js';
 
 function createReportDatabase({ users, calls = [], appointments = [], assigned = [], masterCallListEntries = [] }) {
+  const masterCallListQueries = [];
   return {
     user: {
       findMany: async () => users,
@@ -34,8 +35,15 @@ function createReportDatabase({ users, calls = [], appointments = [], assigned =
       groupBy: async ({ where }) => assigned
         .filter((entry) => where.ownerUserId.in.includes(entry.ownerUserId))
         .map((entry) => ({ ownerUserId: entry.ownerUserId, _count: { _all: entry.count } })),
-      findMany: async ({ where }) => masterCallListEntries.filter((entry) => where.ccmId.in.includes(entry.ccmId)),
+      findMany: async ({ where, orderBy, take, skip = 0, cursor }) => {
+        masterCallListQueries.push({ where, take });
+        let rows = masterCallListEntries.filter((entry) => where.ccmId.in.includes(entry.ccmId));
+        if (orderBy?.id) rows = [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        if (cursor) rows = rows.slice(rows.findIndex((entry) => entry.id === cursor.id) + skip);
+        return take ? rows.slice(0, take) : rows;
+      },
     },
+    masterCallListQueries,
   };
 }
 
@@ -143,6 +151,33 @@ test('due-customer totals count canonical CRE-owned 6-month and 1-year Master Ca
 
   const creReport = await queryWorkshopReportsData(queryOptions({ ccmId: 'ccm-1', creId: 'cre-1' }), database);
   assert.equal(creReport.totals.dueCustomers, 1);
+});
+
+test('master call list is read in bounded pages without losing or duplicating due customers', async () => {
+  const visit = { visitDate: new Date('2025-12-01T12:00:00Z') };
+  const total = 4500;
+  const masterCallListEntries = Array.from({ length: total }, (_, index) => ({
+    id: `mcl-${String(index).padStart(5, '0')}`,
+    ccmId: 'ccm-1',
+    vin: `VIN-${index}`,
+    ownerUserId: 'cre-1',
+    createdAt: new Date('2026-01-01'),
+    vehicle: { physicalVehicle: { workshopVisits: [visit] } },
+  }));
+  const database = createReportDatabase({ users: reportUsers, masterCallListEntries });
+
+  const report = await queryWorkshopReportsData(queryOptions({ ccmId: 'ccm-1' }), database);
+
+  assert.equal(report.totals.dueCustomers, total);
+  assert.ok(database.masterCallListQueries.length >= 3);
+  assert.ok(database.masterCallListQueries.every(({ take }) => take > 0 && take <= 5000));
+  assert.ok(database.masterCallListQueries.every(({ where }) => where.ccmId.in.join() === 'ccm-1'));
+
+  const empty = await queryWorkshopReportsData(
+    queryOptions({ ccmId: 'ccm-1' }),
+    createReportDatabase({ users: reportUsers, masterCallListEntries: [] }),
+  );
+  assert.equal(empty.totals.dueCustomers, 0);
 });
 
 test('whole-team report remains available when a CCM has no assigned CREs', async () => {

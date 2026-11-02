@@ -107,10 +107,13 @@ export function resolveSaleDate(record, now = new Date()) {
 export function countRemainingFreeServiceMilestones(record, now = new Date()) {
   const saleDate = resolveSaleDate(record, now);
   if (!saleDate) return null;
-  const completedCount = FREE_SERVICE_MILESTONES.filter(({ milestone }) => (
-    findCompletingVisit(freeServiceDueDate(saleDate, milestone), record.workshopVisits)
-  )).length;
-  return FREE_SERVICE_MILESTONES.length - completedCount;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  // Remaining = neither completed nor expired; an expired milestone is gone whether or not the customer came.
+  return FREE_SERVICE_MILESTONES.filter(({ milestone }) => {
+    const dueDate = freeServiceDueDate(saleDate, milestone);
+    if (today > freeServiceExpiryDate(dueDate)) return false;
+    return !findCompletingVisit(dueDate, record.workshopVisits);
+  }).length;
 }
 
 // Customers (unique) with at least one free-service milestone whose calling window overlaps the month.

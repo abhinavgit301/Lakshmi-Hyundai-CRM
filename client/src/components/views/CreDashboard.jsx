@@ -3,7 +3,6 @@ import { CalendarClock, CalendarPlus2, Clock3, Gift, PhoneCall, ShieldCheck, Tra
 export default function CreDashboard(props) {
   const {
     appointmentDeletingId,
-    appointments,
     callError,
     canAccessFreeService,
     canAccessWarranty,
@@ -157,11 +156,11 @@ export default function CreDashboard(props) {
                   <article className="panel">
                     <div className="panel-header">
                       <h3>Today&apos;s Appointments</h3>
-                      <span>{(dashboardData?.cre?.todayAppointments || appointments).length} booked</span>
+                      <span>{(dashboardData?.cre?.todayAppointments || []).length} booked</span>
                     </div>
 
                     <ul className="stack-list">
-                      {(dashboardData?.cre?.todayAppointments || appointments).map((appointment) => (
+                      {(dashboardData?.cre?.todayAppointments || []).map((appointment) => (
                         <li key={appointment.id || appointment.customer || appointment.time}>
                           <div>
                             <strong><button type="button" className="text-link" onClick={() => openCustomerProfile({
@@ -187,7 +186,7 @@ export default function CreDashboard(props) {
                           </div>
                         </li>
                       ))}
-                      {((!dashboardData?.cre?.todayAppointments || dashboardData.cre.todayAppointments.length === 0) && appointments.length === 0) && (
+                      {!dashboardData?.cre?.todayAppointments?.length && (
                         <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: 'calc(var(--crm-density-scale, 1) * 24px) 0' }}>
                           No appointments scheduled for today.
                         </li>

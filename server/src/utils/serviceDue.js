@@ -40,3 +40,17 @@ export function classifyServiceDue(lastServiceDate, now = new Date()) {
   if (monthsAgo === 6) return '6m';
   return null;
 }
+
+// Date ranges (one per cohort) that bound every lastServiceDate classifyServiceDue can place in that
+// cohort. Used only to narrow database candidates, so each range is widened by a day on both sides and
+// classifyServiceDue remains the authoritative check.
+export function dueCohortServiceDateRanges(now = new Date()) {
+  const range = (monthsAgo) => {
+    const gte = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 1);
+    const lt = new Date(now.getFullYear(), now.getMonth() - monthsAgo + 1, 1);
+    gte.setDate(gte.getDate() - 1);
+    lt.setDate(lt.getDate() + 1);
+    return { gte, lt };
+  };
+  return { oneYear: range(12), sixMonth: range(6) };
+}

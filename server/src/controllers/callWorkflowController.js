@@ -15,6 +15,7 @@ import { findMissedWarrantyCases } from '../utils/serviceLists.js';
 import { getWorkshopTimezone, parseDateKey, workshopDayRange, workshopMonthOf, workshopMonthRange, workshopToday, zonedDateKey } from '../utils/workshopTime.js';
 import { allowedServiceSources, canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { appointmentVisibilityWhere } from '../utils/appointmentAccess.js';
+import { scopeCacheInvalidation, withCachedResponse } from '../utils/callListCache.js';
 import { appointmentConversionRatePercent } from '../utils/performanceMetrics.js';
 import { parsePagination } from '../utils/pagination.js';
 import { classifyDueCohorts, countOverdueRecords, creDueWhere, loadCallListRecords } from './recordsController.js';
@@ -252,7 +253,17 @@ export async function getFreeServicePerformanceSummary(req, res) {
   });
 }
 
-export async function getCrePerformanceSummary(req, res) {
+const cachedCrePerformanceSummary = withCachedResponse('performance-cre', loadCrePerformanceSummary, { kind: 'workflow' });
+
+// The key carries user, role, CCM and the full query (including creId for a CCM), so one CRE's view is
+// never served for another.
+export function getCrePerformanceSummary(req, res) {
+  const role = normalizeRole(req.user?.role);
+  if (role !== 'CRE' && role !== 'CCM') return res.status(403).json({ message: 'Not permitted.' });
+  return cachedCrePerformanceSummary(req, res);
+}
+
+async function loadCrePerformanceSummary(req, res) {
   const role = normalizeRole(req.user?.role);
   if (role !== 'CRE' && role !== 'CCM') return res.status(403).json({ message: 'Not permitted.' });
 
@@ -534,6 +545,8 @@ export async function createCallLog(req, res) {
     return { callLog, followUp };
   });
 
+  // Call logs and follow-ups feed only the workflow-kind caches; the Master Call List never reads them.
+  scopeCacheInvalidation(res, { ccmIds: [ccmId], kinds: ['workflow'] });
   return res.status(201).json(result);
 }
 
@@ -866,6 +879,7 @@ export async function createFollowUp(req, res) {
     include: FOLLOW_UP_INCLUDE,
   });
 
+  scopeCacheInvalidation(res, { ccmIds: [ccmId], kinds: ['workflow'] });
   return res.status(201).json({ followUp });
 }
 
@@ -887,5 +901,6 @@ export async function updateFollowUpStatus(req, res) {
   if (result.count !== 1) return res.status(404).json({ message: 'Follow-up not found.' });
   const followUp = await prisma.followUp.findUnique({ where: { id: existing.id } });
 
+  scopeCacheInvalidation(res, { ccmIds: [existing.ccmId], kinds: ['workflow'] });
   return res.json({ followUp });
 }

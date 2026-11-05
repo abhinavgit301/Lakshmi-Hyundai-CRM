@@ -867,13 +867,22 @@ export async function getImportHistory(req, res) {
       rollbackError: true,
       createdAt: true,
       rowErrors: { orderBy: { rowNumber: 'asc' }, take: 100 },
-      _count: { select: { changes: true } },
     },
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     take: IMPORT_HISTORY_PAGE_SIZE + 1,
   });
   const hasMore = imports.length > IMPORT_HISTORY_PAGE_SIZE;
   const page = imports.slice(0, IMPORT_HISTORY_PAGE_SIZE);
+  // Counting only the visible batches avoids grouping the whole change-log table.
+  const changeCounts = page.length
+    ? await prisma.importChangeLog.groupBy({
+      by: ['importBatchId'],
+      where: { importBatchId: { in: page.map(({ id }) => id) } },
+      _count: { _all: true },
+    })
+    : [];
+  const changeCountByBatch = new Map(changeCounts.map((row) => [row.importBatchId, row._count._all]));
+  for (const batch of page) batch._count = { changes: changeCountByBatch.get(batch.id) || 0 };
   const lastBatch = page.at(-1);
   const nextCursor = hasMore && lastBatch
     ? Buffer.from(JSON.stringify({ id: lastBatch.id, createdAt: lastBatch.createdAt.toISOString() })).toString('base64url')

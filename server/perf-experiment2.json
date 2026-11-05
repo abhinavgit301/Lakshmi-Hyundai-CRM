@@ -1,0 +1,80 @@
+{
+  "mode": "experiment",
+  "startedAt": "2026-11-04T12:42:11.059Z",
+  "node": "v25.4.0",
+  "timeZone": "Asia/Calcutta",
+  "results": [
+    {
+      "label": "A silent console.info (baseline)",
+      "n": 20,
+      "p50": 1263.612000000001,
+      "p95": 1369.5709000000006,
+      "p99": 1385.2115999999987,
+      "min": 587.4525000000001,
+      "max": 1385.2115999999987,
+      "withMemoryProbe": true
+    },
+    {
+      "label": "B console.info to real stdout",
+      "n": 20,
+      "p50": 1231.0433999999987,
+      "p95": 1312.6128000000026,
+      "p99": 1358.7485000000015,
+      "min": 1121.2432999999983,
+      "max": 1358.7485000000015,
+      "withMemoryProbe": true
+    },
+    {
+      "label": "C silent + stubbed process.memoryUsage",
+      "n": 20,
+      "p50": 1257.1554000000033,
+      "p95": 1291.6247999999978,
+      "p99": 1310.785699999993,
+      "min": 1199.5789000000077,
+      "max": 1310.785699999993,
+      "withMemoryProbe": false
+    },
+    {
+      "label": "D silent + event-loop monitor on",
+      "n": 20,
+      "p50": 1273.579700000002,
+      "p95": 1330.8969999999972,
+      "p99": 1369.3205999999918,
+      "min": 1209.0988999999972,
+      "max": 1369.3205999999918,
+      "withMemoryProbe": true
+    },
+    {
+      "label": "E silent (repeat of A, order effect)",
+      "n": 20,
+      "p50": 1270.9931999999972,
+      "p95": 1319.8631999999925,
+      "p99": 1324.896299999993,
+      "min": 1203.455799999996,
+      "max": 1324.896299999993,
+      "withMemoryProbe": true
+    },
+    {
+      "label": "F real stdout + stubbed memoryUsage",
+      "n": 20,
+      "p50": 1248.2739000000001,
+      "p95": 1323.6957000000111,
+      "p99": 1336.2875000000058,
+      "min": 1131.505600000004,
+      "max": 1336.2875000000058,
+      "withMemoryProbe": false
+    },
+    {
+      "label": "G silent, pg instrumentation REMOVED",
+      "n": 20,
+      "p50": 1252.019100000005,
+      "p95": 1336.3035999999847,
+      "p99": 1357.0707000000111,
+      "min": 1206.5682999999844,
+      "max": 1357.0707000000111,
+      "withMemoryProbe": false
+    }
+  ],
+  "memoryUsageCostPer1000CallsMs": 0.5016999999934342,
+  "memoryUsageRssCostPer1000CallsMs": 0.166399999987334
+}

@@ -118,6 +118,9 @@ model Customer {
 model PhysicalVehicle {
   id        String   @id @default(cuid())
   vin       String   @unique
+  // Latest visitDate across all of this physical vehicle's workshop visits. Derived: a database trigger
+  // keeps it in sync, so application code must never write it. Used only to narrow 1-Year/6-Month candidates.
+  lastServiceDate DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -125,6 +128,7 @@ model PhysicalVehicle {
   workshopVisits WorkshopVisit[]
   milestones     FreeServiceMilestone[]
 
+  @@index([lastServiceDate])
   @@map("physical_vehicles")
 }
 

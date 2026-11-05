@@ -1,0 +1,70 @@
+{
+  "mode": "experiment",
+  "startedAt": "2026-11-04T12:39:28.024Z",
+  "node": "v25.4.0",
+  "timeZone": "Asia/Calcutta",
+  "results": [
+    {
+      "label": "A silent console.info (baseline)",
+      "n": 20,
+      "p50": 1249.6475,
+      "p95": 1312.912699999999,
+      "p99": 1314.9470000000001,
+      "min": 599.7824999999998,
+      "max": 1314.9470000000001,
+      "withMemoryProbe": true
+    },
+    {
+      "label": "B console.info to real stdout",
+      "n": 20,
+      "p50": 1260.3660000000018,
+      "p95": 1319.0002000000022,
+      "p99": 1355.4631000000008,
+      "min": 1203.8465999999971,
+      "max": 1355.4631000000008,
+      "withMemoryProbe": true
+    },
+    {
+      "label": "C silent + stubbed process.memoryUsage",
+      "n": 20,
+      "p50": 1274.8387000000002,
+      "p95": 1342.6779999999999,
+      "p99": 1351.1898999999976,
+      "min": 1211.0439999999944,
+      "max": 1351.1898999999976,
+      "withMemoryProbe": false
+    },
+    {
+      "label": "D silent + event-loop monitor on",
+      "n": 20,
+      "p50": 1266.2482000000018,
+      "p95": 1308.6043999999965,
+      "p99": 1357.3432999999932,
+      "min": 1198.7838000000047,
+      "max": 1357.3432999999932,
+      "withMemoryProbe": true
+    },
+    {
+      "label": "E silent (repeat of A, order effect)",
+      "n": 20,
+      "p50": 1305.5050000000047,
+      "p95": 1359.366399999999,
+      "p99": 1386.3297999999922,
+      "min": 1226.4005999999936,
+      "max": 1386.3297999999922,
+      "withMemoryProbe": true
+    },
+    {
+      "label": "F real stdout + stubbed memoryUsage",
+      "n": 20,
+      "p50": 1291.632500000007,
+      "p95": 1358.5984000000171,
+      "p99": 1360.6283999999869,
+      "min": 1213.3405000000203,
+      "max": 1360.6283999999869,
+      "withMemoryProbe": false
+    }
+  ],
+  "memoryUsageCostPer1000CallsMs": 0.4930000000167638,
+  "memoryUsageRssCostPer1000CallsMs": 0.17089999999734573
+}

@@ -2,7 +2,6 @@ import { Activity, BarChart3, ClipboardList, Upload } from 'lucide-react';
 
 export default function GmDashboard(props) {
   const {
-    appointments,
     dashboardData,
     openAllocations,
     openImports,
@@ -96,7 +95,7 @@ export default function GmDashboard(props) {
                   <article className="panel">
                     <div className="panel-header">
                       <h3>Today&apos;s Workshop Appointments</h3>
-                      <span>{(dashboardData?.gm?.todayAppointments || appointments).length} total</span>
+                      <span>{(dashboardData?.gm?.todayAppointments || []).length} total</span>
                     </div>
                     {dashboardData?.gm?.appointmentStatusCounts && (
                       <div className="status-pill-list">
@@ -108,7 +107,7 @@ export default function GmDashboard(props) {
                       </div>
                     )}
                     <ul className="stack-list">
-                      {(dashboardData?.gm?.todayAppointments || appointments).map((appointment) => (
+                      {(dashboardData?.gm?.todayAppointments || []).map((appointment) => (
                         <li key={appointment.id || appointment.customer || appointment.time}>
                           <div>
                             <strong>{appointment.customer}</strong>
@@ -120,7 +119,7 @@ export default function GmDashboard(props) {
                           </div>
                         </li>
                       ))}
-                      {((!dashboardData?.gm?.todayAppointments || dashboardData.gm.todayAppointments.length === 0) && appointments.length === 0) && (
+                      {!dashboardData?.gm?.todayAppointments?.length && (
                         <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: 'calc(var(--crm-density-scale, 1) * 24px) 0' }}>
                           No appointments scheduled today across workshop.
                         </li>

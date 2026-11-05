@@ -4,6 +4,42 @@ export function getWorkshopTimezone() {
   return process.env.WORKSHOP_TIMEZONE || 'Asia/Kolkata';
 }
 
+// IANA-style identifiers only: "UTC", "GMT" or Area/Location (Asia/Kolkata, Etc/GMT+5, America/Argentina/Buenos_Aires).
+// Intl alone also accepts abbreviations such as "IST" and numeric offsets such as "+05:30", which are not stable zones.
+const IANA_STYLE_ZONE = /^(?:UTC|GMT|[A-Za-z][A-Za-z_]*(?:\/[A-Za-z0-9_+-]+)+)$/;
+
+// The canonical identifier ICU reports for a zone, so aliases compare equal (Asia/Kolkata and Asia/Calcutta both
+// resolve to Asia/Calcutta on current Node/ICU builds, Etc/UTC to UTC, US/Eastern to America/New_York).
+export function canonicalTimezone(timeZone) {
+  if (typeof timeZone !== 'string' || !IANA_STYLE_ZONE.test(timeZone)) {
+    throw new Error(`"${timeZone}" is not an IANA time zone identifier such as Asia/Kolkata (abbreviations and numeric offsets are not accepted).`);
+  }
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone }).resolvedOptions().timeZone;
+  } catch {
+    throw new Error(`"${timeZone}" is not a time zone known to this Node.js runtime.`);
+  }
+}
+
+export function canonicalWorkshopTimezone() {
+  return canonicalTimezone(getWorkshopTimezone());
+}
+
+// Master Call List date maths (JavaScript Date getters and the SQL prototype) follow the Node process timezone, so
+// the process must run in the workshop timezone. Returns both canonical zones; throws when they differ or are invalid.
+export function assertProcessMatchesWorkshopTimezone(processTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone) {
+  const configured = getWorkshopTimezone();
+  const canonicalConfigured = canonicalTimezone(configured);
+  const canonicalProcess = canonicalTimezone(processTimeZone);
+  if (canonicalConfigured !== canonicalProcess) {
+    throw new Error(
+      `Timezone mismatch: WORKSHOP_TIMEZONE is "${configured}" but the Node.js process runs in "${processTimeZone}". `
+      + `Start the process with TZ=${configured} (for example TZ=Asia/Kolkata) so both agree.`,
+    );
+  }
+  return { configured, effective: processTimeZone, canonical: canonicalConfigured };
+}
+
 function zonedParts(date, timeZone) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,

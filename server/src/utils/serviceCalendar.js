@@ -68,6 +68,21 @@ export function isFreeServiceCallable(dueDate, today) {
   return today >= freeServiceCallStart(dueDate) && dueDate >= today && dueDate <= addMonths(today, 1);
 }
 
+// Milestones are listed from the calling window until the grace period ends, so only vehicles whose
+// sale date puts one milestone's due date between (today - 3 months) and (today + 1 month) can appear.
+// Ranges carry a few days of margin; isFreeServiceListVisible stays the authoritative check.
+export function freeServiceSaleDateRanges(today) {
+  const dueStart = addMonths(today, -3);
+  const dueEnd = addMonths(today, 1);
+  return FREE_SERVICE_MILESTONES.map(({ months }) => {
+    const gte = addMonths(dueStart, -months);
+    const lt = addMonths(dueEnd, -months);
+    gte.setDate(gte.getDate() - 3);
+    lt.setDate(lt.getDate() + 4);
+    return { gte, lt };
+  });
+}
+
 // Shown from the calling window until the end of the grace period; expired milestones leave the list.
 export function isFreeServiceListVisible(dueDate, today) {
   return isFreeServiceCallable(dueDate, today) || (today > dueDate && today <= freeServiceExpiryDate(dueDate));
@@ -141,6 +156,19 @@ export function warrantyCallingWindow(expiryDate) {
     start: new Date(expiryDate.getFullYear(), expiryDate.getMonth() - 1, 1),
     end: new Date(expiryDate.getFullYear(), expiryDate.getMonth(), 0),
   };
+}
+
+// A warranty is callable during the calendar month before its expiry month, so only vehicles sold
+// exactly (WARRANTY_YEARS * 12 - 1) months before today's month can qualify. The range is widened by one
+// day on each side so time-zone storage differences can never drop a vehicle; isWarrantyCallable stays
+// the authoritative check.
+export function warrantySaleDateRange(today) {
+  const offset = WARRANTY_YEARS * 12 - 1;
+  const start = new Date(today.getFullYear(), today.getMonth() - offset, 1);
+  const end = new Date(today.getFullYear(), today.getMonth() - offset + 1, 1);
+  start.setDate(start.getDate() - 1);
+  end.setDate(end.getDate() + 1);
+  return { gte: start, lt: end };
 }
 
 export function isWarrantyCallable(expiryDate, today) {

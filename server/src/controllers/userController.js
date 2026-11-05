@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '../config/prisma.js';
+import { evictAllAuthUsers } from '../utils/authUserCache.js';
 import { isValidUsername, normalizeUsername, validateOptionalPhone } from '../utils/userRules.js';
 import {
   allocatePendingCreRedistribution,
@@ -67,7 +68,7 @@ export async function listUsers(_req, res) {
   return res.json({ users: users.map(sanitizeUser) });
 }
 
-export async function createUser(req, res) {
+async function createUserHandler(req, res) {
   const { name, username, password, role, phone, dealerCode, gmId, ccmId } = req.body || {};
   for (const field of ['freeServiceEnabled', 'warrantyEnabled']) {
     if (req.body?.[field] !== undefined && typeof req.body[field] !== 'boolean') {
@@ -156,7 +157,7 @@ export async function getManagedUser(req, res) {
   return res.json({ user: sanitizeUser(user) });
 }
 
-export async function updateManagedUser(req, res) {
+async function updateManagedUserHandler(req, res) {
   const existing = await prisma.user.findUnique({ where: { id: req.params.id } });
   if (!existing || !MANAGED_ROLES.includes(existing.role)) {
     return res.status(404).json({ message: 'User not found.' });
@@ -309,7 +310,7 @@ export async function updateManagedUser(req, res) {
   return res.json({ user: sanitizeUser(updated.user), pendingCustomers: updated.pendingCustomers });
 }
 
-export async function updateUserStatus(req, res) {
+async function updateUserStatusHandler(req, res) {
   const { id } = req.params;
   const { status } = req.body || {};
 
@@ -371,7 +372,7 @@ export async function updateUserStatus(req, res) {
   return res.json({ user: sanitizeUser(updated.user), pendingCustomers: updated.pendingCustomers });
 }
 
-export async function assignUserToCcm(req, res) {
+async function assignUserToCcmHandler(req, res) {
   const { id } = req.params;
   const { ccmId } = req.body || {};
 
@@ -435,7 +436,7 @@ export async function assignUserToCcm(req, res) {
   });
 }
 
-export async function deleteManagedUser(req, res) {
+async function deleteManagedUserHandler(req, res) {
   if (req.user?.id === req.params.id) {
     return res.status(403).json({ message: 'You cannot delete your own account.' });
   }
@@ -666,3 +667,21 @@ export async function listTeams(req, res) {
 
   return res.json({ gms, ccms, cres, freeServiceCres });
 }
+
+// Every user write evicts the auth cache in the same tick as the response (and on failure, which is harmless),
+// so a deactivation, role change or CCM change is never served from a stale cached user by this process.
+function evictAuthCacheAfter(handler) {
+  return async (req, res) => {
+    try {
+      return await handler(req, res);
+    } finally {
+      evictAllAuthUsers();
+    }
+  };
+}
+
+export const createUser = evictAuthCacheAfter(createUserHandler);
+export const updateManagedUser = evictAuthCacheAfter(updateManagedUserHandler);
+export const updateUserStatus = evictAuthCacheAfter(updateUserStatusHandler);
+export const assignUserToCcm = evictAuthCacheAfter(assignUserToCcmHandler);
+export const deleteManagedUser = evictAuthCacheAfter(deleteManagedUserHandler);

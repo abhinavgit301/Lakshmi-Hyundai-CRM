@@ -5,7 +5,6 @@ export default function CcmDashboard(props) {
   const {
     allocationCres,
     appointmentDeletingId,
-    appointments,
     callError,
     dashboardData,
     deleteAppointment,
@@ -140,10 +139,10 @@ export default function CcmDashboard(props) {
                   <article className="panel">
                     <div className="panel-header">
                       <h3>Today&apos;s Team Appointments</h3>
-                      <span>{(dashboardData?.ccm?.todayAppointments || appointments).length} booked</span>
+                      <span>{(dashboardData?.ccm?.todayAppointments || []).length} booked</span>
                     </div>
                     <ul className="stack-list">
-                      {(dashboardData?.ccm?.todayAppointments || appointments).map((appointment) => (
+                      {(dashboardData?.ccm?.todayAppointments || []).map((appointment) => (
                         <li key={appointment.id || appointment.customer || appointment.time}>
                           <div>
                             <strong><button type="button" className="text-link" onClick={() => openCustomerProfile({
@@ -169,7 +168,7 @@ export default function CcmDashboard(props) {
                           </div>
                         </li>
                       ))}
-                      {((!dashboardData?.ccm?.todayAppointments || dashboardData.ccm.todayAppointments.length === 0) && appointments.length === 0) && (
+                      {!dashboardData?.ccm?.todayAppointments?.length && (
                         <li className="empty-state" style={{ textAlign: 'center', display: 'block', padding: 'calc(var(--crm-density-scale, 1) * 24px) 0' }}>
                           No appointments scheduled for team today.
                         </li>

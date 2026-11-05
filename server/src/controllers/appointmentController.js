@@ -1,5 +1,6 @@
 import { prisma } from '../config/prisma.js';
 import { appointmentVisibilityWhere, normalizeAppointmentRole } from '../utils/appointmentAccess.js';
+import { scopeCacheInvalidation } from '../utils/callListCache.js';
 import { validateAppointmentPayload, validateAppointmentUpdate } from '../utils/appointmentRules.js';
 import { isVehicleAssignedToCre } from '../utils/creAccess.js';
 
@@ -108,6 +109,7 @@ export async function createAppointment(req, res) {
     return appointment;
   });
 
+  scopeCacheInvalidation(res, { ccmIds: [ccmId] });
   return res.status(201).json({ appointment: result });
 }
 
@@ -137,6 +139,7 @@ export async function deleteAppointment(req, res) {
     }
   });
 
+  scopeCacheInvalidation(res, { ccmIds: [existing.ccmId] });
   return res.json({ id: existing.id });
 }
 
@@ -179,5 +182,6 @@ export async function updateAppointment(req, res) {
     return updated;
   });
 
+  scopeCacheInvalidation(res, { ccmIds: [existing.ccmId] });
   return res.json({ appointment });
 }

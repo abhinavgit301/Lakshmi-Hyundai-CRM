@@ -1,0 +1,1549 @@
+{
+  "timeZone": "Asia/Calcutta",
+  "seed": 7,
+  "seconds": 16728,
+  "users": 19,
+  "combos": 876,
+  "comparisons": 1340,
+  "pageChecks": 11844,
+  "twoPhaseRecordChecks": 486,
+  "variants": {
+    "lax/C": 1112,
+    "strict/C": 114,
+    "lax/icu": 114
+  },
+  "nonEmptyComparisons": 996,
+  "emptyComparisons": 320,
+  "queueRecordsCompared": 0,
+  "mismatchCount": 66,
+  "mismatches": [
+    {
+      "kind": "total",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "old": 204,
+      "sql": 202
+    },
+    {
+      "kind": "ordered-ids",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "oldLength": 204,
+      "sqlLength": 202,
+      "firstDiff": 116,
+      "onlyInOld": [
+        "bl_004197",
+        "bl_002247"
+      ],
+      "onlyInSql": [],
+      "oldAt": [
+        "bl_004197",
+        "bl_005894",
+        "bl_000150"
+      ],
+      "sqlAt": [
+        "bl_005894",
+        "bl_000150",
+        "bl_005612"
+      ]
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 0,
+      "expected": [
+        "bl_006976",
+        "bl_007706",
+        "bl_007623"
+      ],
+      "got": [
+        "bl_006976",
+        "bl_007706",
+        "bl_007623"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 50,
+      "expected": [
+        "bl_008334",
+        "bl_010093",
+        "bl_007052"
+      ],
+      "got": [
+        "bl_008334",
+        "bl_010093",
+        "bl_007052"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 100,
+      "expected": [
+        "bl_002335",
+        "bl_006054",
+        "bl_006800"
+      ],
+      "got": [
+        "bl_002335",
+        "bl_006054",
+        "bl_006800"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 7,
+      "offset": 3,
+      "expected": [
+        "bl_004790",
+        "bl_010011",
+        "bl_010150"
+      ],
+      "got": [
+        "bl_004790",
+        "bl_010011",
+        "bl_010150"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 1,
+      "offset": 0,
+      "expected": [
+        "bl_006976"
+      ],
+      "got": [
+        "bl_006976"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 203,
+      "expected": [
+        "bl_005687"
+      ],
+      "got": [],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 204,
+      "expected": [],
+      "got": [],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 10,
+      "offset": 229,
+      "expected": [],
+      "got": [],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 153,
+      "expected": [
+        "bl_011753",
+        "bl_009485",
+        "bl_007380"
+      ],
+      "got": [
+        "bl_009485",
+        "bl_007380",
+        "bl_009540"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "total",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "old": 204,
+      "sql": 202
+    },
+    {
+      "kind": "ordered-ids",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "oldLength": 204,
+      "sqlLength": 202,
+      "firstDiff": 116,
+      "onlyInOld": [
+        "bl_004197",
+        "bl_002247"
+      ],
+      "onlyInSql": [],
+      "oldAt": [
+        "bl_004197",
+        "bl_005894",
+        "bl_000150"
+      ],
+      "sqlAt": [
+        "bl_005894",
+        "bl_000150",
+        "bl_005612"
+      ]
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 0,
+      "expected": [
+        "bl_006976",
+        "bl_007706",
+        "bl_007623"
+      ],
+      "got": [
+        "bl_006976",
+        "bl_007706",
+        "bl_007623"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 50,
+      "expected": [
+        "bl_008334",
+        "bl_010093",
+        "bl_007052"
+      ],
+      "got": [
+        "bl_008334",
+        "bl_010093",
+        "bl_007052"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 100,
+      "expected": [
+        "bl_002335",
+        "bl_006054",
+        "bl_006800"
+      ],
+      "got": [
+        "bl_002335",
+        "bl_006054",
+        "bl_006800"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 7,
+      "offset": 3,
+      "expected": [
+        "bl_004790",
+        "bl_010011",
+        "bl_010150"
+      ],
+      "got": [
+        "bl_004790",
+        "bl_010011",
+        "bl_010150"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 1,
+      "offset": 0,
+      "expected": [
+        "bl_006976"
+      ],
+      "got": [
+        "bl_006976"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 203,
+      "expected": [
+        "bl_005687"
+      ],
+      "got": [],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 204,
+      "expected": [],
+      "got": [],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 10,
+      "offset": 229,
+      "expected": [],
+      "got": [],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4",
+      "role": "CCM",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 153,
+      "expected": [
+        "bl_011753",
+        "bl_009485",
+        "bl_007380"
+      ],
+      "got": [
+        "bl_009485",
+        "bl_007380",
+        "bl_009540"
+      ],
+      "totalOld": 204,
+      "totalSql": 202
+    },
+    {
+      "kind": "total",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "old": 80,
+      "sql": 79
+    },
+    {
+      "kind": "ordered-ids",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "oldLength": 80,
+      "sqlLength": 79,
+      "firstDiff": 18,
+      "onlyInOld": [
+        "bl_007068"
+      ],
+      "onlyInSql": [],
+      "oldAt": [
+        "bl_007068",
+        "bl_008668",
+        "bl_000682"
+      ],
+      "sqlAt": [
+        "bl_008668",
+        "bl_000682",
+        "bl_001196"
+      ]
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 0,
+      "expected": [
+        "bl_001396",
+        "bl_010365",
+        "bl_001918"
+      ],
+      "got": [
+        "bl_001396",
+        "bl_010365",
+        "bl_001918"
+      ],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 50,
+      "expected": [
+        "bl_006486",
+        "bl_002672",
+        "bl_004756"
+      ],
+      "got": [
+        "bl_002672",
+        "bl_004756",
+        "bl_005932"
+      ],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 100,
+      "expected": [],
+      "got": [],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 7,
+      "offset": 3,
+      "expected": [
+        "bl_010489",
+        "bl_009908",
+        "bl_000728"
+      ],
+      "got": [
+        "bl_010489",
+        "bl_009908",
+        "bl_000728"
+      ],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 1,
+      "offset": 0,
+      "expected": [
+        "bl_001396"
+      ],
+      "got": [
+        "bl_001396"
+      ],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 79,
+      "expected": [
+        "bl_011232"
+      ],
+      "got": [],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 80,
+      "expected": [],
+      "got": [],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 10,
+      "offset": 105,
+      "expected": [],
+      "got": [],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 29,
+      "expected": [
+        "bl_006968",
+        "bl_000260",
+        "bl_001859"
+      ],
+      "got": [
+        "bl_000260",
+        "bl_001859",
+        "bl_003392"
+      ],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "total",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "old": 80,
+      "sql": 79
+    },
+    {
+      "kind": "ordered-ids",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "oldLength": 80,
+      "sqlLength": 79,
+      "firstDiff": 18,
+      "onlyInOld": [
+        "bl_007068"
+      ],
+      "onlyInSql": [],
+      "oldAt": [
+        "bl_007068",
+        "bl_008668",
+        "bl_000682"
+      ],
+      "sqlAt": [
+        "bl_008668",
+        "bl_000682",
+        "bl_001196"
+      ]
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 0,
+      "expected": [
+        "bl_001396",
+        "bl_010365",
+        "bl_001918"
+      ],
+      "got": [
+        "bl_001396",
+        "bl_010365",
+        "bl_001918"
+      ],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 50,
+      "expected": [
+        "bl_006486",
+        "bl_002672",
+        "bl_004756"
+      ],
+      "got": [
+        "bl_002672",
+        "bl_004756",
+        "bl_005932"
+      ],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 100,
+      "expected": [],
+      "got": [],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 7,
+      "offset": 3,
+      "expected": [
+        "bl_010489",
+        "bl_009908",
+        "bl_000728"
+      ],
+      "got": [
+        "bl_010489",
+        "bl_009908",
+        "bl_000728"
+      ],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 1,
+      "offset": 0,
+      "expected": [
+        "bl_001396"
+      ],
+      "got": [
+        "bl_001396"
+      ],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 79,
+      "expected": [
+        "bl_011232"
+      ],
+      "got": [],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 80,
+      "expected": [],
+      "got": [],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 10,
+      "offset": 105,
+      "expected": [],
+      "got": [],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm3_cre3",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 29,
+      "expected": [
+        "bl_006968",
+        "bl_000260",
+        "bl_001859"
+      ],
+      "got": [
+        "bl_000260",
+        "bl_001859",
+        "bl_003392"
+      ],
+      "totalOld": 80,
+      "totalSql": 79
+    },
+    {
+      "kind": "total",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "old": 73,
+      "sql": 71
+    },
+    {
+      "kind": "ordered-ids",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "oldLength": 73,
+      "sqlLength": 71,
+      "firstDiff": 37,
+      "onlyInOld": [
+        "bl_004197",
+        "bl_002247"
+      ],
+      "onlyInSql": [],
+      "oldAt": [
+        "bl_004197",
+        "bl_005894",
+        "bl_000150"
+      ],
+      "sqlAt": [
+        "bl_005894",
+        "bl_000150",
+        "bl_005612"
+      ]
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 0,
+      "expected": [
+        "bl_006976",
+        "bl_010150",
+        "bl_000288"
+      ],
+      "got": [
+        "bl_006976",
+        "bl_010150",
+        "bl_000288"
+      ],
+      "totalOld": 73,
+      "totalSql": 71
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 50,
+      "expected": [
+        "bl_010284",
+        "bl_011707",
+        "bl_004165"
+      ],
+      "got": [
+        "bl_011707",
+        "bl_004165",
+        "bl_006456"
+      ],
+      "totalOld": 73,
+      "totalSql": 71
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 100,
+      "expected": [],
+      "got": [],
+      "totalOld": 73,
+      "totalSql": 71
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 7,
+      "offset": 3,
+      "expected": [
+        "bl_000637",
+        "bl_011127",
+        "bl_007896"
+      ],
+      "got": [
+        "bl_000637",
+        "bl_011127",
+        "bl_007896"
+      ],
+      "totalOld": 73,
+      "totalSql": 71
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 1,
+      "offset": 0,
+      "expected": [
+        "bl_006976"
+      ],
+      "got": [
+        "bl_006976"
+      ],
+      "totalOld": 73,
+      "totalSql": 71
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 72,
+      "expected": [
+        "bl_009077"
+      ],
+      "got": [],
+      "totalOld": 73,
+      "totalSql": 71
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 73,
+      "expected": [],
+      "got": [],
+      "totalOld": 73,
+      "totalSql": 71
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 10,
+      "offset": 98,
+      "expected": [],
+      "got": [],
+      "totalOld": 73,
+      "totalSql": 71
+    },
+    {
+      "kind": "page",
+      "variant": "strict/C",
+      "label": "strict",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 22,
+      "expected": [
+        "bl_010849",
+        "bl_007124",
+        "bl_011939"
+      ],
+      "got": [
+        "bl_010849",
+        "bl_007124",
+        "bl_011939"
+      ],
+      "totalOld": 73,
+      "totalSql": 71
+    },
+    {
+      "kind": "total",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "old": 73,
+      "sql": 71
+    },
+    {
+      "kind": "ordered-ids",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "oldLength": 73,
+      "sqlLength": 71,
+      "firstDiff": 37,
+      "onlyInOld": [
+        "bl_004197",
+        "bl_002247"
+      ],
+      "onlyInSql": [],
+      "oldAt": [
+        "bl_004197",
+        "bl_005894",
+        "bl_000150"
+      ],
+      "sqlAt": [
+        "bl_005894",
+        "bl_000150",
+        "bl_005612"
+      ]
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 0,
+      "expected": [
+        "bl_006976",
+        "bl_010150",
+        "bl_000288"
+      ],
+      "got": [
+        "bl_006976",
+        "bl_010150",
+        "bl_000288"
+      ],
+      "totalOld": 73,
+      "totalSql": 71
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 50,
+      "expected": [
+        "bl_010284",
+        "bl_011707",
+        "bl_004165"
+      ],
+      "got": [
+        "bl_011707",
+        "bl_004165",
+        "bl_006456"
+      ],
+      "totalOld": 73,
+      "totalSql": 71
+    },
+    {
+      "kind": "page",
+      "variant": "lax/icu",
+      "label": "icu",
+      "user": "bu_ccm4_cre2",
+      "role": "CRE",
+      "requestedCcmId": "",
+      "filters": {
+        "creId": "",
+        "dueCategory": "pastDue",
+        "repairType": "",
+        "search": ""
+      },
+      "now": "2026-11-04T16:56:41.185Z",
+      "limit": 50,
+      "offset": 100,
+      "expected": [],
+      "got": [],
+      "totalOld": 73,
+      "totalSql": 71
+    }
+  ]
+}

@@ -4,17 +4,20 @@ import {
   classifyFreeServiceStatus,
   freeServiceCallStart,
   freeServiceExpiryDate,
+  freeServiceSaleDateRanges,
   isFreeServiceListVisible,
   isWarrantyCallable,
   resolveSaleDate,
   warrantyCallingWindow,
   warrantyExpiryDate,
+  warrantySaleDateRange,
 } from '../utils/serviceCalendar.js';
 import { filterMilestoneCompletionByVisits, syncFreeServiceMilestones } from '../utils/serviceLists.js';
 import { getWorkshopTimezone, workshopToday, zonedDateKey } from '../utils/workshopTime.js';
 import { canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { creCustomerWhere, creVehicleWhere } from '../utils/creAccess.js';
 import { filterServiceListRecords, paginateRecords, parsePagination } from '../utils/pagination.js';
+import { withCachedResponse } from '../utils/callListCache.js';
 import { creDueWhere, loadCallListRecords } from './recordsController.js';
 
 function scopeFor(user) {
@@ -89,7 +92,9 @@ function workflowVisibilityWhere(user) {
   return { id: 'no-access' };
 }
 
-export async function getFreeServiceList(req, res) {
+export const getFreeServiceList = withCachedResponse('free-service', loadFreeServiceList, { kind: 'workflow' });
+
+async function loadFreeServiceList(req, res) {
   if (!canAccessServiceSource(req.user, 'FREE_SERVICE')) {
     return res.status(403).json({ message: 'You do not have permission to access Free Service.' });
   }
@@ -97,7 +102,14 @@ export async function getFreeServiceList(req, res) {
   if (pagination.error) return res.status(400).json({ message: pagination.error });
   const now = new Date();
   const today = workshopToday(now);
-  const records = await loadCallListRecords(scopeFor(req.user), now, req.user);
+  // Vehicles with no stored sale date are kept so the repair-order fallback and data issues still work.
+  const freeServiceScope = {
+    AND: [
+      scopeFor(req.user),
+      { vehicle: { is: { OR: [{ saleDate: null }, ...freeServiceSaleDateRanges(today).map((range) => ({ saleDate: range }))] } } },
+    ],
+  };
+  const records = await loadCallListRecords(freeServiceScope, now, req.user);
   const { dated, dataIssues } = splitBySaleDate(records, now);
   const workflowWhere = workflowVisibilityWhere(req.user);
 
@@ -172,7 +184,9 @@ export async function getFreeServiceList(req, res) {
   });
 }
 
-export async function getWarrantyList(req, res) {
+export const getWarrantyList = withCachedResponse('warranty', loadWarrantyList, { kind: 'workflow' });
+
+async function loadWarrantyList(req, res) {
   if (!canAccessServiceSource(req.user, 'WARRANTY')) {
     return res.status(403).json({ message: 'You do not have permission to access Warranty.' });
   }
@@ -181,7 +195,14 @@ export async function getWarrantyList(req, res) {
   const now = new Date();
   const today = workshopToday(now);
   const timeZone = getWorkshopTimezone();
-  const records = await loadCallListRecords(scopeFor(req.user), now, req.user);
+  // Vehicles with no stored sale date are kept so the repair-order fallback and data issues still work.
+  const warrantyScope = {
+    AND: [
+      scopeFor(req.user),
+      { vehicle: { is: { OR: [{ saleDate: null }, { saleDate: warrantySaleDateRange(today) }] } } },
+    ],
+  };
+  const records = await loadCallListRecords(warrantyScope, now, req.user);
   const { dated, dataIssues } = splitBySaleDate(records, now);
   const workflowWhere = workflowVisibilityWhere(req.user);
 

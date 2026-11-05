@@ -16,6 +16,12 @@ export default function AppointmentsPanel(props) {
     currentRole,
     customerPanel,
     customers,
+    customerSearch,
+    setCustomerSearch,
+    customersLoading,
+    customersError,
+    customersHasMore,
+    loadMoreCustomers,
     dayAppointments,
     deleteAppointment,
     openCustomerProfile,
@@ -42,11 +48,16 @@ export default function AppointmentsPanel(props) {
                       <label>Vehicle details<input maxLength="200" value={appointmentForm.vehicleName} onChange={(event) => setAppointmentForm({ ...appointmentForm, vehicleName: event.target.value })} placeholder="Optional" /></label>
                     </>
                   ) : <>
+                  <label>Find customer
+                    <input type="search" maxLength="200" value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="Name, mobile, VIN, registration or model" />
+                  </label>
                   <label>Customer
                     <select required value={appointmentForm.customerId} onChange={(event) => setAppointmentForm({ ...appointmentForm, customerId: event.target.value, vehicleId: '' })}>
-                      <option value="">Choose customer</option>
+                      <option value="">{customersLoading ? 'Loading…' : 'Choose customer'}</option>
                       {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name || customer.fullName}</option>)}
                     </select>
+                    {customersError && <span className="form-alert error" role="alert">{customersError}</span>}
+                    {customersHasMore && <button type="button" className="outline-btn" disabled={customersLoading} onClick={loadMoreCustomers}>Load more</button>}
                   </label>
                   <label>Vehicle
                     <select value={appointmentForm.vehicleId} onChange={(event) => setAppointmentForm({ ...appointmentForm, vehicleId: event.target.value })}>
@@ -59,7 +70,7 @@ export default function AppointmentsPanel(props) {
                 </div>
                 <div className="form-actions">
                   <button type="button" className="outline-btn" onClick={() => setAppointmentFormOpen(false)}>Cancel</button>
-                  <button type="submit" className="primary-btn" disabled={appointmentSaving || (currentRole !== 'FREE_SERVICE_CRE' && customers.length === 0)}>{appointmentSaving ? 'Booking…' : 'Book appointment'}</button>
+                  <button type="submit" className="primary-btn" disabled={appointmentSaving || (currentRole !== 'FREE_SERVICE_CRE' && !appointmentForm.customerId)}>{appointmentSaving ? 'Booking…' : 'Book appointment'}</button>
                 </div>
               </form>
             )}

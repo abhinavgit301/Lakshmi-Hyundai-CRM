@@ -1,0 +1,20 @@
+{
+  "timeZone": "Asia/Calcutta",
+  "seed": 7,
+  "seconds": 2975,
+  "users": 19,
+  "combos": 876,
+  "comparisons": 1340,
+  "pageChecks": 11844,
+  "twoPhaseRecordChecks": 486,
+  "variants": {
+    "lax/C": 1112,
+    "strict/C": 114,
+    "lax/icu": 114
+  },
+  "nonEmptyComparisons": 996,
+  "emptyComparisons": 320,
+  "queueRecordsCompared": 0,
+  "mismatchCount": 0,
+  "mismatches": []
+}

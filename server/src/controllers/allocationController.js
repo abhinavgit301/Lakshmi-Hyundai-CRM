@@ -8,6 +8,7 @@ import {
 } from '../utils/customerAllocation.js';
 import { recordCreAssignmentEvent, validateAssignmentReason } from '../utils/creAssignmentHistory.js';
 import { findCanonicalMasterCallListEntry } from '../utils/masterCallList.js';
+import { scopeCacheInvalidation } from '../utils/callListCache.js';
 
 function roleName(role) {
   const value = String(role || '').toUpperCase();
@@ -124,6 +125,7 @@ export async function allocatePendingRedistribution(req, res) {
       ...result,
     });
   }
+  scopeCacheInvalidation(res, { ccmIds: [req.user.ccmId] });
   return res.json(result);
 }
 
@@ -212,6 +214,7 @@ export async function createAllocation(req, res) {
   if (allocation === null) return res.status(400).json({ message: 'CRE must be active and assigned to the vehicle team.' });
   if (allocation === false) return res.status(409).json({ message: 'This vehicle already has an active allocation for that service type.' });
 
+  scopeCacheInvalidation(res, { ccmIds: [ccmId] });
   return res.status(201).json({ allocation });
 }
 
@@ -334,5 +337,6 @@ export async function updateAllocation(req, res) {
   }
   if (!allocation) return res.status(400).json({ message: 'CRE must be active and assigned to the vehicle team.' });
 
+  scopeCacheInvalidation(res, { ccmIds: [teamId] });
   return res.json({ allocation });
 }

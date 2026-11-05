@@ -15,7 +15,12 @@ export default function AllocationsPanel(props) {
     currentRole,
     currentUser,
     customerPanel,
-    customers,
+    customerSearch,
+    setCustomerSearch,
+    customersLoading,
+    customersError,
+    customersHasMore,
+    loadMoreCustomers,
     masterListCcms,
     masterListError,
     masterListLoadingMore,
@@ -60,11 +65,16 @@ export default function AllocationsPanel(props) {
               <form className="panel customer-form" onSubmit={submitAllocation}>
                 <div className="panel-header"><h3>Assign vehicle to CRE</h3><span>Assignments are limited to the vehicle&apos;s CCM team</span></div>
                 <div className="form-grid">
+                  <label>Find customer or vehicle
+                    <input type="search" maxLength="200" value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="Name, mobile, VIN, registration or model" />
+                  </label>
                   <label>Vehicle
                     <select required value={allocationForm.vehicleId} onChange={(event) => setAllocationForm({ ...allocationForm, vehicleId: event.target.value })}>
-                      <option value="">Choose vehicle</option>
+                      <option value="">{customersLoading ? 'Loading…' : 'Choose vehicle'}</option>
                       {allocationVehicles.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{[vehicle.customerName, vehicle.model, vehicle.registrationNumber || vehicle.vin].filter(Boolean).join(' · ')}</option>)}
                     </select>
+                    {customersError && <span className="form-alert error" role="alert">{customersError}</span>}
+                    {customersHasMore && <button type="button" className="outline-btn" disabled={customersLoading} onClick={loadMoreCustomers}>Load more</button>}
                   </label>
                   <label>CRE
                     <select required value={allocationForm.creId} onChange={(event) => setAllocationForm({ ...allocationForm, creId: event.target.value })}>
@@ -75,7 +85,7 @@ export default function AllocationsPanel(props) {
                   <label>Service type<input required maxLength="100" value={allocationForm.serviceType} onChange={(event) => setAllocationForm({ ...allocationForm, serviceType: event.target.value })} placeholder="Periodic service" /></label>
                   <label>Category<input maxLength="100" value={allocationForm.category} onChange={(event) => setAllocationForm({ ...allocationForm, category: event.target.value })} placeholder="Due service" /></label>
                 </div>
-                <div className="form-actions"><button type="button" className="outline-btn" onClick={() => setAllocationFormOpen(false)}>Cancel</button><button type="submit" className="primary-btn" disabled={allocationSaving || !customers.some((customer) => customer.vehicles?.length) || allocationCres.length === 0}>{allocationSaving ? 'Assigning…' : 'Assign vehicle'}</button></div>
+                <div className="form-actions"><button type="button" className="outline-btn" onClick={() => setAllocationFormOpen(false)}>Cancel</button><button type="submit" className="primary-btn" disabled={allocationSaving || !allocationForm.vehicleId || allocationCres.length === 0}>{allocationSaving ? 'Assigning…' : 'Assign vehicle'}</button></div>
               </form>
             )}
             {masterListError && <p className="form-alert error" role="alert">{masterListError}</p>}

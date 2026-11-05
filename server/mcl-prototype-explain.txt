@@ -1,0 +1,1021 @@
+# EXPLAIN (ANALYZE, BUFFERS) of the prototype page SQL
+# database=lakshmi_hyundai_crm_bench read_only=on generated=2026-11-04T12:47:27.265Z
+
+===== ADMIN default =====
+Sort  (cost=2697.82..2697.94 rows=50 width=46) (actual time=42.517..42.520 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=258
+  CTE final
+    ->  Subquery Scan on c  (cost=1207.04..1413.44 rows=11640 width=19) (actual time=34.337..36.935 rows=12000.00 loops=1)
+          Buffers: shared hit=249
+          ->  Unique  (cost=1207.04..1297.04 rows=11640 width=268) (actual time=34.334..35.981 rows=12000.00 loops=1)
+                Buffers: shared hit=249
+                ->  Sort  (cost=1207.04..1237.04 rows=12000 width=268) (actual time=34.328..34.727 rows=12000.00 loops=1)
+                      Sort Key: m."ccmId", m.vin, ((NULLIF(m."ownerUserId", ''::text) IS NULL)), (COALESCE(m."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m.id COLLATE "C"
+                      Sort Method: quicksort  Memory: 1791kB
+                      Buffers: shared hit=249
+                      ->  Seq Scan on master_call_lists m  (cost=0.00..394.00 rows=12000 width=268) (actual time=0.010..2.183 rows=12000.00 loops=1)
+                            Buffers: shared hit=244
+  InitPlan 2
+    ->  Aggregate  (cost=261.90..261.91 rows=1 width=8) (actual time=0.772..0.772 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..232.80 rows=11640 width=0) (actual time=0.000..0.424 rows=12000.00 loops=1)
+                Storage: Memory  Maximum Storage: 785kB
+  ->  Nested Loop Left Join  (cost=1018.92..1021.05 rows=50 width=46) (actual time=42.474..42.490 rows=50.00 loops=1)
+        Buffers: shared hit=255
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.001..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=1018.92..1019.92 rows=50 width=81) (actual time=41.695..41.706 rows=50.00 loops=1)
+              Buffers: shared hit=255
+              ->  WindowAgg  (cost=1018.92..1251.70 rows=11640 width=81) (actual time=41.695..41.703 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=255
+                    ->  Sort  (cost=1018.90..1048.00 rows=11640 width=73) (actual time=41.686..41.688 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 947kB
+                          Buffers: shared hit=255
+                          ->  CTE Scan on final  (cost=0.00..232.80 rows=11640 width=73) (actual time=34.340..38.845 rows=12000.00 loops=1)
+                                Storage: Memory  Maximum Storage: 785kB
+                                Buffers: shared hit=249
+Planning:
+  Buffers: shared hit=177
+Planning Time: 4.718 ms
+Execution Time: 42.917 ms
+
+===== ADMIN dueCategory=1y =====
+Sort  (cost=102383.43..102383.55 rows=50 width=46) (actual time=99.754..99.758 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=38225
+  CTE final
+    ->  Nested Loop Left Join  (cost=1754.49..101099.05 rows=11640 width=19) (actual time=31.845..99.500 rows=108.00 loops=1)
+          Filter: (CASE ((('2026'::numeric - EXTRACT(year FROM (((max(w."visitDate") FILTER (WHERE (w."visitDate" <= '2026-11-04 12:47:27.265'::timestamp without time zone))) AT TIME ZONE 'UTC'::text) AT TIME ZONE 'Asia/Calcutta'::text))) * '12'::numeric) + ('11'::numeric - EXTRACT(month FROM (((max(w."visitDate") FILTER (WHERE (w."visitDate" <= '2026-11-04 12:47:27.265'::timestamp without time zone))) AT TIME ZONE 'UTC'::text) AT TIME ZONE 'Asia/Calcutta'::text)))) WHEN '12'::numeric THEN '1y'::text WHEN '6'::numeric THEN '6m'::text ELSE NULL::text END = '1y'::text)
+          Rows Removed by Filter: 11892
+          Buffers: shared hit=38225
+          ->  Hash Left Join  (cost=1746.04..2013.55 rows=11640 width=28) (actual time=30.265..36.398 rows=12000.00 loops=1)
+                Hash Cond: ((m."vehicleId" = v.id) AND (m."ccmId" = v."ccmId"))
+                Buffers: shared hit=483
+                ->  Unique  (cost=1207.04..1297.04 rows=11640 width=268) (actual time=27.682..30.153 rows=12000.00 loops=1)
+                      Buffers: shared hit=244
+                      ->  Sort  (cost=1207.04..1237.04 rows=12000 width=268) (actual time=27.675..28.609 rows=12000.00 loops=1)
+                            Sort Key: m."ccmId", m.vin, ((NULLIF(m."ownerUserId", ''::text) IS NULL)), (COALESCE(m."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m.id COLLATE "C"
+                            Sort Method: quicksort  Memory: 1791kB
+                            Buffers: shared hit=244
+                            ->  Seq Scan on master_call_lists m  (cost=0.00..394.00 rows=12000 width=268) (actual time=0.011..1.308 rows=12000.00 loops=1)
+                                  Buffers: shared hit=244
+                ->  Hash  (cost=359.00..359.00 rows=12000 width=32) (actual time=2.554..2.555 rows=12000.00 loops=1)
+                      Buckets: 16384  Batches: 1  Memory Usage: 878kB
+                      Buffers: shared hit=239
+                      ->  Seq Scan on vehicles v  (cost=0.00..359.00 rows=12000 width=32) (actual time=0.034..1.432 rows=12000.00 loops=1)
+                            Buffers: shared hit=239
+          ->  Aggregate  (cost=8.45..8.46 rows=1 width=16) (actual time=0.004..0.004 rows=1.00 loops=12000)
+                Buffers: shared hit=37742
+                ->  Index Scan using "workshop_visits_physicalVehicleId_idx" on workshop_visits w  (cost=0.29..8.42 rows=7 width=8) (actual time=0.003..0.004 rows=6.44 loops=12000)
+                      Index Cond: ("physicalVehicleId" = v."physicalVehicleId")
+                      Index Searches: 12000
+                      Buffers: shared hit=37742
+  InitPlan 2
+    ->  Aggregate  (cost=261.90..261.91 rows=1 width=8) (actual time=0.009..0.010 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..232.80 rows=11640 width=0) (actual time=0.000..0.005 rows=108.00 loops=1)
+                Storage: Memory  Maximum Storage: 22kB
+  ->  Nested Loop Left Join  (cost=1018.92..1021.05 rows=50 width=46) (actual time=99.732..99.748 rows=50.00 loops=1)
+        Buffers: shared hit=38225
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=1018.92..1019.92 rows=50 width=81) (actual time=99.719..99.730 rows=50.00 loops=1)
+              Buffers: shared hit=38225
+              ->  WindowAgg  (cost=1018.92..1251.70 rows=11640 width=81) (actual time=99.719..99.727 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=38225
+                    ->  Sort  (cost=1018.90..1048.00 rows=11640 width=73) (actual time=99.712..99.714 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 30kB
+                          Buffers: shared hit=38225
+                          ->  CTE Scan on final  (cost=0.00..232.80 rows=11640 width=73) (actual time=31.849..99.581 rows=108.00 loops=1)
+                                Storage: Memory  Maximum Storage: 22kB
+                                Buffers: shared hit=38225
+Planning:
+  Buffers: shared hit=101
+Planning Time: 2.858 ms
+Execution Time: 100.087 ms
+
+===== ADMIN search=test =====
+Sort  (cost=364367.27..364367.39 rows=50 width=46) (actual time=166.164..166.169 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=38230
+  CTE final
+    ->  Nested Loop Left Join  (cost=1777.00..363217.30 rows=10490 width=19) (actual time=39.701..158.709 rows=12000.00 loops=1)
+          Filter: ((strpos(lower(COALESCE(m."customerName", ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(COALESCE(CASE WHEN (regexp_replace(m."mobileNumber", '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace(m."mobileNumber", '^\s+|\s+$'::text, ''::text, 'g'::text) END, ((array_agg(COALESCE(CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END) ORDER BY w."visitDate" DESC NULLS LAST, w."createdAt" DESC, w.id DESC) FILTER (WHERE (COALESCE(CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END) IS NOT NULL)))[1])), ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(m.vin, ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(COALESCE(NULLIF(m."registrationNumber", ''::text), NULLIF(v."registrationNumber", ''::text)), ''::text)), 'test'::text) > 0) OR COALESCE((bool_or(((strpos(lower(COALESCE(w."repairOrderNo", ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(CASE jsonb_typeof((w."importedDetails" -> 'roNumber'::text)) WHEN 'string'::text THEN NULLIF((w."importedDetails" ->> 'roNumber'::text), ''::text) WHEN 'number'::text THEN CASE WHEN ((((w."importedDetails" -> 'roNumber'::text))::text)::numeric = '0'::numeric) THEN NULL::text ELSE (w."importedDetails" ->> 'roNumber'::text) END WHEN 'boolean'::text THEN CASE WHEN ((w."importedDetails" ->> 'roNumber'::text) = 'true'::text) THEN 'true'::text ELSE NULL::text END WHEN 'object'::text THEN '[object Object]'::text WHEN 'array'::text THEN COALESCE((SubPlan 1), ''::text) ELSE NULL::text END, ''::text)), 'test'::text) > 0)))), false))
+          Buffers: shared hit=38230
+          ->  Hash Left Join  (cost=1746.04..2013.55 rows=11640 width=101) (actual time=39.627..47.200 rows=12000.00 loops=1)
+                Hash Cond: ((m."vehicleId" = v.id) AND (m."ccmId" = v."ccmId"))
+                Buffers: shared hit=483
+                ->  Unique  (cost=1207.04..1297.04 rows=11640 width=216) (actual time=37.140..39.949 rows=12000.00 loops=1)
+                      Buffers: shared hit=244
+                      ->  Sort  (cost=1207.04..1237.04 rows=12000 width=216) (actual time=37.138..38.101 rows=12000.00 loops=1)
+                            Sort Key: m."ccmId", m.vin, ((NULLIF(m."ownerUserId", ''::text) IS NULL)), (COALESCE(m."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m.id COLLATE "C"
+                            Sort Method: quicksort  Memory: 2267kB
+                            Buffers: shared hit=244
+                            ->  Seq Scan on master_call_lists m  (cost=0.00..394.00 rows=12000 width=216) (actual time=0.011..1.570 rows=12000.00 loops=1)
+                                  Buffers: shared hit=244
+                ->  Hash  (cost=359.00..359.00 rows=12000 width=43) (actual time=2.428..2.429 rows=12000.00 loops=1)
+                      Buckets: 16384  Batches: 1  Memory Usage: 1007kB
+                      Buffers: shared hit=239
+                      ->  Seq Scan on vehicles v  (cost=0.00..359.00 rows=12000 width=43) (actual time=0.032..1.043 rows=12000.00 loops=1)
+                            Buffers: shared hit=239
+          ->  Aggregate  (cost=30.96..30.97 rows=1 width=49) (actual time=0.009..0.009 rows=1.00 loops=12000)
+                Buffers: shared hit=37747
+                ->  Index Scan using "workshop_visits_physicalVehicleId_idx" on workshop_visits w  (cost=0.29..8.42 rows=7 width=93) (actual time=0.003..0.003 rows=6.44 loops=12000)
+                      Index Cond: ("physicalVehicleId" = v."physicalVehicleId")
+                      Index Searches: 12000
+                      Buffers: shared hit=37742
+                SubPlan 1
+                  ->  Aggregate  (cost=3.01..3.02 rows=1 width=32) (never executed)
+                        ->  Function Scan on jsonb_array_elements item  (cost=0.01..1.00 rows=100 width=40) (never executed)
+  InitPlan 3
+    ->  Aggregate  (cost=236.03..236.03 rows=1 width=8) (actual time=0.673..0.673 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..209.80 rows=10490 width=0) (actual time=0.000..0.370 rows=12000.00 loops=1)
+                Storage: Memory  Maximum Storage: 785kB
+  ->  Nested Loop Left Join  (cost=910.38..912.52 rows=50 width=46) (actual time=166.143..166.157 rows=50.00 loops=1)
+        Buffers: shared hit=38230
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=910.38..911.38 rows=50 width=81) (actual time=165.467..165.477 rows=50.00 loops=1)
+              Buffers: shared hit=38230
+              ->  WindowAgg  (cost=910.38..1120.16 rows=10490 width=81) (actual time=165.466..165.474 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=38230
+                    ->  Sort  (cost=910.36..936.59 rows=10490 width=73) (actual time=165.463..165.464 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 947kB
+                          Buffers: shared hit=38230
+                          ->  CTE Scan on final  (cost=0.00..209.80 rows=10490 width=73) (actual time=39.704..162.331 rows=12000.00 loops=1)
+                                Storage: Memory  Maximum Storage: 785kB
+                                Buffers: shared hit=38230
+Planning:
+  Buffers: shared hit=48
+Planning Time: 0.805 ms
+Execution Time: 166.658 ms
+
+===== GM default =====
+Sort  (cost=1988.94..1989.06 rows=50 width=46) (actual time=19.316..19.321 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=245
+  CTE final
+    ->  Subquery Scan on c  (cost=1009.69..1146.65 rows=7826 width=19) (actual time=15.286..16.606 rows=6711.00 loops=1)
+          Buffers: shared hit=245
+          ->  Unique  (cost=1009.69..1068.39 rows=7826 width=268) (actual time=15.283..16.139 rows=6711.00 loops=1)
+                Buffers: shared hit=245
+                ->  Sort  (cost=1009.69..1029.26 rows=7826 width=268) (actual time=15.281..15.498 rows=6711.00 loops=1)
+                      Sort Key: m."ccmId", m.vin, ((NULLIF(m."ownerUserId", ''::text) IS NULL)), (COALESCE(m."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m.id COLLATE "C"
+                      Sort Method: quicksort  Memory: 979kB
+                      Buffers: shared hit=245
+                      ->  Hash Join  (cost=1.46..503.58 rows=7826 width=268) (actual time=0.030..2.022 rows=6711.00 loops=1)
+                            Hash Cond: (m."ccmId" = u."ccmId")
+                            Buffers: shared hit=245
+                            ->  Seq Scan on master_call_lists m  (cost=0.00..364.00 rows=12000 width=71) (actual time=0.010..0.400 rows=12000.00 loops=1)
+                                  Buffers: shared hit=244
+                            ->  Hash  (cost=1.43..1.43 rows=2 width=12) (actual time=0.016..0.017 rows=2.00 loops=1)
+                                  Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                                  Buffers: shared hit=1
+                                  ->  HashAggregate  (cost=1.41..1.43 rows=2 width=12) (actual time=0.014..0.015 rows=2.00 loops=1)
+                                        Group Key: u."ccmId"
+                                        Batches: 1  Memory Usage: 32kB
+                                        Buffers: shared hit=1
+                                        ->  Seq Scan on users u  (cost=0.00..1.40 rows=3 width=12) (actual time=0.008..0.010 rows=2.00 loops=1)
+                                              Filter: (("ccmId" IS NOT NULL) AND (("gmId" = 'bu_gm1'::text) OR ("gmId" IS NULL)) AND (role = 'CCM'::"UserRole") AND (status = 'active'::text))
+                                              Rows Removed by Filter: 21
+                                              Buffers: shared hit=1
+  InitPlan 2
+    ->  Aggregate  (cost=176.09..176.09 rows=1 width=8) (actual time=0.427..0.427 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..156.52 rows=7826 width=0) (actual time=0.000..0.243 rows=6711.00 loops=1)
+                Storage: Memory  Maximum Storage: 432kB
+  ->  Nested Loop Left Join  (cost=662.65..664.78 rows=50 width=46) (actual time=19.294..19.308 rows=50.00 loops=1)
+        Buffers: shared hit=245
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.001..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=662.65..663.65 rows=50 width=81) (actual time=18.863..18.873 rows=50.00 loops=1)
+              Buffers: shared hit=245
+              ->  WindowAgg  (cost=662.65..819.15 rows=7826 width=81) (actual time=18.862..18.871 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=245
+                    ->  Sort  (cost=662.63..682.19 rows=7826 width=73) (actual time=18.857..18.859 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 507kB
+                          Buffers: shared hit=245
+                          ->  CTE Scan on final  (cost=0.00..156.52 rows=7826 width=73) (actual time=15.289..17.535 rows=6711.00 loops=1)
+                                Storage: Memory  Maximum Storage: 432kB
+                                Buffers: shared hit=245
+Planning:
+  Buffers: shared hit=64
+Planning Time: 2.399 ms
+Execution Time: 19.552 ms
+
+===== GM dueCategory=1y =====
+Sort  (cost=69187.85..69187.98 rows=50 width=46) (actual time=54.185..54.190 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=21602
+  CTE final
+    ->  Nested Loop Left Join  (cost=1557.14..68345.56 rows=7826 width=19) (actual time=19.789..54.088 rows=67.00 loops=1)
+          Filter: (CASE ((('2026'::numeric - EXTRACT(year FROM (((max(w."visitDate") FILTER (WHERE (w."visitDate" <= '2026-11-04 12:47:27.265'::timestamp without time zone))) AT TIME ZONE 'UTC'::text) AT TIME ZONE 'Asia/Calcutta'::text))) * '12'::numeric) + ('11'::numeric - EXTRACT(month FROM (((max(w."visitDate") FILTER (WHERE (w."visitDate" <= '2026-11-04 12:47:27.265'::timestamp without time zone))) AT TIME ZONE 'UTC'::text) AT TIME ZONE 'Asia/Calcutta'::text)))) WHEN '12'::numeric THEN '1y'::text WHEN '6'::numeric THEN '6m'::text ELSE NULL::text END = '1y'::text)
+          Rows Removed by Filter: 6644
+          Buffers: shared hit=21602
+          ->  Hash Left Join  (cost=1548.69..1726.74 rows=7826 width=28) (actual time=18.011..21.160 rows=6711.00 loops=1)
+                Hash Cond: ((m."vehicleId" = v.id) AND (m."ccmId" = v."ccmId"))
+                Buffers: shared hit=484
+                ->  Unique  (cost=1009.69..1068.39 rows=7826 width=268) (actual time=15.582..16.762 rows=6711.00 loops=1)
+                      Buffers: shared hit=245
+                      ->  Sort  (cost=1009.69..1029.26 rows=7826 width=268) (actual time=15.579..15.944 rows=6711.00 loops=1)
+                            Sort Key: m."ccmId", m.vin, ((NULLIF(m."ownerUserId", ''::text) IS NULL)), (COALESCE(m."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m.id COLLATE "C"
+                            Sort Method: quicksort  Memory: 979kB
+                            Buffers: shared hit=245
+                            ->  Hash Join  (cost=1.46..503.58 rows=7826 width=268) (actual time=0.029..1.976 rows=6711.00 loops=1)
+                                  Hash Cond: (m."ccmId" = u."ccmId")
+                                  Buffers: shared hit=245
+                                  ->  Seq Scan on master_call_lists m  (cost=0.00..364.00 rows=12000 width=71) (actual time=0.010..0.398 rows=12000.00 loops=1)
+                                        Buffers: shared hit=244
+                                  ->  Hash  (cost=1.43..1.43 rows=2 width=12) (actual time=0.015..0.016 rows=2.00 loops=1)
+                                        Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                                        Buffers: shared hit=1
+                                        ->  HashAggregate  (cost=1.41..1.43 rows=2 width=12) (actual time=0.012..0.012 rows=2.00 loops=1)
+                                              Group Key: u."ccmId"
+                                              Batches: 1  Memory Usage: 32kB
+                                              Buffers: shared hit=1
+                                              ->  Seq Scan on users u  (cost=0.00..1.40 rows=3 width=12) (actual time=0.007..0.009 rows=2.00 loops=1)
+                                                    Filter: (("ccmId" IS NOT NULL) AND (("gmId" = 'bu_gm1'::text) OR ("gmId" IS NULL)) AND (role = 'CCM'::"UserRole") AND (status = 'active'::text))
+                                                    Rows Removed by Filter: 21
+                                                    Buffers: shared hit=1
+                ->  Hash  (cost=359.00..359.00 rows=12000 width=32) (actual time=2.386..2.387 rows=12000.00 loops=1)
+                      Buckets: 16384  Batches: 1  Memory Usage: 878kB
+                      Buffers: shared hit=239
+                      ->  Seq Scan on vehicles v  (cost=0.00..359.00 rows=12000 width=32) (actual time=0.024..1.083 rows=12000.00 loops=1)
+                            Buffers: shared hit=239
+          ->  Aggregate  (cost=8.45..8.46 rows=1 width=16) (actual time=0.004..0.004 rows=1.00 loops=6711)
+                Buffers: shared hit=21118
+                ->  Index Scan using "workshop_visits_physicalVehicleId_idx" on workshop_visits w  (cost=0.29..8.42 rows=7 width=8) (actual time=0.003..0.003 rows=6.47 loops=6711)
+                      Index Cond: ("physicalVehicleId" = v."physicalVehicleId")
+                      Index Searches: 6711
+                      Buffers: shared hit=21118
+  InitPlan 2
+    ->  Aggregate  (cost=176.09..176.09 rows=1 width=8) (actual time=0.006..0.006 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..156.52 rows=7826 width=0) (actual time=0.000..0.003 rows=67.00 loops=1)
+                Storage: Memory  Maximum Storage: 20kB
+  ->  Nested Loop Left Join  (cost=662.65..664.78 rows=50 width=46) (actual time=54.163..54.175 rows=50.00 loops=1)
+        Buffers: shared hit=21602
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=662.65..663.65 rows=50 width=81) (actual time=54.154..54.163 rows=50.00 loops=1)
+              Buffers: shared hit=21602
+              ->  WindowAgg  (cost=662.65..819.15 rows=7826 width=81) (actual time=54.153..54.161 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=21602
+                    ->  Sort  (cost=662.63..682.19 rows=7826 width=73) (actual time=54.146..54.148 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 28kB
+                          Buffers: shared hit=21602
+                          ->  CTE Scan on final  (cost=0.00..156.52 rows=7826 width=73) (actual time=19.792..54.121 rows=67.00 loops=1)
+                                Storage: Memory  Maximum Storage: 20kB
+                                Buffers: shared hit=21602
+Planning Time: 0.449 ms
+Execution Time: 54.456 ms
+
+===== GM search=test =====
+Sort  (cost=245331.45..245331.58 rows=50 width=46) (actual time=96.223..96.231 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=21602
+  CTE final
+    ->  Nested Loop Left Join  (cost=1579.65..244577.30 rows=7053 width=19) (actual time=20.814..91.558 rows=6711.00 loops=1)
+          Filter: ((strpos(lower(COALESCE(m."customerName", ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(COALESCE(CASE WHEN (regexp_replace(m."mobileNumber", '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace(m."mobileNumber", '^\s+|\s+$'::text, ''::text, 'g'::text) END, ((array_agg(COALESCE(CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END) ORDER BY w."visitDate" DESC NULLS LAST, w."createdAt" DESC, w.id DESC) FILTER (WHERE (COALESCE(CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END) IS NOT NULL)))[1])), ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(m.vin, ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(COALESCE(NULLIF(m."registrationNumber", ''::text), NULLIF(v."registrationNumber", ''::text)), ''::text)), 'test'::text) > 0) OR COALESCE((bool_or(((strpos(lower(COALESCE(w."repairOrderNo", ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(CASE jsonb_typeof((w."importedDetails" -> 'roNumber'::text)) WHEN 'string'::text THEN NULLIF((w."importedDetails" ->> 'roNumber'::text), ''::text) WHEN 'number'::text THEN CASE WHEN ((((w."importedDetails" -> 'roNumber'::text))::text)::numeric = '0'::numeric) THEN NULL::text ELSE (w."importedDetails" ->> 'roNumber'::text) END WHEN 'boolean'::text THEN CASE WHEN ((w."importedDetails" ->> 'roNumber'::text) = 'true'::text) THEN 'true'::text ELSE NULL::text END WHEN 'object'::text THEN '[object Object]'::text WHEN 'array'::text THEN COALESCE((SubPlan 1), ''::text) ELSE NULL::text END, ''::text)), 'test'::text) > 0)))), false))
+          Buffers: shared hit=21602
+          ->  Hash Left Join  (cost=1548.69..1726.74 rows=7826 width=101) (actual time=20.761..24.843 rows=6711.00 loops=1)
+                Hash Cond: ((m."vehicleId" = v.id) AND (m."ccmId" = v."ccmId"))
+                Buffers: shared hit=484
+                ->  Unique  (cost=1009.69..1068.39 rows=7826 width=216) (actual time=18.062..19.600 rows=6711.00 loops=1)
+                      Buffers: shared hit=245
+                      ->  Sort  (cost=1009.69..1029.26 rows=7826 width=216) (actual time=18.059..18.503 rows=6711.00 loops=1)
+                            Sort Key: m."ccmId", m.vin, ((NULLIF(m."ownerUserId", ''::text) IS NULL)), (COALESCE(m."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m.id COLLATE "C"
+                            Sort Method: quicksort  Memory: 1245kB
+                            Buffers: shared hit=245
+                            ->  Hash Join  (cost=1.46..503.58 rows=7826 width=216) (actual time=0.028..1.968 rows=6711.00 loops=1)
+                                  Hash Cond: (m."ccmId" = u."ccmId")
+                                  Buffers: shared hit=245
+                                  ->  Seq Scan on master_call_lists m  (cost=0.00..364.00 rows=12000 width=115) (actual time=0.010..0.415 rows=12000.00 loops=1)
+                                        Buffers: shared hit=244
+                                  ->  Hash  (cost=1.43..1.43 rows=2 width=12) (actual time=0.013..0.015 rows=2.00 loops=1)
+                                        Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                                        Buffers: shared hit=1
+                                        ->  HashAggregate  (cost=1.41..1.43 rows=2 width=12) (actual time=0.011..0.012 rows=2.00 loops=1)
+                                              Group Key: u."ccmId"
+                                              Batches: 1  Memory Usage: 32kB
+                                              Buffers: shared hit=1
+                                              ->  Seq Scan on users u  (cost=0.00..1.40 rows=3 width=12) (actual time=0.006..0.008 rows=2.00 loops=1)
+                                                    Filter: (("ccmId" IS NOT NULL) AND (("gmId" = 'bu_gm1'::text) OR ("gmId" IS NULL)) AND (role = 'CCM'::"UserRole") AND (status = 'active'::text))
+                                                    Rows Removed by Filter: 21
+                                                    Buffers: shared hit=1
+                ->  Hash  (cost=359.00..359.00 rows=12000 width=43) (actual time=2.655..2.656 rows=12000.00 loops=1)
+                      Buckets: 16384  Batches: 1  Memory Usage: 1007kB
+                      Buffers: shared hit=239
+                      ->  Seq Scan on vehicles v  (cost=0.00..359.00 rows=12000 width=43) (actual time=0.022..1.120 rows=12000.00 loops=1)
+                            Buffers: shared hit=239
+          ->  Aggregate  (cost=30.96..30.97 rows=1 width=49) (actual time=0.009..0.009 rows=1.00 loops=6711)
+                Buffers: shared hit=21118
+                ->  Index Scan using "workshop_visits_physicalVehicleId_idx" on workshop_visits w  (cost=0.29..8.42 rows=7 width=93) (actual time=0.003..0.004 rows=6.47 loops=6711)
+                      Index Cond: ("physicalVehicleId" = v."physicalVehicleId")
+                      Index Searches: 6711
+                      Buffers: shared hit=21118
+                SubPlan 1
+                  ->  Aggregate  (cost=3.01..3.02 rows=1 width=32) (never executed)
+                        ->  Function Scan on jsonb_array_elements item  (cost=0.01..1.00 rows=100 width=40) (never executed)
+  InitPlan 3
+    ->  Aggregate  (cost=158.69..158.70 rows=1 width=8) (actual time=0.555..0.556 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..141.06 rows=7053 width=0) (actual time=0.000..0.311 rows=6711.00 loops=1)
+                Storage: Memory  Maximum Storage: 432kB
+  ->  Nested Loop Left Join  (cost=591.91..594.04 rows=50 width=46) (actual time=96.197..96.216 rows=50.00 loops=1)
+        Buffers: shared hit=21602
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=591.91..592.91 rows=50 width=81) (actual time=95.637..95.651 rows=50.00 loops=1)
+              Buffers: shared hit=21602
+              ->  WindowAgg  (cost=591.91..732.95 rows=7053 width=81) (actual time=95.636..95.647 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=21602
+                    ->  Sort  (cost=591.89..609.52 rows=7053 width=73) (actual time=95.621..95.624 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 507kB
+                          Buffers: shared hit=21602
+                          ->  CTE Scan on final  (cost=0.00..141.06 rows=7053 width=73) (actual time=20.817..93.510 rows=6711.00 loops=1)
+                                Storage: Memory  Maximum Storage: 432kB
+                                Buffers: shared hit=21602
+Planning Time: 0.652 ms
+Execution Time: 96.688 ms
+
+===== CCM default =====
+Sort  (cost=2229.32..2229.45 rows=50 width=46) (actual time=17.896..17.901 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=685
+  CTE scoped
+    ->  Seq Scan on master_call_lists m  (cost=0.00..394.00 rows=4020 width=132) (actual time=0.012..1.014 rows=4020.00 loops=1)
+          Filter: ("ccmId" = 'ccm-bench01'::text)
+          Rows Removed by Filter: 7980
+          Buffers: shared hit=244
+  CTE final
+    ->  Append  (cost=331.11..1411.25 rows=4102 width=41) (actual time=11.800..15.976 rows=4020.00 loops=1)
+          Buffers: shared hit=685
+          ->  Subquery Scan on c  (cost=331.11..400.25 rows=3899 width=41) (actual time=11.797..12.746 rows=4020.00 loops=1)
+                Buffers: shared hit=244
+                ->  Unique  (cost=331.11..361.26 rows=3899 width=346) (actual time=11.795..12.395 rows=4020.00 loops=1)
+                      Buffers: shared hit=244
+                      ->  Sort  (cost=331.11..341.16 rows=4020 width=346) (actual time=11.794..11.933 rows=4020.00 loops=1)
+                            Sort Key: m_1."ccmId", m_1.vin, ((NULLIF(m_1."ownerUserId", ''::text) IS NULL)), (COALESCE(m_1."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m_1.id COLLATE "C"
+                            Sort Method: quicksort  Memory: 568kB
+                            Buffers: shared hit=244
+                            ->  CTE Scan on scoped m_1  (cost=0.00..90.45 rows=4020 width=346) (actual time=0.014..1.875 rows=4020.00 loops=1)
+                                  Storage: Memory  Maximum Storage: 659kB
+                                  Buffers: shared hit=244
+          ->  Subquery Scan on q  (cost=987.45..990.49 rows=203 width=41) (actual time=3.045..3.047 rows=0.00 loops=1)
+                Buffers: shared hit=441
+                ->  Unique  (cost=987.45..988.46 rows=203 width=158) (actual time=3.045..3.046 rows=0.00 loops=1)
+                      Buffers: shared hit=441
+                      ->  Sort  (cost=987.45..987.95 rows=203 width=158) (actual time=3.044..3.046 rows=0.00 loops=1)
+                            Sort Key: v.vin, ((a.id)::text) COLLATE "C"
+                            Sort Method: quicksort  Memory: 25kB
+                            Buffers: shared hit=441
+                            ->  Hash Right Anti Join  (cost=883.39..979.67 rows=203 width=158) (actual time=3.038..3.039 rows=0.00 loops=1)
+                                  Hash Cond: (s.vin = v.vin)
+                                  Buffers: shared hit=441
+                                  ->  CTE Scan on scoped s  (cost=0.00..90.45 rows=1347 width=64) (actual time=0.002..0.398 rows=4020.00 loops=1)
+                                        Filter: ("ccmId" = 'ccm-bench01'::text)
+                                        Storage: Memory  Maximum Storage: 659kB
+                                  ->  Hash  (cost=880.51..880.51 rows=230 width=40) (actual time=2.416..2.417 rows=237.00 loops=1)
+                                        Buckets: 1024  Batches: 1  Memory Usage: 25kB
+                                        Buffers: shared hit=441
+                                        ->  Hash Join  (cost=354.89..880.51 rows=230 width=40) (actual time=1.084..2.387 rows=237.00 loops=1)
+                                              Hash Cond: (v.id = a."vehicleId")
+                                              Buffers: shared hit=441
+                                              ->  Seq Scan on vehicles v  (cost=0.00..389.00 rows=11940 width=28) (actual time=0.023..0.796 rows=12000.00 loops=1)
+                                                    Filter: (NULLIF(vin, ''::text) IS NOT NULL)
+                                                    Buffers: shared hit=239
+                                              ->  Hash  (cost=352.00..352.00 rows=231 width=32) (actual time=1.055..1.055 rows=237.00 loops=1)
+                                                    Buckets: 1024  Batches: 1  Memory Usage: 23kB
+                                                    Buffers: shared hit=202
+                                                    ->  Seq Scan on allocations a  (cost=0.00..352.00 rows=231 width=32) (actual time=0.052..1.027 rows=237.00 loops=1)
+                                                          Filter: (("creId" IS NULL) AND ("ccmId" = 'ccm-bench01'::text) AND (status = 'assigned'::text))
+                                                          Rows Removed by Filter: 9763
+                                                          Buffers: shared hit=202
+  InitPlan 3
+    ->  Aggregate  (cost=92.30..92.31 rows=1 width=8) (actual time=0.318..0.318 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..82.04 rows=4102 width=0) (actual time=0.000..0.181 rows=4020.00 loops=1)
+                Storage: Memory  Maximum Storage: 252kB
+  ->  Nested Loop Left Join  (cost=328.22..330.36 rows=50 width=46) (actual time=17.872..17.887 rows=50.00 loops=1)
+        Buffers: shared hit=685
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.001..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=328.22..329.22 rows=50 width=81) (actual time=17.550..17.562 rows=50.00 loops=1)
+              Buffers: shared hit=685
+              ->  WindowAgg  (cost=328.22..410.24 rows=4102 width=81) (actual time=17.550..17.559 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=685
+                    ->  Sort  (cost=328.20..338.46 rows=4102 width=73) (actual time=17.546..17.549 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 285kB
+                          Buffers: shared hit=685
+                          ->  CTE Scan on final  (cost=0.00..82.04 rows=4102 width=73) (actual time=11.803..16.704 rows=4020.00 loops=1)
+                                Storage: Memory  Maximum Storage: 252kB
+                                Buffers: shared hit=685
+Planning:
+  Buffers: shared hit=59
+Planning Time: 2.331 ms
+Execution Time: 18.173 ms
+
+===== CCM dueCategory=1y =====
+Sort  (cost=34945.79..34945.92 rows=50 width=46) (actual time=31.350..31.354 rows=38.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=13126
+  CTE scoped
+    ->  Seq Scan on master_call_lists m  (cost=0.00..394.00 rows=4020 width=132) (actual time=0.009..0.896 rows=4020.00 loops=1)
+          Filter: ("ccmId" = 'ccm-bench01'::text)
+          Rows Removed by Filter: 7980
+          Buffers: shared hit=244
+  CTE final
+    ->  Nested Loop Left Join  (cost=878.56..34149.95 rows=3899 width=41) (actual time=13.521..31.286 rows=38.00 loops=1)
+          Filter: (CASE ((('2026'::numeric - EXTRACT(year FROM (((max(w."visitDate") FILTER (WHERE (w."visitDate" <= '2026-11-04 12:47:27.265'::timestamp without time zone))) AT TIME ZONE 'UTC'::text) AT TIME ZONE 'Asia/Calcutta'::text))) * '12'::numeric) + ('11'::numeric - EXTRACT(month FROM (((max(w."visitDate") FILTER (WHERE (w."visitDate" <= '2026-11-04 12:47:27.265'::timestamp without time zone))) AT TIME ZONE 'UTC'::text) AT TIME ZONE 'Asia/Calcutta'::text)))) WHEN '12'::numeric THEN '1y'::text WHEN '6'::numeric THEN '6m'::text ELSE NULL::text END = '1y'::text)
+          Rows Removed by Filter: 3982
+          Buffers: shared hit=13126
+          ->  Hash Left Join  (cost=870.11..959.72 rows=3899 width=50) (actual time=12.296..13.863 rows=4020.00 loops=1)
+                Hash Cond: ((m_1."vehicleId" = v.id) AND (m_1."ccmId" = v."ccmId"))
+                Buffers: shared hit=483
+                ->  Unique  (cost=331.11..361.26 rows=3899 width=346) (actual time=10.190..10.763 rows=4020.00 loops=1)
+                      Buffers: shared hit=244
+                      ->  Sort  (cost=331.11..341.16 rows=4020 width=346) (actual time=10.187..10.344 rows=4020.00 loops=1)
+                            Sort Key: m_1."ccmId", m_1.vin, ((NULLIF(m_1."ownerUserId", ''::text) IS NULL)), (COALESCE(m_1."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m_1.id COLLATE "C"
+                            Sort Method: quicksort  Memory: 568kB
+                            Buffers: shared hit=244
+                            ->  CTE Scan on scoped m_1  (cost=0.00..90.45 rows=4020 width=346) (actual time=0.012..1.692 rows=4020.00 loops=1)
+                                  Storage: Memory  Maximum Storage: 659kB
+                                  Buffers: shared hit=244
+                ->  Hash  (cost=359.00..359.00 rows=12000 width=32) (actual time=2.044..2.045 rows=12000.00 loops=1)
+                      Buckets: 16384  Batches: 1  Memory Usage: 878kB
+                      Buffers: shared hit=239
+                      ->  Seq Scan on vehicles v  (cost=0.00..359.00 rows=12000 width=32) (actual time=0.025..0.917 rows=12000.00 loops=1)
+                            Buffers: shared hit=239
+          ->  Aggregate  (cost=8.45..8.46 rows=1 width=16) (actual time=0.003..0.003 rows=1.00 loops=4020)
+                Buffers: shared hit=12643
+                ->  Index Scan using "workshop_visits_physicalVehicleId_idx" on workshop_visits w  (cost=0.29..8.42 rows=7 width=8) (actual time=0.002..0.003 rows=6.48 loops=4020)
+                      Index Cond: ("physicalVehicleId" = v."physicalVehicleId")
+                      Index Searches: 4020
+                      Buffers: shared hit=12643
+  InitPlan 3
+    ->  Aggregate  (cost=87.73..87.74 rows=1 width=8) (actual time=0.004..0.004 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..77.98 rows=3899 width=0) (actual time=0.000..0.002 rows=38.00 loops=1)
+                Storage: Memory  Maximum Storage: 19kB
+  ->  Nested Loop Left Join  (cost=310.55..312.69 rows=50 width=46) (actual time=31.334..31.345 rows=38.00 loops=1)
+        Buffers: shared hit=13126
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=310.55..311.55 rows=50 width=81) (actual time=31.327..31.335 rows=38.00 loops=1)
+              Buffers: shared hit=13126
+              ->  WindowAgg  (cost=310.55..388.51 rows=3899 width=81) (actual time=31.327..31.333 rows=38.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=13126
+                    ->  Sort  (cost=310.53..320.28 rows=3899 width=73) (actual time=31.314..31.316 rows=38.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 26kB
+                          Buffers: shared hit=13126
+                          ->  CTE Scan on final  (cost=0.00..77.98 rows=3899 width=73) (actual time=13.523..31.301 rows=38.00 loops=1)
+                                Storage: Memory  Maximum Storage: 19kB
+                                Buffers: shared hit=13126
+Planning Time: 0.554 ms
+Execution Time: 31.613 ms
+
+===== CCM search=test =====
+Sort  (cost=123728.90..123729.03 rows=50 width=46) (actual time=52.904..52.910 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=13567
+  CTE scoped
+    ->  Seq Scan on master_call_lists m  (cost=0.00..394.00 rows=4020 width=132) (actual time=0.016..0.902 rows=4020.00 loops=1)
+          Filter: ("ccmId" = 'ccm-bench01'::text)
+          Rows Removed by Filter: 7980
+          Buffers: shared hit=244
+  CTE final
+    ->  Append  (cost=901.06..122962.74 rows=3627 width=41) (actual time=14.212..50.879 rows=4020.00 loops=1)
+          Buffers: shared hit=13567
+          ->  Nested Loop Left Join  (cost=901.06..121950.56 rows=3514 width=41) (actual time=14.211..48.548 rows=4020.00 loops=1)
+                Filter: ((strpos(lower(COALESCE(m_1."customerName", ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(COALESCE(CASE WHEN (regexp_replace(m_1."mobileNumber", '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace(m_1."mobileNumber", '^\s+|\s+$'::text, ''::text, 'g'::text) END, ((array_agg(COALESCE(CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END) ORDER BY w."visitDate" DESC NULLS LAST, w."createdAt" DESC, w.id DESC) FILTER (WHERE (COALESCE(CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END) IS NOT NULL)))[1])), ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(m_1.vin, ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(COALESCE(NULLIF(m_1."registrationNumber", ''::text), NULLIF(v."registrationNumber", ''::text)), ''::text)), 'test'::text) > 0) OR COALESCE((bool_or(((strpos(lower(COALESCE(w."repairOrderNo", ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(CASE jsonb_typeof((w."importedDetails" -> 'roNumber'::text)) WHEN 'string'::text THEN NULLIF((w."importedDetails" ->> 'roNumber'::text), ''::text) WHEN 'number'::text THEN CASE WHEN ((((w."importedDetails" -> 'roNumber'::text))::text)::numeric = '0'::numeric) THEN NULL::text ELSE (w."importedDetails" ->> 'roNumber'::text) END WHEN 'boolean'::text THEN CASE WHEN ((w."importedDetails" ->> 'roNumber'::text) = 'true'::text) THEN 'true'::text ELSE NULL::text END WHEN 'object'::text THEN '[object Object]'::text WHEN 'array'::text THEN COALESCE((SubPlan 2), ''::text) ELSE NULL::text END, ''::text)), 'test'::text) > 0)))), false))
+                Buffers: shared hit=13126
+                ->  Hash Left Join  (cost=870.11..959.72 rows=3899 width=189) (actual time=14.142..16.055 rows=4020.00 loops=1)
+                      Hash Cond: ((m_1."vehicleId" = v.id) AND (m_1."ccmId" = v."ccmId"))
+                      Buffers: shared hit=483
+                      ->  Unique  (cost=331.11..361.26 rows=3899 width=346) (actual time=11.619..12.301 rows=4020.00 loops=1)
+                            Buffers: shared hit=244
+                            ->  Sort  (cost=331.11..341.16 rows=4020 width=346) (actual time=11.617..11.788 rows=4020.00 loops=1)
+                                  Sort Key: m_1."ccmId", m_1.vin, ((NULLIF(m_1."ownerUserId", ''::text) IS NULL)), (COALESCE(m_1."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m_1.id COLLATE "C"
+                                  Sort Method: quicksort  Memory: 727kB
+                                  Buffers: shared hit=244
+                                  ->  CTE Scan on scoped m_1  (cost=0.00..90.45 rows=4020 width=346) (actual time=0.018..1.643 rows=4020.00 loops=1)
+                                        Storage: Memory  Maximum Storage: 659kB
+                                        Buffers: shared hit=244
+                      ->  Hash  (cost=359.00..359.00 rows=12000 width=43) (actual time=2.467..2.467 rows=12000.00 loops=1)
+                            Buckets: 16384  Batches: 1  Memory Usage: 1007kB
+                            Buffers: shared hit=239
+                            ->  Seq Scan on vehicles v  (cost=0.00..359.00 rows=12000 width=43) (actual time=0.030..1.029 rows=12000.00 loops=1)
+                                  Buffers: shared hit=239
+                ->  Aggregate  (cost=30.96..30.97 rows=1 width=49) (actual time=0.008..0.008 rows=1.00 loops=4020)
+                      Buffers: shared hit=12643
+                      ->  Index Scan using "workshop_visits_physicalVehicleId_idx" on workshop_visits w  (cost=0.29..8.42 rows=7 width=93) (actual time=0.002..0.003 rows=6.48 loops=4020)
+                            Index Cond: ("physicalVehicleId" = v."physicalVehicleId")
+                            Index Searches: 4020
+                            Buffers: shared hit=12643
+                      SubPlan 2
+                        ->  Aggregate  (cost=3.01..3.02 rows=1 width=32) (never executed)
+                              ->  Function Scan on jsonb_array_elements item  (cost=0.01..1.00 rows=100 width=40) (never executed)
+          ->  Subquery Scan on q  (cost=987.95..994.04 rows=113 width=41) (actual time=2.078..2.080 rows=0.00 loops=1)
+                Filter: ((strpos(lower(COALESCE(q.vin, ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(q.reg, ''::text)), 'test'::text) > 0))
+                Buffers: shared hit=441
+                ->  Unique  (cost=987.95..988.97 rows=203 width=158) (actual time=2.078..2.079 rows=0.00 loops=1)
+                      Buffers: shared hit=441
+                      ->  Sort  (cost=987.95..988.46 rows=203 width=158) (actual time=2.077..2.078 rows=0.00 loops=1)
+                            Sort Key: v_1.vin, ((a.id)::text) COLLATE "C"
+                            Sort Method: quicksort  Memory: 25kB
+                            Buffers: shared hit=441
+                            ->  Hash Right Anti Join  (cost=883.39..980.17 rows=203 width=158) (actual time=2.075..2.076 rows=0.00 loops=1)
+                                  Hash Cond: (s.vin = v_1.vin)
+                                  Buffers: shared hit=441
+                                  ->  CTE Scan on scoped s  (cost=0.00..90.45 rows=1347 width=64) (actual time=0.001..0.284 rows=4020.00 loops=1)
+                                        Filter: ("ccmId" = 'ccm-bench01'::text)
+                                        Storage: Memory  Maximum Storage: 659kB
+                                  ->  Hash  (cost=880.51..880.51 rows=230 width=51) (actual time=1.621..1.622 rows=237.00 loops=1)
+                                        Buckets: 1024  Batches: 1  Memory Usage: 28kB
+                                        Buffers: shared hit=441
+                                        ->  Hash Join  (cost=354.89..880.51 rows=230 width=51) (actual time=0.576..1.599 rows=237.00 loops=1)
+                                              Hash Cond: (v_1.id = a."vehicleId")
+                                              Buffers: shared hit=441
+                                              ->  Seq Scan on vehicles v_1  (cost=0.00..389.00 rows=11940 width=39) (actual time=0.025..0.626 rows=12000.00 loops=1)
+                                                    Filter: (NULLIF(vin, ''::text) IS NOT NULL)
+                                                    Buffers: shared hit=239
+                                              ->  Hash  (cost=352.00..352.00 rows=231 width=32) (actual time=0.545..0.545 rows=237.00 loops=1)
+                                                    Buckets: 1024  Batches: 1  Memory Usage: 23kB
+                                                    Buffers: shared hit=202
+                                                    ->  Seq Scan on allocations a  (cost=0.00..352.00 rows=231 width=32) (actual time=0.017..0.521 rows=237.00 loops=1)
+                                                          Filter: (("creId" IS NULL) AND ("ccmId" = 'ccm-bench01'::text) AND (status = 'assigned'::text))
+                                                          Rows Removed by Filter: 9763
+                                                          Buffers: shared hit=202
+  InitPlan 4
+    ->  Aggregate  (cost=81.61..81.62 rows=1 width=8) (actual time=0.230..0.230 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..72.54 rows=3627 width=0) (actual time=0.000..0.127 rows=4020.00 loops=1)
+                Storage: Memory  Maximum Storage: 252kB
+  ->  Nested Loop Left Join  (cost=287.00..289.13 rows=50 width=46) (actual time=52.885..52.897 rows=50.00 loops=1)
+        Buffers: shared hit=13567
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=287.00..288.00 rows=50 width=81) (actual time=52.651..52.661 rows=50.00 loops=1)
+              Buffers: shared hit=13567
+              ->  WindowAgg  (cost=287.00..359.52 rows=3627 width=81) (actual time=52.651..52.659 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=13567
+                    ->  Sort  (cost=286.98..296.05 rows=3627 width=73) (actual time=52.647..52.648 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 285kB
+                          Buffers: shared hit=13567
+                          ->  CTE Scan on final  (cost=0.00..72.54 rows=3627 width=73) (actual time=14.214..51.800 rows=4020.00 loops=1)
+                                Storage: Memory  Maximum Storage: 252kB
+                                Buffers: shared hit=13567
+Planning:
+  Buffers: shared hit=6
+Planning Time: 1.821 ms
+Execution Time: 53.291 ms
+
+===== CRE default =====
+Sort  (cost=486.79..486.92 rows=50 width=46) (actual time=3.112..3.115 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=244
+  CTE final
+    ->  Subquery Scan on c  (cost=442.50..448.56 rows=404 width=19) (actual time=2.496..2.699 rows=1206.00 loops=1)
+          Buffers: shared hit=244
+          ->  Unique  (cost=442.50..444.52 rows=404 width=268) (actual time=2.495..2.618 rows=1206.00 loops=1)
+                Buffers: shared hit=244
+                ->  Sort  (cost=442.50..443.51 rows=404 width=268) (actual time=2.494..2.522 rows=1206.00 loops=1)
+                      Sort Key: m.vin, ((NULLIF(m."ownerUserId", ''::text) IS NULL)), (COALESCE(m."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m.id COLLATE "C"
+                      Sort Method: quicksort  Memory: 190kB
+                      Buffers: shared hit=244
+                      ->  Seq Scan on master_call_lists m  (cost=0.00..425.01 rows=404 width=268) (actual time=0.008..0.882 rows=1206.00 loops=1)
+                            Filter: (("ccmId" = 'ccm-bench01'::text) AND ("ownerUserId" = 'bu_ccm1_cre1'::text))
+                            Rows Removed by Filter: 10794
+                            Buffers: shared hit=244
+  InitPlan 2
+    ->  Aggregate  (cost=9.09..9.10 rows=1 width=8) (actual time=0.069..0.069 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..8.08 rows=404 width=0) (actual time=0.000..0.036 rows=1206.00 loops=1)
+                Storage: Memory  Maximum Storage: 82kB
+  ->  Nested Loop Left Join  (cost=25.59..27.72 rows=50 width=46) (actual time=3.095..3.107 rows=50.00 loops=1)
+        Buffers: shared hit=244
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=25.59..26.59 rows=50 width=81) (actual time=3.023..3.033 rows=50.00 loops=1)
+              Buffers: shared hit=244
+              ->  WindowAgg  (cost=25.59..33.65 rows=404 width=81) (actual time=3.023..3.031 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=244
+                    ->  Sort  (cost=25.57..26.58 rows=404 width=73) (actual time=3.021..3.023 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 105kB
+                          Buffers: shared hit=244
+                          ->  CTE Scan on final  (cost=0.00..8.08 rows=404 width=73) (actual time=2.497..2.855 rows=1206.00 loops=1)
+                                Storage: Memory  Maximum Storage: 82kB
+                                Buffers: shared hit=244
+Planning Time: 0.230 ms
+Execution Time: 3.177 ms
+
+===== CRE dueCategory=1y =====
+Sort  (cost=4466.96..4467.09 rows=50 width=46) (actual time=10.472..10.475 rows=12.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 25kB
+  Buffers: shared hit=4272
+  CTE final
+    ->  Nested Loop Left Join  (cost=989.95..4428.73 rows=404 width=19) (actual time=5.120..10.436 rows=12.00 loops=1)
+          Filter: (CASE ((('2026'::numeric - EXTRACT(year FROM (((max(w."visitDate") FILTER (WHERE (w."visitDate" <= '2026-11-04 12:47:27.265'::timestamp without time zone))) AT TIME ZONE 'UTC'::text) AT TIME ZONE 'Asia/Calcutta'::text))) * '12'::numeric) + ('11'::numeric - EXTRACT(month FROM (((max(w."visitDate") FILTER (WHERE (w."visitDate" <= '2026-11-04 12:47:27.265'::timestamp without time zone))) AT TIME ZONE 'UTC'::text) AT TIME ZONE 'Asia/Calcutta'::text)))) WHEN '12'::numeric THEN '1y'::text WHEN '6'::numeric THEN '6m'::text ELSE NULL::text END = '1y'::text)
+          Rows Removed by Filter: 1194
+          Buffers: shared hit=4272
+          ->  Hash Left Join  (cost=981.50..989.68 rows=404 width=28) (actual time=4.510..5.027 rows=1206.00 loops=1)
+                Hash Cond: ((m."vehicleId" = v.id) AND (m."ccmId" = v."ccmId"))
+                Buffers: shared hit=483
+                ->  Unique  (cost=442.50..444.52 rows=404 width=268) (actual time=2.620..2.832 rows=1206.00 loops=1)
+                      Buffers: shared hit=244
+                      ->  Sort  (cost=442.50..443.51 rows=404 width=268) (actual time=2.618..2.659 rows=1206.00 loops=1)
+                            Sort Key: m.vin, ((NULLIF(m."ownerUserId", ''::text) IS NULL)), (COALESCE(m."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m.id COLLATE "C"
+                            Sort Method: quicksort  Memory: 190kB
+                            Buffers: shared hit=244
+                            ->  Seq Scan on master_call_lists m  (cost=0.00..425.01 rows=404 width=268) (actual time=0.010..0.931 rows=1206.00 loops=1)
+                                  Filter: (("ccmId" = 'ccm-bench01'::text) AND ("ownerUserId" = 'bu_ccm1_cre1'::text))
+                                  Rows Removed by Filter: 10794
+                                  Buffers: shared hit=244
+                ->  Hash  (cost=359.00..359.00 rows=12000 width=32) (actual time=1.850..1.850 rows=12000.00 loops=1)
+                      Buckets: 16384  Batches: 1  Memory Usage: 878kB
+                      Buffers: shared hit=239
+                      ->  Seq Scan on vehicles v  (cost=0.00..359.00 rows=12000 width=32) (actual time=0.008..0.822 rows=12000.00 loops=1)
+                            Buffers: shared hit=239
+          ->  Aggregate  (cost=8.45..8.46 rows=1 width=16) (actual time=0.004..0.004 rows=1.00 loops=1206)
+                Buffers: shared hit=3789
+                ->  Index Scan using "workshop_visits_physicalVehicleId_idx" on workshop_visits w  (cost=0.29..8.42 rows=7 width=8) (actual time=0.002..0.003 rows=6.52 loops=1206)
+                      Index Cond: ("physicalVehicleId" = v."physicalVehicleId")
+                      Index Searches: 1206
+                      Buffers: shared hit=3789
+  InitPlan 2
+    ->  Aggregate  (cost=9.09..9.10 rows=1 width=8) (actual time=0.004..0.004 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..8.08 rows=404 width=0) (actual time=0.001..0.002 rows=12.00 loops=1)
+                Storage: Memory  Maximum Storage: 17kB
+  ->  Nested Loop Left Join  (cost=25.59..27.72 rows=50 width=46) (actual time=10.466..10.470 rows=12.00 loops=1)
+        Buffers: shared hit=4272
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=25.59..26.59 rows=50 width=81) (actual time=10.459..10.462 rows=12.00 loops=1)
+              Buffers: shared hit=4272
+              ->  WindowAgg  (cost=25.59..33.65 rows=404 width=81) (actual time=10.459..10.461 rows=12.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=4272
+                    ->  Sort  (cost=25.57..26.58 rows=404 width=73) (actual time=10.450..10.450 rows=12.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 25kB
+                          Buffers: shared hit=4272
+                          ->  CTE Scan on final  (cost=0.00..8.08 rows=404 width=73) (actual time=5.122..10.442 rows=12.00 loops=1)
+                                Storage: Memory  Maximum Storage: 17kB
+                                Buffers: shared hit=4272
+Planning Time: 0.322 ms
+Execution Time: 10.623 ms
+
+===== CRE search=test =====
+Sort  (cost=13560.83..13560.96 rows=50 width=46) (actual time=17.865..17.871 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=4272
+  CTE final
+    ->  Nested Loop Left Join  (cost=1012.46..13526.31 rows=364 width=19) (actual time=4.756..17.150 rows=1206.00 loops=1)
+          Filter: ((strpos(lower(COALESCE(m."customerName", ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(COALESCE(CASE WHEN (regexp_replace(m."mobileNumber", '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace(m."mobileNumber", '^\s+|\s+$'::text, ''::text, 'g'::text) END, ((array_agg(COALESCE(CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END) ORDER BY w."visitDate" DESC NULLS LAST, w."createdAt" DESC, w.id DESC) FILTER (WHERE (COALESCE(CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobile'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'mobileNo'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phoneNumber'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END, CASE WHEN (regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) = ANY ('{"",-,—}'::text[])) THEN NULL::text ELSE regexp_replace((w."importedDetails" ->> 'phone'::text), '^\s+|\s+$'::text, ''::text, 'g'::text) END) IS NOT NULL)))[1])), ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(m.vin, ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(COALESCE(NULLIF(m."registrationNumber", ''::text), NULLIF(v."registrationNumber", ''::text)), ''::text)), 'test'::text) > 0) OR COALESCE((bool_or(((strpos(lower(COALESCE(w."repairOrderNo", ''::text)), 'test'::text) > 0) OR (strpos(lower(COALESCE(CASE jsonb_typeof((w."importedDetails" -> 'roNumber'::text)) WHEN 'string'::text THEN NULLIF((w."importedDetails" ->> 'roNumber'::text), ''::text) WHEN 'number'::text THEN CASE WHEN ((((w."importedDetails" -> 'roNumber'::text))::text)::numeric = '0'::numeric) THEN NULL::text ELSE (w."importedDetails" ->> 'roNumber'::text) END WHEN 'boolean'::text THEN CASE WHEN ((w."importedDetails" ->> 'roNumber'::text) = 'true'::text) THEN 'true'::text ELSE NULL::text END WHEN 'object'::text THEN '[object Object]'::text WHEN 'array'::text THEN COALESCE((SubPlan 1), ''::text) ELSE NULL::text END, ''::text)), 'test'::text) > 0)))), false))
+          Buffers: shared hit=4272
+          ->  Hash Left Join  (cost=981.50..989.68 rows=404 width=101) (actual time=4.720..5.374 rows=1206.00 loops=1)
+                Hash Cond: ((m."vehicleId" = v.id) AND (m."ccmId" = v."ccmId"))
+                Buffers: shared hit=483
+                ->  Unique  (cost=442.50..444.52 rows=404 width=216) (actual time=2.711..2.939 rows=1206.00 loops=1)
+                      Buffers: shared hit=244
+                      ->  Sort  (cost=442.50..443.51 rows=404 width=216) (actual time=2.711..2.770 rows=1206.00 loops=1)
+                            Sort Key: m.vin, ((NULLIF(m."ownerUserId", ''::text) IS NULL)), (COALESCE(m."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m.id COLLATE "C"
+                            Sort Method: quicksort  Memory: 238kB
+                            Buffers: shared hit=244
+                            ->  Seq Scan on master_call_lists m  (cost=0.00..425.01 rows=404 width=216) (actual time=0.018..0.953 rows=1206.00 loops=1)
+                                  Filter: (("ccmId" = 'ccm-bench01'::text) AND ("ownerUserId" = 'bu_ccm1_cre1'::text))
+                                  Rows Removed by Filter: 10794
+                                  Buffers: shared hit=244
+                ->  Hash  (cost=359.00..359.00 rows=12000 width=43) (actual time=1.971..1.972 rows=12000.00 loops=1)
+                      Buckets: 16384  Batches: 1  Memory Usage: 1007kB
+                      Buffers: shared hit=239
+                      ->  Seq Scan on vehicles v  (cost=0.00..359.00 rows=12000 width=43) (actual time=0.011..0.854 rows=12000.00 loops=1)
+                            Buffers: shared hit=239
+          ->  Aggregate  (cost=30.96..30.97 rows=1 width=49) (actual time=0.009..0.009 rows=1.00 loops=1206)
+                Buffers: shared hit=3789
+                ->  Index Scan using "workshop_visits_physicalVehicleId_idx" on workshop_visits w  (cost=0.29..8.42 rows=7 width=93) (actual time=0.003..0.004 rows=6.52 loops=1206)
+                      Index Cond: ("physicalVehicleId" = v."physicalVehicleId")
+                      Index Searches: 1206
+                      Buffers: shared hit=3789
+                SubPlan 1
+                  ->  Aggregate  (cost=3.01..3.02 rows=1 width=32) (never executed)
+                        ->  Function Scan on jsonb_array_elements item  (cost=0.01..1.00 rows=100 width=40) (never executed)
+  InitPlan 3
+    ->  Aggregate  (cost=8.19..8.20 rows=1 width=8) (actual time=0.098..0.098 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..7.28 rows=364 width=0) (actual time=0.000..0.053 rows=1206.00 loops=1)
+                Storage: Memory  Maximum Storage: 82kB
+  ->  Nested Loop Left Join  (cost=22.78..24.92 rows=50 width=46) (actual time=17.837..17.856 rows=50.00 loops=1)
+        Buffers: shared hit=4272
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=22.78..23.78 rows=50 width=81) (actual time=17.736..17.750 rows=50.00 loops=1)
+              Buffers: shared hit=4272
+              ->  WindowAgg  (cost=22.78..30.04 rows=364 width=81) (actual time=17.735..17.746 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=4272
+                    ->  Sort  (cost=22.76..23.67 rows=364 width=73) (actual time=17.730..17.731 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 105kB
+                          Buffers: shared hit=4272
+                          ->  CTE Scan on final  (cost=0.00..7.28 rows=364 width=73) (actual time=4.758..17.457 rows=1206.00 loops=1)
+                                Storage: Memory  Maximum Storage: 82kB
+                                Buffers: shared hit=4272
+Planning Time: 0.579 ms
+Execution Time: 18.170 ms
+
+===== CCM repairType=Paid =====
+Sort  (cost=120277.02..120277.07 rows=20 width=46) (actual time=71.419..71.431 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=13852
+  CTE scoped
+    ->  Seq Scan on master_call_lists m  (cost=0.00..394.00 rows=4020 width=132) (actual time=0.012..1.047 rows=4020.00 loops=1)
+          Filter: ("ccmId" = 'ccm-bench01'::text)
+          Rows Removed by Filter: 7980
+          Buffers: shared hit=244
+  CTE canonical
+    ->  Unique  (cost=331.11..361.26 rows=3899 width=346) (actual time=11.988..12.595 rows=4020.00 loops=1)
+          Buffers: shared hit=244
+          ->  Sort  (cost=331.11..341.16 rows=4020 width=346) (actual time=11.986..12.115 rows=4020.00 loops=1)
+                Sort Key: m_1."ccmId", m_1.vin, ((NULLIF(m_1."ownerUserId", ''::text) IS NULL)), (COALESCE(m_1."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m_1.id COLLATE "C"
+                Sort Method: quicksort  Memory: 818kB
+                Buffers: shared hit=244
+                ->  CTE Scan on scoped m_1  (cost=0.00..90.45 rows=4020 width=346) (actual time=0.014..1.888 rows=4020.00 loops=1)
+                      Storage: Memory  Maximum Storage: 659kB
+                      Buffers: shared hit=244
+  CTE final
+    ->  Append  (cost=1397.46..119519.18 rows=20 width=41) (actual time=25.193..70.938 rows=717.00 loops=1)
+          Buffers: shared hit=13852
+          ->  Hash Left Join  (cost=1397.46..118527.57 rows=19 width=41) (actual time=25.192..68.366 rows=717.00 loops=1)
+                Hash Cond: (v.id = al."vehicleId")
+                Filter: (CASE WHEN (lower(COALESCE(((array_agg(CASE jsonb_typeof((w."importedDetails" -> 'workType'::text)) WHEN 'string'::text THEN NULLIF((w."importedDetails" ->> 'workType'::text), ''::text) WHEN 'number'::text THEN CASE WHEN ((((w."importedDetails" -> 'workType'::text))::text)::numeric = '0'::numeric) THEN NULL::text ELSE (w."importedDetails" ->> 'workType'::text) END WHEN 'boolean'::text THEN CASE WHEN ((w."importedDetails" ->> 'workType'::text) = 'true'::text) THEN 'true'::text ELSE NULL::text END WHEN 'object'::text THEN '[object Object]'::text WHEN 'array'::text THEN COALESCE((SubPlan 3), ''::text) ELSE NULL::text END ORDER BY w."visitDate" DESC NULLS LAST, w."createdAt" DESC, w.id DESC))[1]), NULLIF(mon."serviceType", ''::text), NULLIF(al."serviceType", ''::text), ''::text)) ~ '(?<![A-Za-z0-9_])(free|foc)(?![A-Za-z0-9_])'::text) THEN 'Free'::text WHEN (lower(COALESCE(((array_agg(CASE jsonb_typeof((w."importedDetails" -> 'workType'::text)) WHEN 'string'::text THEN NULLIF((w."importedDetails" ->> 'workType'::text), ''::text) WHEN 'number'::text THEN CASE WHEN ((((w."importedDetails" -> 'workType'::text))::text)::numeric = '0'::numeric) THEN NULL::text ELSE (w."importedDetails" ->> 'workType'::text) END WHEN 'boolean'::text THEN CASE WHEN ((w."importedDetails" ->> 'workType'::text) = 'true'::text) THEN 'true'::text ELSE NULL::text END WHEN 'object'::text THEN '[object Object]'::text WHEN 'array'::text THEN COALESCE((SubPlan 3), ''::text) ELSE NULL::text END ORDER BY w."visitDate" DESC NULLS LAST, w."createdAt" DESC, w.id DESC))[1]), NULLIF(mon."serviceType", ''::text), NULLIF(al."serviceType", ''::text), ''::text)) ~ '(?<![A-Za-z0-9_])(accident|accidental|collision|body shop)(?![A-Za-z0-9_])'::text) THEN 'Accidental Repair'::text WHEN (lower(COALESCE(((array_agg(CASE jsonb_typeof((w."importedDetails" -> 'workType'::text)) WHEN 'string'::text THEN NULLIF((w."importedDetails" ->> 'workType'::text), ''::text) WHEN 'number'::text THEN CASE WHEN ((((w."importedDetails" -> 'workType'::text))::text)::numeric = '0'::numeric) THEN NULL::text ELSE (w."importedDetails" ->> 'workType'::text) END WHEN 'boolean'::text THEN CASE WHEN ((w."importedDetails" ->> 'workType'::text) = 'true'::text) THEN 'true'::text ELSE NULL::text END WHEN 'object'::text THEN '[object Object]'::text WHEN 'array'::text THEN COALESCE((SubPlan 3), ''::text) ELSE NULL::text END ORDER BY w."visitDate" DESC NULLS LAST, w."createdAt" DESC, w.id DESC))[1]), NULLIF(mon."serviceType", ''::text), NULLIF(al."serviceType", ''::text), ''::text)) ~ '(?<![A-Za-z0-9_])(running repair|running repairs|rr)(?![A-Za-z0-9_])'::text) THEN 'Running Repair'::text WHEN (lower(COALESCE(((array_agg(CASE jsonb_typeof((w."importedDetails" -> 'workType'::text)) WHEN 'string'::text THEN NULLIF((w."importedDetails" ->> 'workType'::text), ''::text) WHEN 'number'::text THEN CASE WHEN ((((w."importedDetails" -> 'workType'::text))::text)::numeric = '0'::numeric) THEN NULL::text ELSE (w."importedDetails" ->> 'workType'::text) END WHEN 'boolean'::text THEN CASE WHEN ((w."importedDetails" ->> 'workType'::text) = 'true'::text) THEN 'true'::text ELSE NULL::text END WHEN 'object'::text THEN '[object Object]'::text WHEN 'array'::text THEN COALESCE((SubPlan 3), ''::text) ELSE NULL::text END ORDER BY w."visitDate" DESC NULLS LAST, w."createdAt" DESC, w.id DESC))[1]), NULLIF(mon."serviceType", ''::text), NULLIF(al."serviceType", ''::text), ''::text)) ~ '(?<![A-Za-z0-9_])(pms|periodic)(?![A-Za-z0-9_])'::text) THEN 'PMS'::text WHEN (lower(COALESCE(((array_agg(CASE jsonb_typeof((w."importedDetails" -> 'workType'::text)) WHEN 'string'::text THEN NULLIF((w."importedDetails" ->> 'workType'::text), ''::text) WHEN 'number'::text THEN CASE WHEN ((((w."importedDetails" -> 'workType'::text))::text)::numeric = '0'::numeric) THEN NULL::text ELSE (w."importedDetails" ->> 'workType'::text) END WHEN 'boolean'::text THEN CASE WHEN ((w."importedDetails" ->> 'workType'::text) = 'true'::text) THEN 'true'::text ELSE NULL::text END WHEN 'object'::text THEN '[object Object]'::text WHEN 'array'::text THEN COALESCE((SubPlan 3), ''::text) ELSE NULL::text END ORDER BY w."visitDate" DESC NULLS LAST, w."createdAt" DESC, w.id DESC))[1]), NULLIF(mon."serviceType", ''::text), NULLIF(al."serviceType", ''::text), ''::text)) ~ '(?<![A-Za-z0-9_])(paid|chargeable|customer pay|customer-paid|cp)(?![A-Za-z0-9_])'::text) THEN 'Paid'::text ELSE 'Others'::text END = 'Paid'::text)
+                Rows Removed by Filter: 3303
+                Buffers: shared hit=13411
+                ->  Hash Left Join  (cost=815.38..117935.27 rows=3899 width=95) (actual time=18.021..49.607 rows=4020.00 loops=1)
+                      Hash Cond: (v.id = mon."vehicleId")
+                      Buffers: shared hit=13209
+                      ->  Nested Loop Left Join  (cost=568.99..117678.64 rows=3899 width=82) (actual time=14.160..45.021 rows=4020.00 loops=1)
+                            Buffers: shared hit=13126
+                            ->  Hash Left Join  (cost=539.00..637.45 rows=3899 width=60) (actual time=14.105..15.794 rows=4020.00 loops=1)
+                                  Hash Cond: ((c."vehicleId" = v.id) AND (c."ccmId" = v."ccmId"))
+                                  Buffers: shared hit=483
+                                  ->  CTE Scan on canonical c  (cost=0.00..77.98 rows=3899 width=104) (actual time=11.991..12.544 rows=4020.00 loops=1)
+                                        Storage: Memory  Maximum Storage: 785kB
+                                        Buffers: shared hit=244
+                                  ->  Hash  (cost=359.00..359.00 rows=12000 width=32) (actual time=2.030..2.030 rows=12000.00 loops=1)
+                                        Buckets: 16384  Batches: 1  Memory Usage: 878kB
+                                        Buffers: shared hit=239
+                                        ->  Seq Scan on vehicles v  (cost=0.00..359.00 rows=12000 width=32) (actual time=0.026..0.910 rows=12000.00 loops=1)
+                                              Buffers: shared hit=239
+                            ->  Aggregate  (cost=29.99..30.00 rows=1 width=48) (actual time=0.007..0.007 rows=1.00 loops=4020)
+                                  Buffers: shared hit=12643
+                                  ->  Sort  (cost=8.51..8.53 rows=7 width=82) (actual time=0.004..0.005 rows=6.48 loops=4020)
+                                        Sort Key: w."visitDate" DESC NULLS LAST, w."createdAt" DESC, w.id DESC
+                                        Sort Method: quicksort  Memory: 25kB
+                                        Buffers: shared hit=12643
+                                        ->  Index Scan using "workshop_visits_physicalVehicleId_idx" on workshop_visits w  (cost=0.29..8.42 rows=7 width=82) (actual time=0.003..0.003 rows=6.48 loops=4020)
+                                              Index Cond: ("physicalVehicleId" = v."physicalVehicleId")
+                                              Index Searches: 4020
+                                              Buffers: shared hit=12643
+                                  SubPlan 3
+                                    ->  Aggregate  (cost=3.01..3.02 rows=1 width=32) (never executed)
+                                          ->  Function Scan on jsonb_array_elements item  (cost=0.01..1.00 rows=100 width=40) (never executed)
+                      ->  Hash  (cost=241.75..241.75 rows=372 width=23) (actual time=3.857..3.860 rows=686.00 loops=1)
+                            Buckets: 1024  Batches: 1  Memory Usage: 45kB
+                            Buffers: shared hit=83
+                            ->  Subquery Scan on mon  (cost=236.17..241.75 rows=372 width=23) (actual time=3.690..3.802 rows=686.00 loops=1)
+                                  Buffers: shared hit=83
+                                  ->  Unique  (cost=236.17..238.03 rows=372 width=49) (actual time=3.689..3.766 rows=686.00 loops=1)
+                                        Buffers: shared hit=83
+                                        ->  Sort  (cost=236.17..237.10 rows=372 width=49) (actual time=3.688..3.707 rows=744.00 loops=1)
+                                              Sort Key: en."vehicleId", en."createdAt" DESC, en.id DESC
+                                              Sort Method: quicksort  Memory: 71kB
+                                              Buffers: shared hit=83
+                                              ->  Hash Join  (cost=93.93..220.28 rows=372 width=49) (actual time=2.181..2.804 rows=744.00 loops=1)
+                                                    Hash Cond: (en."vehicleId" = canonical."vehicleId")
+                                                    Buffers: shared hit=83
+                                                    ->  Hash Join  (cost=1.75..122.01 rows=744 width=41) (actual time=0.037..0.579 rows=744.00 loops=1)
+                                                          Hash Cond: (en."datasetId" = d.id)
+                                                          Buffers: shared hit=83
+                                                          ->  Seq Scan on monthly_customer_data_entries en  (cost=0.00..111.76 rows=2976 width=54) (actual time=0.022..0.402 rows=2976.00 loops=1)
+                                                                Filter: (("serviceType" IS NOT NULL) OR ("nextServiceDueDate" IS NOT NULL))
+                                                                Buffers: shared hit=82
+                                                          ->  Hash  (cost=1.60..1.60 rows=12 width=13) (actual time=0.013..0.013 rows=12.00 loops=1)
+                                                                Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                                                                Buffers: shared hit=1
+                                                                ->  Seq Scan on monthly_customer_datasets d  (cost=0.00..1.60 rows=12 width=13) (actual time=0.006..0.009 rows=12.00 loops=1)
+                                                                      Filter: ("ccmId" = 'ccm-bench01'::text)
+                                                                      Rows Removed by Filter: 36
+                                                                      Buffers: shared hit=1
+                                                    ->  Hash  (cost=89.68..89.68 rows=200 width=32) (actual time=2.138..2.139 rows=4020.00 loops=1)
+                                                          Buckets: 4096 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 197kB
+                                                          ->  HashAggregate  (cost=87.68..89.68 rows=200 width=32) (actual time=1.690..1.882 rows=4020.00 loops=1)
+                                                                Group Key: canonical."vehicleId"
+                                                                Batches: 1  Memory Usage: 297kB
+                                                                ->  CTE Scan on canonical  (cost=0.00..77.98 rows=3880 width=32) (actual time=0.001..1.156 rows=4020.00 loops=1)
+                                                                      Filter: ("vehicleId" IS NOT NULL)
+                                                                      Storage: Memory  Maximum Storage: 785kB
+                ->  Hash  (cost=564.17..564.17 rows=1432 width=21) (actual time=6.833..6.835 rows=2077.00 loops=1)
+                      Buckets: 4096 (originally 2048)  Batches: 1 (originally 1)  Memory Usage: 141kB
+                      Buffers: shared hit=202
+                      ->  Subquery Scan on al  (cost=542.69..564.17 rows=1432 width=21) (actual time=6.283..6.658 rows=2077.00 loops=1)
+                            Buffers: shared hit=202
+                            ->  Unique  (cost=542.69..549.85 rows=1432 width=39) (actual time=6.281..6.549 rows=2077.00 loops=1)
+                                  Buffers: shared hit=202
+                                  ->  Sort  (cost=542.69..546.27 rows=1432 width=39) (actual time=6.280..6.353 rows=2875.00 loops=1)
+                                        Sort Key: a."vehicleId", a."createdAt" DESC, a.id DESC
+                                        Sort Method: quicksort  Memory: 276kB
+                                        Buffers: shared hit=202
+                                        ->  Hash Join  (cost=92.18..467.63 rows=1432 width=39) (actual time=1.234..2.396 rows=2875.00 loops=1)
+                                              Hash Cond: (a."vehicleId" = canonical_1."vehicleId")
+                                              Buffers: shared hit=202
+                                              ->  Seq Scan on allocations a  (cost=0.00..352.00 rows=2864 width=39) (actual time=0.011..0.839 rows=2875.00 loops=1)
+                                                    Filter: ((status = 'assigned'::text) AND ("ccmId" = 'ccm-bench01'::text))
+                                                    Rows Removed by Filter: 7125
+                                                    Buffers: shared hit=202
+                                              ->  Hash  (cost=89.68..89.68 rows=200 width=32) (actual time=1.199..1.199 rows=4020.00 loops=1)
+                                                    Buckets: 4096 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 197kB
+                                                    ->  HashAggregate  (cost=87.68..89.68 rows=200 width=32) (actual time=0.775..0.966 rows=4020.00 loops=1)
+                                                          Group Key: canonical_1."vehicleId"
+                                                          Batches: 1  Memory Usage: 297kB
+                                                          ->  CTE Scan on canonical canonical_1  (cost=0.00..77.98 rows=3880 width=32) (actual time=0.002..0.275 rows=4020.00 loops=1)
+                                                                Filter: ("vehicleId" IS NOT NULL)
+                                                                Storage: Memory  Maximum Storage: 785kB
+          ->  Subquery Scan on q  (cost=987.95..991.51 rows=1 width=41) (actual time=2.510..2.511 rows=0.00 loops=1)
+                Filter: (q.type_raw = 'Paid'::text)
+                Buffers: shared hit=441
+                ->  Unique  (cost=987.95..988.97 rows=203 width=158) (actual time=2.509..2.510 rows=0.00 loops=1)
+                      Buffers: shared hit=441
+                      ->  Sort  (cost=987.95..988.46 rows=203 width=158) (actual time=2.508..2.509 rows=0.00 loops=1)
+                            Sort Key: v_1.vin, ((a_1.id)::text) COLLATE "C"
+                            Sort Method: quicksort  Memory: 25kB
+                            Buffers: shared hit=441
+                            ->  Hash Right Anti Join  (cost=883.39..980.17 rows=203 width=158) (actual time=2.467..2.468 rows=0.00 loops=1)
+                                  Hash Cond: (s.vin = v_1.vin)
+                                  Buffers: shared hit=441
+                                  ->  CTE Scan on scoped s  (cost=0.00..90.45 rows=1347 width=64) (actual time=0.001..0.340 rows=4020.00 loops=1)
+                                        Filter: ("ccmId" = 'ccm-bench01'::text)
+                                        Storage: Memory  Maximum Storage: 659kB
+                                  ->  Hash  (cost=880.51..880.51 rows=230 width=51) (actual time=1.924..1.925 rows=237.00 loops=1)
+                                        Buckets: 1024  Batches: 1  Memory Usage: 28kB
+                                        Buffers: shared hit=441
+                                        ->  Hash Join  (cost=354.89..880.51 rows=230 width=51) (actual time=0.662..1.891 rows=237.00 loops=1)
+                                              Hash Cond: (v_1.id = a_1."vehicleId")
+                                              Buffers: shared hit=441
+                                              ->  Seq Scan on vehicles v_1  (cost=0.00..389.00 rows=11940 width=28) (actual time=0.020..0.757 rows=12000.00 loops=1)
+                                                    Filter: (NULLIF(vin, ''::text) IS NOT NULL)
+                                                    Buffers: shared hit=239
+                                              ->  Hash  (cost=352.00..352.00 rows=231 width=43) (actual time=0.634..0.634 rows=237.00 loops=1)
+                                                    Buckets: 1024  Batches: 1  Memory Usage: 26kB
+                                                    Buffers: shared hit=202
+                                                    ->  Seq Scan on allocations a_1  (cost=0.00..352.00 rows=231 width=43) (actual time=0.024..0.599 rows=237.00 loops=1)
+                                                          Filter: (("creId" IS NULL) AND ("ccmId" = 'ccm-bench01'::text) AND (status = 'assigned'::text))
+                                                          Rows Removed by Filter: 9763
+                                                          Buffers: shared hit=202
+  InitPlan 5
+    ->  Aggregate  (cost=0.45..0.46 rows=1 width=8) (actual time=0.050..0.050 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..0.40 rows=20 width=0) (actual time=0.000..0.028 rows=717.00 loops=1)
+                Storage: Memory  Maximum Storage: 56kB
+  ->  Nested Loop Left Join  (cost=0.85..1.69 rows=20 width=46) (actual time=71.397..71.412 rows=50.00 loops=1)
+        Buffers: shared hit=13852
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.001..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=0.85..1.23 rows=20 width=81) (actual time=71.344..71.355 rows=50.00 loops=1)
+              Buffers: shared hit=13852
+              ->  WindowAgg  (cost=0.85..1.23 rows=20 width=81) (actual time=71.344..71.353 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=13852
+                    ->  Sort  (cost=0.83..0.88 rows=20 width=73) (actual time=71.340..71.341 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 58kB
+                          Buffers: shared hit=13852
+                          ->  CTE Scan on final  (cost=0.00..0.40 rows=20 width=73) (actual time=25.195..71.172 rows=717.00 loops=1)
+                                Storage: Memory  Maximum Storage: 56kB
+                                Buffers: shared hit=13852
+Planning:
+  Buffers: shared hit=175
+Planning Time: 5.214 ms
+Execution Time: 72.217 ms
+
+===== ADMIN pastDue =====
+Sort  (cost=101591.87..101592.00 rows=50 width=46) (actual time=115.771..115.779 rows=50.00 loops=1)
+  Sort Key: (row_number() OVER w1)
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=38308
+  CTE canonical
+    ->  Unique  (cost=1207.04..1297.04 rows=11640 width=173) (actual time=31.033..32.874 rows=12000.00 loops=1)
+          Buffers: shared hit=244
+          ->  Sort  (cost=1207.04..1237.04 rows=12000 width=173) (actual time=31.025..31.494 rows=12000.00 loops=1)
+                Sort Key: m."ccmId", m.vin, ((NULLIF(m."ownerUserId", ''::text) IS NULL)), (COALESCE(m."createdAt", '1970-01-01 00:00:00'::timestamp without time zone)), m.id COLLATE "C"
+                Sort Method: quicksort  Memory: 2537kB
+                Buffers: shared hit=244
+                ->  Seq Scan on master_call_lists m  (cost=0.00..394.00 rows=12000 width=173) (actual time=0.009..1.309 rows=12000.00 loops=1)
+                      Buffers: shared hit=244
+  CTE final
+    ->  Hash Left Join  (cost=1075.48..99895.07 rows=3880 width=41) (actual time=46.379..114.951 rows=1324.00 loops=1)
+          Hash Cond: (v.id = mon."vehicleId")
+          Filter: (CASE WHEN ((max(w."visitDate")) IS NOT NULL) THEN ((((make_date(((EXTRACT(year FROM (((max(w."visitDate")) AT TIME ZONE 'UTC'::text) AT TIME ZONE 'Asia/Calcutta'::text)))::integer + 1), (EXTRACT(month FROM (((max(w."visitDate")) AT TIME ZONE 'UTC'::text) AT TIME ZONE 'Asia/Calcutta'::text)))::integer, 1) + ((EXTRACT(day FROM (((max(w."visitDate")) AT TIME ZONE 'UTC'::text) AT TIME ZONE 'Asia/Calcutta'::text)))::integer - 1)))::timestamp without time zone AT TIME ZONE 'Asia/Calcutta'::text) AT TIME ZONE 'UTC'::text) ELSE mon."nextServiceDueDate" END < '2026-11-03 18:30:00'::timestamp without time zone)
+          Rows Removed by Filter: 10676
+          Buffers: shared hit=38308
+          ->  Nested Loop Left Join  (cost=547.43..99336.41 rows=11640 width=58) (actual time=33.205..85.278 rows=12000.00 loops=1)
+                Buffers: shared hit=38225
+                ->  Hash Left Join  (cost=539.00..832.91 rows=11640 width=60) (actual time=33.178..38.037 rows=12000.00 loops=1)
+                      Hash Cond: ((c."vehicleId" = v.id) AND (c."ccmId" = v."ccmId"))
+                      Buffers: shared hit=483
+                      ->  CTE Scan on canonical c  (cost=0.00..232.80 rows=11640 width=104) (actual time=31.036..32.612 rows=12000.00 loops=1)
+                            Storage: Memory  Maximum Storage: 2375kB
+                            Buffers: shared hit=244
+                      ->  Hash  (cost=359.00..359.00 rows=12000 width=32) (actual time=2.126..2.127 rows=12000.00 loops=1)
+                            Buckets: 16384  Batches: 1  Memory Usage: 878kB
+                            Buffers: shared hit=239
+                            ->  Seq Scan on vehicles v  (cost=0.00..359.00 rows=12000 width=32) (actual time=0.023..0.971 rows=12000.00 loops=1)
+                                  Buffers: shared hit=239
+                ->  Aggregate  (cost=8.43..8.44 rows=1 width=16) (actual time=0.004..0.004 rows=1.00 loops=12000)
+                      Buffers: shared hit=37742
+                      ->  Index Scan using "workshop_visits_physicalVehicleId_idx" on workshop_visits w  (cost=0.29..8.42 rows=7 width=8) (actual time=0.003..0.003 rows=6.44 loops=12000)
+                            Index Cond: ("physicalVehicleId" = v."physicalVehicleId")
+                            Index Searches: 12000
+                            Buffers: shared hit=37742
+          ->  Hash  (cost=509.44..509.44 rows=1488 width=18) (actual time=13.075..13.078 rows=2636.00 loops=1)
+                Buckets: 4096 (originally 2048)  Batches: 1 (originally 1)  Memory Usage: 141kB
+                Buffers: shared hit=83
+                ->  Subquery Scan on mon  (cost=487.12..509.44 rows=1488 width=18) (actual time=12.383..12.846 rows=2636.00 loops=1)
+                      Buffers: shared hit=83
+                      ->  Unique  (cost=487.12..494.56 rows=1488 width=68) (actual time=12.380..12.699 rows=2636.00 loops=1)
+                            Buffers: shared hit=83
+                            ->  Sort  (cost=487.12..490.84 rows=1488 width=68) (actual time=12.372..12.465 rows=2976.00 loops=1)
+                                  Sort Key: en."vehicleId", en."createdAt" DESC, en.id DESC
+                                  Sort Method: quicksort  Memory: 259kB
+                                  Buffers: shared hit=83
+                                  ->  Hash Join  (cost=268.34..408.71 rows=1488 width=68) (actual time=6.238..7.176 rows=2976.00 loops=1)
+                                        Hash Cond: (en."datasetId" = d.id)
+                                        Buffers: shared hit=83
+                                        ->  Hash Join  (cost=266.25..402.38 rows=1488 width=49) (actual time=6.211..6.837 rows=2976.00 loops=1)
+                                              Hash Cond: (en."vehicleId" = canonical."vehicleId")
+                                              Buffers: shared hit=82
+                                              ->  Seq Scan on monthly_customer_data_entries en  (cost=0.00..111.76 rows=2976 width=49) (actual time=0.006..0.265 rows=2976.00 loops=1)
+                                                    Filter: (("serviceType" IS NOT NULL) OR ("nextServiceDueDate" IS NOT NULL))
+                                                    Buffers: shared hit=82
+                                              ->  Hash  (cost=263.75..263.75 rows=200 width=32) (actual time=6.199..6.200 rows=12000.00 loops=1)
+                                                    Buckets: 16384 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 621kB
+                                                    ->  HashAggregate  (cost=261.75..263.75 rows=200 width=32) (actual time=4.766..5.350 rows=12000.00 loops=1)
+                                                          Group Key: canonical."vehicleId"
+                                                          Batches: 1  Memory Usage: 809kB
+                                                          ->  CTE Scan on canonical  (cost=0.00..232.80 rows=11582 width=32) (actual time=0.001..3.350 rows=12000.00 loops=1)
+                                                                Filter: ("vehicleId" IS NOT NULL)
+                                                                Storage: Memory  Maximum Storage: 2375kB
+                                        ->  Hash  (cost=1.48..1.48 rows=48 width=13) (actual time=0.023..0.023 rows=48.00 loops=1)
+                                              Buckets: 1024  Batches: 1  Memory Usage: 11kB
+                                              Buffers: shared hit=1
+                                              ->  Seq Scan on monthly_customer_datasets d  (cost=0.00..1.48 rows=48 width=13) (actual time=0.015..0.017 rows=48.00 loops=1)
+                                                    Buffers: shared hit=1
+  InitPlan 3
+    ->  Aggregate  (cost=87.30..87.31 rows=1 width=8) (actual time=0.093..0.093 rows=1.00 loops=1)
+          ->  CTE Scan on final final_1  (cost=0.00..77.60 rows=3880 width=0) (actual time=0.000..0.048 rows=1324.00 loops=1)
+                Storage: Memory  Maximum Storage: 89kB
+  ->  Nested Loop Left Join  (cost=308.90..311.04 rows=50 width=46) (actual time=115.750..115.765 rows=50.00 loops=1)
+        Buffers: shared hit=38308
+        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1.00 loops=1)
+        ->  Limit  (cost=308.90..309.90 rows=50 width=81) (actual time=115.654..115.665 rows=50.00 loops=1)
+              Buffers: shared hit=38308
+              ->  WindowAgg  (cost=308.90..386.48 rows=3880 width=81) (actual time=115.653..115.663 rows=50.00 loops=1)
+                    Window: w1 AS (ORDER BY final.sort_ts, ((final.id)::text) ROWS UNBOUNDED PRECEDING)
+                    Storage: Memory  Maximum Storage: 17kB
+                    Buffers: shared hit=38308
+                    ->  Sort  (cost=308.88..318.58 rows=3880 width=73) (actual time=115.648..115.649 rows=50.00 loops=1)
+                          Sort Key: final.sort_ts DESC, ((final.id)::text) COLLATE "C"
+                          Sort Method: quicksort  Memory: 111kB
+                          Buffers: shared hit=38308
+                          ->  CTE Scan on final  (cost=0.00..77.60 rows=3880 width=73) (actual time=46.381..115.332 rows=1324.00 loops=1)
+                                Storage: Memory  Maximum Storage: 89kB
+                                Buffers: shared hit=38308
+Planning:
+  Buffers: shared hit=4
+Planning Time: 0.656 ms
+Execution Time: 116.497 ms
+

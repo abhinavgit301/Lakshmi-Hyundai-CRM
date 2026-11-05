@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/prisma.js';
+import { loadAuthUser } from '../utils/authUserCache.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'local-dev-secret';
 
@@ -26,9 +27,9 @@ export async function authMiddleware(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await prisma.user.findUnique({
+    const user = await loadAuthUser(decoded.sub, () => prisma.user.findUnique({
       where: { id: decoded.sub },
-    });
+    }));
 
     if (!user) {
       return res.status(401).json({ message: 'User not found.' });

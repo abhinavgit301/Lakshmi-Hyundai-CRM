@@ -1,0 +1,852 @@
+{
+  "timeZone": "UTC",
+  "seconds": 125,
+  "entries": 39,
+  "comparisons": 27960,
+  "totalMismatches": 240,
+  "report": [
+    {
+      "fixture": "F1 canonical-duplicates + shared VIN",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "lax/C",
+      "comparisons": 680,
+      "nonEmpty": 176,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F1 canonical-duplicates + shared VIN",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "strict/C",
+      "comparisons": 680,
+      "nonEmpty": 176,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F1 canonical-duplicates + shared VIN",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "lax/C",
+      "comparisons": 680,
+      "nonEmpty": 176,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F1 canonical-duplicates + shared VIN",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "strict/C",
+      "comparisons": 680,
+      "nonEmpty": 176,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F1 canonical-duplicates + shared VIN",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "lax/C",
+      "comparisons": 680,
+      "nonEmpty": 198,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F1 canonical-duplicates + shared VIN",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "strict/C",
+      "comparisons": 680,
+      "nonEmpty": 198,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F2 null vehicleId / missing optionals",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "lax/C",
+      "comparisons": 720,
+      "nonEmpty": 182,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F2 null vehicleId / missing optionals",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "lax/C",
+      "comparisons": 720,
+      "nonEmpty": 182,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F2 null vehicleId / missing optionals",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "lax/C",
+      "comparisons": 720,
+      "nonEmpty": 182,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F3 future / null visits",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "lax/C",
+      "comparisons": 600,
+      "nonEmpty": 196,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F3 future / null visits",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "lax/C",
+      "comparisons": 600,
+      "nonEmpty": 166,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F3 future / null visits",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "lax/C",
+      "comparisons": 600,
+      "nonEmpty": 182,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F4 search, roNumber, imported mobile",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "lax/C",
+      "comparisons": 1560,
+      "nonEmpty": 316,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F4 search, roNumber, imported mobile",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "lax/C",
+      "comparisons": 1560,
+      "nonEmpty": 316,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F4 search, roNumber, imported mobile",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "lax/C",
+      "comparisons": 1560,
+      "nonEmpty": 316,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F5 allocation-queue-only",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "lax/C",
+      "comparisons": 760,
+      "nonEmpty": 142,
+      "queueRecords": 130,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F5 allocation-queue-only",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "lax/C",
+      "comparisons": 760,
+      "nonEmpty": 142,
+      "queueRecords": 130,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F5 allocation-queue-only",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "lax/C",
+      "comparisons": 760,
+      "nonEmpty": 142,
+      "queueRecords": 130,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F6 month boundaries / Feb 29 / local midnight / due dates",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "lax/C",
+      "comparisons": 600,
+      "nonEmpty": 104,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F6 month boundaries / Feb 29 / local midnight / due dates",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "lax/C",
+      "comparisons": 600,
+      "nonEmpty": 104,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F6 month boundaries / Feb 29 / local midnight / due dates",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "lax/C",
+      "comparisons": 600,
+      "nonEmpty": 104,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F7 shared-VIN visibility",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "lax/C",
+      "comparisons": 720,
+      "nonEmpty": 292,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F7 shared-VIN visibility",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "strict/C",
+      "comparisons": 720,
+      "nonEmpty": 292,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F7 shared-VIN visibility",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "lax/C",
+      "comparisons": 720,
+      "nonEmpty": 260,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F7 shared-VIN visibility",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "strict/C",
+      "comparisons": 720,
+      "nonEmpty": 260,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F7 shared-VIN visibility",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "lax/C",
+      "comparisons": 720,
+      "nonEmpty": 224,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F7 shared-VIN visibility",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "strict/C",
+      "comparisons": 720,
+      "nonEmpty": 224,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F8 repair-type fallbacks",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "lax/C",
+      "comparisons": 600,
+      "nonEmpty": 108,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F8 repair-type fallbacks",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "lax/C",
+      "comparisons": 600,
+      "nonEmpty": 108,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F8 repair-type fallbacks",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "lax/C",
+      "comparisons": 600,
+      "nonEmpty": 108,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F9 id tie-break collation (informational)",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "lax/C",
+      "comparisons": 560,
+      "nonEmpty": 40,
+      "queueRecords": 0,
+      "mismatches": [
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        }
+      ],
+      "mismatchCount": 40
+    },
+    {
+      "fixture": "F9 id tie-break collation (informational)",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "icu",
+      "comparisons": 560,
+      "nonEmpty": 40,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F9 id tie-break collation (informational)",
+      "timeZone": "UTC",
+      "clock": "2026-11-04T07:00:00Z (ordinary day)",
+      "variant": "default-collation",
+      "comparisons": 560,
+      "nonEmpty": 40,
+      "queueRecords": 0,
+      "mismatches": [
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        }
+      ],
+      "mismatchCount": 40
+    },
+    {
+      "fixture": "F9 id tie-break collation (informational)",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "lax/C",
+      "comparisons": 560,
+      "nonEmpty": 40,
+      "queueRecords": 0,
+      "mismatches": [
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        }
+      ],
+      "mismatchCount": 40
+    },
+    {
+      "fixture": "F9 id tie-break collation (informational)",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "icu",
+      "comparisons": 560,
+      "nonEmpty": 40,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F9 id tie-break collation (informational)",
+      "timeZone": "UTC",
+      "clock": "2028-02-29T06:00:00Z (leap day 2028)",
+      "variant": "default-collation",
+      "comparisons": 560,
+      "nonEmpty": 40,
+      "queueRecords": 0,
+      "mismatches": [
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        }
+      ],
+      "mismatchCount": 40
+    },
+    {
+      "fixture": "F9 id tie-break collation (informational)",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "lax/C",
+      "comparisons": 560,
+      "nonEmpty": 40,
+      "queueRecords": 0,
+      "mismatches": [
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"A2\",\"Beta\",\"M1\",\"Zed\",\"a10\",\"a2\",\"alpha\",\"e2\",\"g-1\",\"m-1\",\"m1\",\"m_1\",\"é1\"]"
+        }
+      ],
+      "mismatchCount": 40
+    },
+    {
+      "fixture": "F9 id tie-break collation (informational)",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "icu",
+      "comparisons": 560,
+      "nonEmpty": 40,
+      "queueRecords": 0,
+      "mismatches": [],
+      "mismatchCount": 0
+    },
+    {
+      "fixture": "F9 id tie-break collation (informational)",
+      "timeZone": "UTC",
+      "clock": "2027-03-31T20:00:00Z (month end, local date differs by zone)",
+      "variant": "default-collation",
+      "comparisons": 560,
+      "nonEmpty": 40,
+      "queueRecords": 0,
+      "mismatches": [
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {},
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "repairType": "Others"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "creId": "unassigned"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 3,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        },
+        {
+          "user": "u_admin",
+          "ccmId": "",
+          "filters": {
+            "search": "vintie"
+          },
+          "limit": 50,
+          "diff": "ids [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g_1\",\"m_1\",\"m-1\",\"m1\",\"M1\",\"Zed\"] vs [\"a10\",\"a2\",\"A2\",\"alpha\",\"Beta\",\"é1\",\"e2\",\"g-1\",\"m-1\",\"m_1\",\"m1\",\"M1\",\"Zed\"]"
+        }
+      ],
+      "mismatchCount": 40
+    }
+  ]
+}

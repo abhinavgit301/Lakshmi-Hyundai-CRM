@@ -1,5 +1,7 @@
 import { normalizeVin } from './roleAccess.js';
 
+const physicalVehicleIdentitySelect = { id: true, vin: true };
+
 export async function lockPhysicalVehicleIdentity(transaction, vin) {
   const normalizedVin = normalizeVin(vin);
   if (!normalizedVin) throw new Error('Physical vehicle identity requires a valid VIN.');
@@ -9,7 +11,8 @@ export async function lockPhysicalVehicleIdentity(transaction, vin) {
 
 export async function findOrCreatePhysicalVehicle(transaction, vin) {
   const normalizedVin = await lockPhysicalVehicleIdentity(transaction, vin);
-  const existing = await transaction.physicalVehicle.findUnique({ where: { vin: normalizedVin } });
+  // Explicit selection keeps this working before the lastServiceDate migration has been applied.
+  const existing = await transaction.physicalVehicle.findUnique({ where: { vin: normalizedVin }, select: physicalVehicleIdentitySelect });
   if (existing) return existing;
-  return transaction.physicalVehicle.create({ data: { vin: normalizedVin } });
+  return transaction.physicalVehicle.create({ data: { vin: normalizedVin }, select: physicalVehicleIdentitySelect });
 }

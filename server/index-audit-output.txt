@@ -1,0 +1,200 @@
+SET
+         database          | read_only 
+---------------------------+-----------
+ lakshmi_hyundai_crm_bench | on
+(1 row)
+
+       table       | approx_rows | total_size | table_size 
+-------------------+-------------+------------+------------
+ workshop_visits   |       75000 | 31 MB      | 17 MB
+ call_logs         |       50000 | 15 MB      | 11 MB
+ follow_ups        |       20000 | 5808 kB    | 3728 kB
+ vehicles          |       12000 | 4984 kB    | 1912 kB
+ physical_vehicles |       11640 | 3744 kB    | 1824 kB
+ master_call_lists |       12000 | 2760 kB    | 1952 kB
+ customers         |       10000 | 2240 kB    | 1544 kB
+ allocations       |       10000 | 1984 kB    | 1616 kB
+ appointments      |        5000 | 1512 kB    | 1296 kB
+ users             |          23 | 64 kB      | 8192 bytes
+(10 rows)
+
+     tablename     |                     indexname                     |                                                                      indexdef                                                                      
+-------------------+---------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------
+ allocations       | allocations_pkey                                  | CREATE UNIQUE INDEX allocations_pkey ON public.allocations USING btree (id)
+ appointments      | appointments_pkey                                 | CREATE UNIQUE INDEX appointments_pkey ON public.appointments USING btree (id)
+ call_logs         | call_logs_ccmId_createdAt_idx                     | CREATE INDEX "call_logs_ccmId_createdAt_idx" ON public.call_logs USING btree ("ccmId", "createdAt")
+ call_logs         | call_logs_createdById_createdAt_idx               | CREATE INDEX "call_logs_createdById_createdAt_idx" ON public.call_logs USING btree ("createdById", "createdAt")
+ call_logs         | call_logs_pkey                                    | CREATE UNIQUE INDEX call_logs_pkey ON public.call_logs USING btree (id)
+ call_logs         | call_logs_vehicleId_callSource_idx                | CREATE INDEX "call_logs_vehicleId_callSource_idx" ON public.call_logs USING btree ("vehicleId", "callSource")
+ customers         | customers_customerCode_key                        | CREATE UNIQUE INDEX "customers_customerCode_key" ON public.customers USING btree ("customerCode")
+ customers         | customers_pkey                                    | CREATE UNIQUE INDEX customers_pkey ON public.customers USING btree (id)
+ follow_ups        | follow_ups_ccmId_source_status_idx                | CREATE INDEX "follow_ups_ccmId_source_status_idx" ON public.follow_ups USING btree ("ccmId", source, status)
+ follow_ups        | follow_ups_customerId_source_status_idx           | CREATE INDEX "follow_ups_customerId_source_status_idx" ON public.follow_ups USING btree ("customerId", source, status)
+ follow_ups        | follow_ups_pkey                                   | CREATE UNIQUE INDEX follow_ups_pkey ON public.follow_ups USING btree (id)
+ follow_ups        | follow_ups_source_status_idx                      | CREATE INDEX follow_ups_source_status_idx ON public.follow_ups USING btree (source, status)
+ master_call_lists | master_call_lists_pkey                            | CREATE UNIQUE INDEX master_call_lists_pkey ON public.master_call_lists USING btree (id)
+ master_call_lists | master_call_lists_vehicleId_idx                   | CREATE INDEX "master_call_lists_vehicleId_idx" ON public.master_call_lists USING btree ("vehicleId")
+ physical_vehicles | physical_vehicles_lastServiceDate_idx             | CREATE INDEX "physical_vehicles_lastServiceDate_idx" ON public.physical_vehicles USING btree ("lastServiceDate")
+ physical_vehicles | physical_vehicles_pkey                            | CREATE UNIQUE INDEX physical_vehicles_pkey ON public.physical_vehicles USING btree (id)
+ physical_vehicles | physical_vehicles_vin_key                         | CREATE UNIQUE INDEX physical_vehicles_vin_key ON public.physical_vehicles USING btree (vin)
+ users             | users_email_key                                   | CREATE UNIQUE INDEX users_email_key ON public.users USING btree (email)
+ users             | users_pkey                                        | CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)
+ users             | users_username_key                                | CREATE UNIQUE INDEX users_username_key ON public.users USING btree (username)
+ vehicles          | vehicles_ccmId_registrationNumber_key             | CREATE UNIQUE INDEX "vehicles_ccmId_registrationNumber_key" ON public.vehicles USING btree ("ccmId", "registrationNumber")
+ vehicles          | vehicles_id_ccmId_key                             | CREATE UNIQUE INDEX "vehicles_id_ccmId_key" ON public.vehicles USING btree (id, "ccmId")
+ vehicles          | vehicles_id_physicalVehicleId_key                 | CREATE UNIQUE INDEX "vehicles_id_physicalVehicleId_key" ON public.vehicles USING btree (id, "physicalVehicleId")
+ vehicles          | vehicles_physicalVehicleId_ccmId_key              | CREATE UNIQUE INDEX "vehicles_physicalVehicleId_ccmId_key" ON public.vehicles USING btree ("physicalVehicleId", "ccmId")
+ vehicles          | vehicles_physicalVehicleId_idx                    | CREATE INDEX "vehicles_physicalVehicleId_idx" ON public.vehicles USING btree ("physicalVehicleId")
+ vehicles          | vehicles_pkey                                     | CREATE UNIQUE INDEX vehicles_pkey ON public.vehicles USING btree (id)
+ vehicles          | vehicles_saleDate_idx                             | CREATE INDEX "vehicles_saleDate_idx" ON public.vehicles USING btree ("saleDate")
+ workshop_visits   | workshop_visits_ccmId_normalizedRepairOrderNo_key | CREATE UNIQUE INDEX "workshop_visits_ccmId_normalizedRepairOrderNo_key" ON public.workshop_visits USING btree ("ccmId", "normalizedRepairOrderNo")
+ workshop_visits   | workshop_visits_id_physicalVehicleId_key          | CREATE UNIQUE INDEX "workshop_visits_id_physicalVehicleId_key" ON public.workshop_visits USING btree (id, "physicalVehicleId")
+ workshop_visits   | workshop_visits_id_vehicleId_key                  | CREATE UNIQUE INDEX "workshop_visits_id_vehicleId_key" ON public.workshop_visits USING btree (id, "vehicleId")
+ workshop_visits   | workshop_visits_physicalVehicleId_idx             | CREATE INDEX "workshop_visits_physicalVehicleId_idx" ON public.workshop_visits USING btree ("physicalVehicleId")
+ workshop_visits   | workshop_visits_pkey                              | CREATE UNIQUE INDEX workshop_visits_pkey ON public.workshop_visits USING btree (id)
+(32 rows)
+
+                  table                  |                            index                             | idx_scan |    size    
+-----------------------------------------+--------------------------------------------------------------+----------+------------
+ allocations                             | allocations_pkey                                             |        0 | 328 kB
+ appointment_events                      | appointment_events_pkey                                      |        0 | 8192 bytes
+ appointments                            | appointments_pkey                                            |        0 | 176 kB
+ audit_logs                              | audit_logs_pkey                                              |        0 | 8192 bytes
+ call_logs                               | call_logs_createdById_createdAt_idx                          |        0 | 664 kB
+ call_logs                               | call_logs_pkey                                               |        0 | 1552 kB
+ call_logs                               | call_logs_ccmId_createdAt_idx                                |        0 | 568 kB
+ call_logs                               | call_logs_vehicleId_callSource_idx                           |        2 | 1192 kB
+ cre_assignment_history                  | cre_assignment_history_pkey                                  |        0 | 8192 bytes
+ cre_assignment_history                  | cre_assignment_history_masterCallListId_effectiveAt_idx      |        0 | 8192 bytes
+ cre_assignment_history                  | cre_assignment_history_allocationId_effectiveAt_idx          |        0 | 8192 bytes
+ cre_assignment_history                  | cre_assignment_history_ccmId_effectiveAt_idx                 |        0 | 8192 bytes
+ cre_assignment_history                  | cre_assignment_history_vehicleId_effectiveAt_idx             |        0 | 8192 bytes
+ cre_targets                             | cre_targets_pkey                                             |        0 | 8192 bytes
+ customers                               | customers_customerCode_key                                   |        0 | 328 kB
+ customers                               | customers_pkey                                               |   164976 | 328 kB
+ deleted_user_identities                 | deleted_user_identities_pkey                                 |        0 | 8192 bytes
+ follow_ups                              | follow_ups_pkey                                              |        0 | 632 kB
+ follow_ups                              | follow_ups_ccmId_source_status_idx                           |        0 | 208 kB
+ follow_ups                              | follow_ups_source_status_idx                                 |        0 | 168 kB
+ follow_ups                              | follow_ups_customerId_source_status_idx                      |        0 | 1032 kB
+ free_service_milestones                 | free_service_milestones_pkey                                 |        0 | 1080 kB
+ free_service_milestones                 | free_service_milestones_completedByWorkshopVisitId_idx       |        0 | 768 kB
+ free_service_milestones                 | free_service_milestones_dueDate_idx                          |        0 | 360 kB
+ free_service_milestones                 | free_service_milestones_physicalVehicleId_idx                |        0 | 656 kB
+ free_service_milestones                 | free_service_milestones_vehicleId_milestone_key              |        0 | 1080 kB
+ free_service_milestones                 | free_service_milestones_status_dueDate_idx                   |        1 | 616 kB
+ import_batches                          | import_batches_idempotencyKey_key                            |        0 | 8192 bytes
+ import_batches                          | import_batches_ccmId_createdAt_idx                           |        0 | 8192 bytes
+ import_batches                          | import_batches_pkey                                          |        0 | 8192 bytes
+ import_change_logs                      | import_change_logs_importBatchId_rollbackStatus_sequence_idx |        0 | 8192 bytes
+ import_change_logs                      | import_change_logs_importBatchId_sequence_key                |        0 | 8192 bytes
+ import_change_logs                      | import_change_logs_rowProgressId_idx                         |        0 | 8192 bytes
+ import_change_logs                      | import_change_logs_entityType_entityId_idx                   |        0 | 8192 bytes
+ import_change_logs                      | import_change_logs_ccmId_createdAt_idx                       |        0 | 8192 bytes
+ import_change_logs                      | import_change_logs_pkey                                      |        0 | 8192 bytes
+ import_row_errors                       | import_row_errors_pkey                                       |        0 | 8192 bytes
+ import_row_progress                     | import_row_progress_importBatchId_rowNumber_key              |        0 | 8192 bytes
+ import_row_progress                     | import_row_progress_importBatchId_status_idx                 |        0 | 8192 bytes
+ import_row_progress                     | import_row_progress_pkey                                     |        0 | 8192 bytes
+ master_call_lists                       | master_call_lists_vehicleId_idx                              |        0 | 384 kB
+ master_call_lists                       | master_call_lists_pkey                                       |        0 | 384 kB
+ monthly_customer_data_entries           | monthly_customer_data_entries_datasetId_mobileNumber_idx     |        0 | 176 kB
+ monthly_customer_data_entries           | monthly_customer_data_entries_pkey                           |        0 | 112 kB
+ monthly_customer_data_entries           | monthly_customer_data_entries_datasetId_dedupeKey_key        |        0 | 240 kB
+ monthly_customer_data_entries           | monthly_customer_data_entries_datasetId_vin_idx              |        0 | 200 kB
+ monthly_customer_data_import_row_errors | monthly_customer_data_import_row_errors_pkey                 |        0 | 8192 bytes
+ monthly_customer_data_imports           | monthly_customer_data_imports_pkey                           |        0 | 8192 bytes
+ monthly_customer_data_imports           | monthly_customer_data_imports_importBatchId_key              |        0 | 8192 bytes
+ monthly_customer_datasets               | monthly_customer_datasets_ccmUserId_year_month_key           |        0 | 16 kB
+ monthly_customer_datasets               | monthly_customer_datasets_ccmId_year_month_key               |        0 | 16 kB
+ monthly_customer_datasets               | monthly_customer_datasets_pkey                               |     2976 | 16 kB
+ physical_vehicles                       | physical_vehicles_lastServiceDate_idx                        |        2 | 232 kB
+ physical_vehicles                       | physical_vehicles_vin_key                                    |        2 | 920 kB
+ physical_vehicles                       | physical_vehicles_pkey                                       |   196550 | 728 kB
+ users                                   | users_username_key                                           |        0 | 16 kB
+ users                                   | users_email_key                                              |        0 | 16 kB
+ users                                   | users_pkey                                                   |   142223 | 16 kB
+ vehicle_ownership_history               | vehicle_ownership_history_pkey                               |        0 | 8192 bytes
+ vehicles                                | vehicles_id_ccmId_key                                        |        0 | 488 kB
+ vehicles                                | vehicles_pkey                                                |        0 | 384 kB
+ vehicles                                | vehicles_physicalVehicleId_idx                               |        0 | 376 kB
+ vehicles                                | vehicles_ccmId_registrationNumber_key                        |        1 | 632 kB
+ vehicles                                | vehicles_saleDate_idx                                        |        2 | 184 kB
+ vehicles                                | vehicles_physicalVehicleId_ccmId_key                         |        3 | 480 kB
+ vehicles                                | vehicles_id_physicalVehicleId_key                            |   209528 | 488 kB
+ vin_conflict_reviews                    | vin_conflict_reviews_pkey                                    |        0 | 8192 bytes
+ workshop_configurations                 | workshop_configurations_pkey                                 |        0 | 16 kB
+ workshop_visits                         | workshop_visits_id_physicalVehicleId_key                     |        0 | 2992 kB
+ workshop_visits                         | workshop_visits_id_vehicleId_key                             |        0 | 2992 kB
+ workshop_visits                         | workshop_visits_ccmId_normalizedRepairOrderNo_key            |        0 | 4976 kB
+ workshop_visits                         | workshop_visits_pkey                                         |    10898 | 2320 kB
+ workshop_visits                         | workshop_visits_physicalVehicleId_idx                        |    98193 | 888 kB
+(73 rows)
+
+             table             | seq_scan | seq_tup_read | idx_scan 
+-------------------------------+----------+--------------+----------
+ workshop_visits               |       14 |       375000 |   109091
+ call_logs                     |       11 |       100000 |        2
+ vehicles                      |       15 |        60000 |   209534
+ physical_vehicles             |        7 |        46560 |   196554
+ free_service_milestones       |       10 |        34548 |        1
+ master_call_lists             |        5 |        24000 |        0
+ allocations                   |        5 |        20000 |        0
+ follow_ups                    |        9 |        20000 |        0
+ customers                     |        4 |        10000 |   164976
+ appointments                  |        6 |         5000 |        0
+ monthly_customer_data_entries |        9 |         2976 |        0
+ users                         |       11 |          138 |   142223
+ monthly_customer_datasets     |        5 |           48 |     2976
+ import_row_errors             |        2 |            0 |        0
+ workshop_configurations       |        1 |            0 |        0
+(15 rows)
+
+                                                          QUERY PLAN                                                           
+-------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=287.01..287.01 rows=1 width=221)
+   ->  Sort  (cost=287.01..287.01 rows=1 width=221)
+         Sort Key: "scheduledAt", id
+         ->  Seq Scan on appointments  (cost=0.00..287.00 rows=1 width=221)
+               Filter: (("ccmId" = 'x'::text) AND ("scheduledAt" >= now()) AND ("scheduledAt" < (now() + '7 days'::interval)))
+(5 rows)
+
+                                                      QUERY PLAN                                                       
+-----------------------------------------------------------------------------------------------------------------------
+ Seq Scan on appointments  (cost=0.00..287.00 rows=1 width=221)
+   Filter: (("assigneeId" = 'x'::text) AND ("scheduledAt" >= now()) AND ("scheduledAt" < (now() + '1 day'::interval)))
+(2 rows)
+
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
+ Limit  (cost=625.19..625.32 rows=50 width=177)
+   ->  Sort  (cost=625.19..650.19 rows=10000 width=177)
+         Sort Key: "createdAt" DESC, id DESC
+         ->  Seq Scan on customers  (cost=0.00..293.00 rows=10000 width=177)
+(4 rows)
+
+                                                 QUERY PLAN                                                  
+-------------------------------------------------------------------------------------------------------------
+ Index Scan using "master_call_lists_vehicleId_idx" on master_call_lists  (cost=0.29..8.30 rows=1 width=132)
+   Index Cond: ("vehicleId" = 'x'::text)
+(2 rows)
+
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
+ HashAggregate  (cost=3269.00..3370.76 rows=10176 width=18)
+   Group Key: "physicalVehicleId"
+   ->  Seq Scan on workshop_visits  (cost=0.00..2894.00 rows=75000 width=18)
+(3 rows)
+
+                                            QUERY PLAN                                             
+---------------------------------------------------------------------------------------------------
+ Index Scan using "call_logs_ccmId_createdAt_idx" on call_logs  (cost=0.29..8.15 rows=1 width=235)
+   Index Cond: (("ccmId" = 'x'::text) AND ("createdAt" >= (now() - '1 day'::interval)))
+(2 rows)
+
+                                                QUERY PLAN                                                
+----------------------------------------------------------------------------------------------------------
+ Index Scan using "follow_ups_ccmId_source_status_idx" on follow_ups  (cost=0.29..21.20 rows=1 width=209)
+   Index Cond: (("ccmId" = 'x'::text) AND (status = 'pending'::text))
+(2 rows)
+

@@ -25,6 +25,48 @@ export function paginateRecords(records, { limit, offset }) {
   };
 }
 
+// Due-list order: due date, then record id as the unique tie-breaker.
+export function compareByDueDateThenId(left, right) {
+  return left.dueDate - right.dueDate || String(left.id).localeCompare(String(right.id));
+}
+
+export function encodeDueCursor(record) {
+  return Buffer.from(JSON.stringify([new Date(record.dueDate).toISOString(), String(record.id)])).toString('base64url');
+}
+
+export function decodeDueCursor(value) {
+  try {
+    const [dueDate, id] = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'));
+    const date = new Date(dueDate);
+    if (typeof id !== 'string' || !id || Number.isNaN(date.getTime())) return null;
+    return { dueDate: date, id };
+  } catch {
+    return null;
+  }
+}
+
+// Keyset pagination over records already sorted by compareByDueDateThenId: returns the records strictly
+// after the cursor, so a page never repeats or skips rows even if earlier rows change between requests.
+// `offset` is still reported (the position of the first returned row) for clients that page by offset.
+export function paginateByCursor(records, { limit, cursor }) {
+  let start = 0;
+  let high = records.length;
+  while (start < high) {
+    const middle = (start + high) >> 1;
+    if (compareByDueDateThenId(records[middle], cursor) > 0) high = middle;
+    else start = middle + 1;
+  }
+  const page = records.slice(start, start + limit);
+  return {
+    records: page,
+    total: records.length,
+    limit,
+    offset: start,
+    hasMore: start + page.length < records.length,
+    nextCursor: start + page.length < records.length ? encodeDueCursor(page.at(-1)) : null,
+  };
+}
+
 export function filterServiceListRecords(records, query = {}) {
   const search = String(query.search || '').trim().toLocaleLowerCase();
   const dueCategory = String(query.dueCategory || '').trim();

@@ -1,7 +1,3 @@
-# Lakshmi Hyundai CRM
-
-Lakshmi Hyundai CRM is an internal customer and workshop management application for Hyundai dealership service operations. It supports customer and vehicle records, repair-order history, service follow-ups, calls, appointments, allocations, imports, performance analytics, and PDF reports.
-
 ## Technology stack
 
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)
@@ -14,6 +10,13 @@ Lakshmi Hyundai CRM is an internal customer and workshop management application 
 ![ESLint](https://img.shields.io/badge/ESLint-Linting-4B32C3?logo=eslint&logoColor=white)
 
 **Also used:** React Router, Axios, Recharts, Lucide React, TanStack React Virtual, bcrypt, PDFKit, CSV Parse, ExcelJS, and Node's built-in test runner.
+
+
+
+# Lakshmi Hyundai CRM
+
+Lakshmi Hyundai CRM is an internal customer and workshop management application for Hyundai dealership service operations. It supports customer and vehicle records, repair-order history, service follow-ups, calls, appointments, allocations, imports, performance analytics, and PDF reports.
+
 
 ## Repository structure
 

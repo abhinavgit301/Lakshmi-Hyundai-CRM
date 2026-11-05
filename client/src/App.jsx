@@ -2,8 +2,10 @@ import { Fragment, lazy, Suspense, useCallback, useEffect, useRef, useState } fr
 import { useLocation, useNavigate, useNavigationType } from 'react-router-dom';
 import { Activity, ArrowLeft, BarChart3, CalendarDays, CalendarPlus2, ChevronDown, ClipboardList, Clock3, Download, Gift, LayoutDashboard, ListFilter, LogOut, Plus, Upload, UserCog, UserRoundPlus, UsersRound } from 'lucide-react';
 import api from './lib/api.js';
+import usePickerCustomers from './hooks/usePickerCustomers.js';
 import { listCache } from './lib/listCache.js';
 import { beginRequest, isCanceled } from './lib/requestControl.js';
+import { appointmentWindowFor, fetchAppointmentWindow, isInWindow, upcomingDayKeys } from './lib/appointmentRange.js';
 
 import { SectionSkeleton } from './components/Skeletons.jsx';
 import AccordionFilters from './components/AccordionFilters.jsx';
@@ -248,7 +250,11 @@ function App() {
     demands: '',
     ccmId: '',
   });
+  // Only the appointments inside the visible schedule range; dashboards use server-supplied today lists.
   const [appointments, setAppointments] = useState([]);
+  const appointmentRequestRef = useRef({});
+  const appointmentRangeRef = useRef({ requestedKey: null, loaded: null, inFlight: false });
+  const loadAppointmentWindowRef = useRef(() => {});
   const [allocationCres, setAllocationCres] = useState([]);
   const [freeServiceCres, setFreeServiceCres] = useState([]);
   const [allocationsLoading, setAllocationsLoading] = useState(false);
@@ -305,6 +311,7 @@ function App() {
   const [masterListTeam, setMasterListTeam] = useState('');
   const masterListRequestRef = useRef(0);
   const masterListControllerRef = useRef({});
+  const dueControllerRef = useRef({});
   const masterListLoadMoreRef = useRef(false);
   const dueRequestRef = useRef({});
   const dueLoadMoreRef = useRef({});
@@ -343,6 +350,21 @@ function App() {
   const [appointmentError, setAppointmentError] = useState('');
   const [appointmentMessage, setAppointmentMessage] = useState('');
   const [appointmentForm, setAppointmentForm] = useState({ customerId: '', vehicleId: '', customerName: '', vehicleName: '', scheduledAt: '' });
+  const appointmentWindowKey = appointmentWindowFor([...upcomingDayKeys(7), selectedDay]).key;
+  const appointmentPicker = usePickerCustomers(
+    appointmentFormOpen && activeView === 'Appointments' && currentRole !== 'FREE_SERVICE_CRE',
+    appointmentForm.customerId ? (row) => row.id === appointmentForm.customerId : null,
+  );
+  const allocationPicker = usePickerCustomers(
+    allocationFormOpen && activeView === 'Allocations' && ['ADMIN', 'GM'].includes(currentRole),
+    allocationForm.vehicleId ? (row) => row.vehicles?.some((vehicle) => vehicle.id === allocationForm.vehicleId) : null,
+  );
+  // Refetch only when the visible range itself changes (for example after midnight); opening the view loads it explicitly.
+  useEffect(() => {
+    if (activeView !== 'Appointments' || !currentUser) return;
+    if (appointmentRangeRef.current.requestedKey === appointmentWindowKey) return;
+    loadAppointmentWindowRef.current(appointmentWindowFor([...upcomingDayKeys(7), selectedDay]));
+  }, [activeView, currentUser, appointmentWindowKey, selectedDay]);
   const [imports, setImports] = useState([]);
   const [importsLoading, setImportsLoading] = useState(false);
   const [importsMoreLoading, setImportsMoreLoading] = useState(false);
@@ -435,24 +457,21 @@ function App() {
 
     if (!initialLoadPromiseRef.current) {
       initialLoadPromiseRef.current = (async () => {
+        const summaryRequest = api.get('/dashboard/summary');
+        summaryRequest.catch(() => {});
         const userResponse = await api.get('/auth/me');
         const user = userResponse.data.user;
         const role = String(user?.role || '').toUpperCase();
         setCurrentUser(user);
-        const requests = [
-          api.get('/dashboard/summary'),
-          ['CCM', 'CRE', 'FREE_SERVICE_CRE', 'GM', 'ADMIN'].includes(role)
-            ? api.get('/appointments')
-            : Promise.resolve({ data: { appointments: [] } }),
-        ];
+        const requests = [summaryRequest];
         if (['CCM', 'CRE'].includes(role)) requests.push(api.get('/call-list?limit=50&offset=0'));
         if (role === 'CCM') requests.push(api.get('/teams'));
-        const [summaryResponse, appointmentResponse, masterResponse, teamResponse] = await Promise.all(requests);
-        return { user, role, summaryResponse, appointmentResponse, masterResponse, teamResponse };
+        const [summaryResponse, masterResponse, teamResponse] = await Promise.all(requests);
+        return { user, role, summaryResponse, masterResponse, teamResponse };
       })();
     }
     initialLoadPromiseRef.current.then(({
-      user, role, summaryResponse, appointmentResponse, masterResponse, teamResponse,
+      user, role, summaryResponse, masterResponse, teamResponse,
     }) => {
       if (!isMounted) return;
       setCurrentUser(user);
@@ -475,7 +494,6 @@ function App() {
         { label: 'Calls today', value: summaryResponse.data.todaysCalls, change: `${summaryResponse.data.pendingFollowUps} follow-ups pending` },
         { label: 'Appointments', value: summaryResponse.data.appointmentCount, change: 'Today' },
       ]);
-      setAppointments(appointmentResponse.data.appointments || []);
       if (role === 'CCM') {
         api.get('/notifications/quota').then((response) => {
           if (isMounted) setQuotaNotices(response.data);
@@ -541,6 +559,8 @@ function App() {
       setPerformance(null);
       setPerformanceCreId('');
       setCalls([]);
+      appointmentRequestRef.current.window?.abort();
+      appointmentRangeRef.current = { requestedKey: null, loaded: null, inFlight: false };
       setAppointments([]);
     }
   }
@@ -1178,6 +1198,7 @@ function App() {
 
   const loadDueData = useCallback(async (viewName, {
     offset = 0,
+    cursor = '',
     append = false,
     search = dueSearch,
     dueCategory = accordionDueCategoryFilter,
@@ -1190,9 +1211,10 @@ function App() {
     dueRequestRef.current[viewName] = requestId;
     if (append) setDueLoadingMore((current) => ({ ...current, [viewName]: true }));
     else {
+      dueControllerRef.current[`${viewName}:more`]?.abort();
       setDueLoading(true);
-      setDueRecords([]);
     }
+    const controller = beginRequest(dueControllerRef.current, `${viewName}:${append ? 'more' : 'page'}`);
     setDueError('');
     try {
       const params = new URLSearchParams({ limit: '50', offset: String(offset) });
@@ -1204,9 +1226,10 @@ function App() {
       }
       if (view.kind === 'due' && serviceListFilters.pastDueOnly === 'true') params.set('pastDue', 'true');
       if (view.kind === 'due') params.set('window', view.window);
+      if (view.kind === 'due' && cursor) params.set('cursor', cursor);
       const endpoint = `${view.kind === 'free' ? '/free-service' : view.kind === 'warranty' ? '/warranty' : '/call-list/due'}?${params}`;
-      const requests = [api.get(endpoint)];
-      if (!append && currentRole === 'CCM') requests.push(api.get('/teams'));
+      const requests = [api.get(endpoint, { signal: controller.signal })];
+      if (!append && currentRole === 'CCM') requests.push(api.get('/teams', { signal: controller.signal }));
       const [dueResponse, teamResponse] = await Promise.all(requests);
       if (requestId !== dueRequestRef.current[viewName]) return;
       const nextRecords = dueResponse.data.records || [];
@@ -1220,6 +1243,7 @@ function App() {
           total: dueResponse.data.total || 0,
           hasMore: dueResponse.data.hasMore === true,
           offset: dueResponse.data.offset || 0,
+          nextCursor: dueResponse.data.nextCursor || '',
         },
       }));
       setDueIssues(dueResponse.data.dataIssues || []);
@@ -1228,7 +1252,7 @@ function App() {
         setMasterListCcms(teamResponse.data.ccms || []);
       }
     } catch (error) {
-      if (requestId === dueRequestRef.current[viewName]) {
+      if (!isCanceled(error) && requestId === dueRequestRef.current[viewName]) {
         setDueError(error.response?.data?.message || 'Could not load this customer list.');
       }
     } finally {
@@ -1245,6 +1269,7 @@ function App() {
     if (dueLoadingMore[activeView] || !page?.hasMore) return;
     await loadDueData(activeView, {
       offset: page.offset + 50,
+      cursor: page.nextCursor || '',
       append: true,
     });
   }
@@ -1444,7 +1469,7 @@ function App() {
           scheduledAt,
         });
         const created = appointmentResponse.data.appointment;
-        setAppointments((current) => [...current, {
+        insertAppointmentIfVisible({
           id: created.id,
           customer: created.customer?.fullName || created.customerName,
           customerId: created.customerId,
@@ -1453,7 +1478,7 @@ function App() {
           scheduledAt: created.scheduledAt,
           status: created.status,
           assigneeName: currentUser?.name,
-        }].sort((left, right) => new Date(left.scheduledAt) - new Date(right.scheduledAt)));
+        });
       }
       setCallMessage(callForm.nextAction === 'followup' ? 'Call saved and follow-up scheduled.' : callForm.nextAction === 'appointment' ? 'Call saved and appointment booked.' : 'Call saved.');
       setCustomerPanel({ customerId: null, mode: 'options' });
@@ -1483,7 +1508,7 @@ function App() {
     setAppointmentMessage('');
     try {
       await api.delete(`/appointments/${appointment.id}`);
-      setAppointments((current) => current.filter((entry) => entry.id !== appointment.id));
+      patchAppointments((current) => current.filter((entry) => entry.id !== appointment.id));
       setAppointmentMessage('Appointment deleted successfully.');
       setAppointmentConfirmDelete(null);
       setDashboardData((prev) => {
@@ -1604,14 +1629,8 @@ function App() {
     navigate(routeByView.Dashboard, { replace: true });
     setLoading(true);
     try {
-      const [summaryRes, apptRes] = await Promise.all([
-        api.get('/dashboard/summary'),
-        ['CCM', 'CRE', 'GM', 'ADMIN'].includes(currentRole)
-          ? api.get('/appointments')
-          : Promise.resolve({ data: { appointments: [] } }),
-      ]);
+      const summaryRes = await api.get('/dashboard/summary');
       setDashboardData(summaryRes.data);
-      setAppointments(apptRes.data.appointments || []);
       if (currentRole === 'CCM') {
         api.get('/notifications/quota').then((res) => setQuotaNotices(res.data)).catch(() => {});
       }
@@ -1821,21 +1840,54 @@ function App() {
     }
   }
 
-  async function openAppointments() {
-    setActiveView('Appointments');
+  async function loadAppointmentWindow(window) {
+    const state = appointmentRangeRef.current;
+    const controller = beginRequest(appointmentRequestRef.current, 'window');
+    state.requestedKey = window.key;
+    state.inFlight = true;
     setAppointmentsLoading(true);
     setAppointmentError('');
     try {
-      const requests = [api.get('/appointments')];
-      if (currentRole !== 'FREE_SERVICE_CRE') requests.push(api.get('/customers'));
-      const [appointmentResponse, customerResponse] = await Promise.all(requests);
-      setAppointments(appointmentResponse.data.appointments || []);
-      setCustomers(customerResponse?.data?.customers || []);
+      const { rows, truncated } = await fetchAppointmentWindow(api.get.bind(api), window, { signal: controller.signal });
+      state.loaded = window;
+      setAppointments(rows);
+      if (truncated) setAppointmentError('This date range has more appointments than can be shown. Showing the earliest ones.');
     } catch (error) {
+      if (isCanceled(error)) return;
+      state.requestedKey = null;
       setAppointmentError(error.response?.data?.message || 'Could not load appointments. Sign in and try again.');
     } finally {
-      setAppointmentsLoading(false);
+      if (appointmentRequestRef.current.window === controller) {
+        state.inFlight = false;
+        setAppointmentsLoading(false);
+      }
     }
+  }
+
+  loadAppointmentWindowRef.current = loadAppointmentWindow;
+
+  async function openAppointments() {
+    setActiveView('Appointments');
+    await loadAppointmentWindow(appointmentWindowFor([...weekDays.map((day) => day.key), selectedDay]));
+  }
+
+  // After a write the visible range is patched in place instead of refetched. A load already in flight is
+  // restarted so its older response cannot overwrite the change.
+  function patchAppointments(change) {
+    const state = appointmentRangeRef.current;
+    if (state.inFlight) {
+      loadAppointmentWindow(appointmentWindowFor([...weekDays.map((day) => day.key), selectedDay]));
+      return;
+    }
+    setAppointments(change);
+  }
+
+  function insertAppointmentIfVisible(entry) {
+    const state = appointmentRangeRef.current;
+    if (!state.inFlight && !isInWindow(state.loaded, entry.scheduledAt)) return;
+    patchAppointments((current) => (current.some((existing) => existing.id === entry.id)
+      ? current
+      : [...current, entry].sort((left, right) => new Date(left.scheduledAt) - new Date(right.scheduledAt))));
   }
 
   async function openAllocations() {
@@ -1845,17 +1897,16 @@ function App() {
     setAllocationError('');
     setMasterListError('');
     try {
-      const requests = [api.get('/call-list?limit=50&offset=0'), api.get('/customers')];
+      const requests = [api.get('/call-list?limit=50&offset=0')];
       if (['ADMIN', 'GM', 'CCM'].includes(String(currentUser?.role || '').toUpperCase())) requests.push(api.get('/teams'));
       if (currentRole === 'CCM') requests.push(api.get('/allocations/pending-redistribution'));
-      const [recordsResponse, customerResponse, teamResponse, pendingResponse] = await Promise.all(requests);
+      const [recordsResponse, teamResponse, pendingResponse] = await Promise.all(requests);
       setCalls(recordsResponse.data.records || []);
       setMasterListPageInfo({
         total: recordsResponse.data.total || 0,
         hasMore: recordsResponse.data.hasMore === true,
         offset: recordsResponse.data.offset || 0,
       });
-      setCustomers(customerResponse.data.customers || []);
       setAllocationCres(teamResponse?.data?.cres || []);
       setMasterListCcms(teamResponse?.data?.ccms || []);
       setPendingRedistribution(pendingResponse?.data || { pendingCustomers: 0, activeCreCount: 0 });
@@ -2081,7 +2132,7 @@ function App() {
       const [, callListResponse, customersResponse] = await Promise.all([
         refreshImportHistory(),
         api.get('/call-list?limit=50&offset=0'),
-        api.get('/customers'),
+        api.get(`/customers?limit=${CUSTOMER_PAGE_SIZE}&offset=0`),
       ]);
       setCalls(callListResponse.data.records || []);
       setMasterListPageInfo({
@@ -2090,6 +2141,7 @@ function App() {
         offset: callListResponse.data.offset || 0,
       });
       setCustomers(customersResponse.data.customers || []);
+      setCustomersPageInfo({ total: customersResponse.data.total || 0, hasMore: customersResponse.data.hasMore === true });
       await refreshDashboardSummary();
     } catch (error) {
       const message = error.response?.data?.message || 'Could not refresh data after rollback.';
@@ -2162,7 +2214,7 @@ function App() {
       const [, callListResponse, customersResponse] = await Promise.all([
         refreshImportHistory(),
         api.get('/call-list?limit=50&offset=0'),
-        api.get('/customers'),
+        api.get(`/customers?limit=${CUSTOMER_PAGE_SIZE}&offset=0`),
       ]);
       setCalls(callListResponse.data.records || []);
       setMasterListPageInfo({
@@ -2171,6 +2223,7 @@ function App() {
         offset: callListResponse.data.offset || 0,
       });
       setCustomers(customersResponse.data.customers || []);
+      setCustomersPageInfo({ total: customersResponse.data.total || 0, hasMore: customersResponse.data.hasMore === true });
       await refreshDashboardSummary();
     } catch (error) {
       const message = error.response?.data?.message || 'Could not complete permanent deletion.';
@@ -2221,7 +2274,7 @@ function App() {
         scheduledAt: new Date(appointmentForm.scheduledAt).toISOString(),
       });
       const created = response.data.appointment;
-      setAppointments((current) => [...current, {
+      insertAppointmentIfVisible({
         id: created.id,
         customer: created.customer?.fullName || created.customerName,
         customerId: created.customerId,
@@ -2232,7 +2285,7 @@ function App() {
         time: new Date(created.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         status: created.status,
         confirmationCall: created.confirmationCall,
-      }].sort((left, right) => new Date(left.scheduledAt) - new Date(right.scheduledAt)));
+      });
       setAppointmentForm({ customerId: '', vehicleId: '', customerName: '', vehicleName: '', scheduledAt: '' });
       setAppointmentFormOpen(false);
       setAppointmentMessage('Appointment booked.');
@@ -2247,7 +2300,7 @@ function App() {
     setAppointmentError('');
     try {
       await api.patch(`/appointments/${appointmentId}`, { status });
-      setAppointments((current) => current.map((appointment) =>
+      patchAppointments((current) => current.map((appointment) =>
         appointment.id === appointmentId ? { ...appointment, status } : appointment,
       ));
     } catch (error) {
@@ -2316,7 +2369,7 @@ function App() {
 
   const canCreateCustomer = ['ADMIN', 'GM', 'CCM'].includes(String(currentUser?.role || '').toUpperCase());
   const canImport = canCreateCustomer;
-  const allocationVehicles = customers.flatMap((customer) => (customer.vehicles || []).map((vehicle) => ({
+  const allocationVehicles = allocationPicker.customers.flatMap((customer) => (customer.vehicles || []).map((vehicle) => ({
     ...vehicle,
     customerName: customer.name || customer.fullName,
     customerCcmId: customer.ccmId,
@@ -3311,7 +3364,13 @@ function App() {
               currentRole={currentRole}
               currentUser={currentUser}
               customerPanel={customerPanel}
-              customers={customers}
+              customers={allocationPicker.customers}
+              customerSearch={allocationPicker.search}
+              setCustomerSearch={allocationPicker.setSearch}
+              customersLoading={allocationPicker.loading}
+              customersError={allocationPicker.error}
+              customersHasMore={allocationPicker.hasMore}
+              loadMoreCustomers={allocationPicker.loadMore}
               masterListCcms={masterListCcms}
               masterListError={masterListError}
               masterListLoadingMore={masterListLoadingMore}
@@ -3420,7 +3479,13 @@ function App() {
               changeAppointmentStatus={changeAppointmentStatus}
               currentRole={currentRole}
               customerPanel={customerPanel}
-              customers={customers}
+              customers={appointmentPicker.customers}
+              customerSearch={appointmentPicker.search}
+              setCustomerSearch={appointmentPicker.setSearch}
+              customersLoading={appointmentPicker.loading}
+              customersError={appointmentPicker.error}
+              customersHasMore={appointmentPicker.hasMore}
+              loadMoreCustomers={appointmentPicker.loadMore}
               dayAppointments={dayAppointments}
               deleteAppointment={deleteAppointment}
               openCustomerProfile={openCustomerProfile}
@@ -3538,7 +3603,6 @@ function App() {
             <Suspense fallback={<SectionSkeleton />}>
               <CreDashboard
                 appointmentDeletingId={appointmentDeletingId}
-                appointments={appointments}
                 callError={callError}
                 canAccessFreeService={canAccessFreeService}
                 canAccessWarranty={canAccessWarranty}
@@ -3559,7 +3623,6 @@ function App() {
               <CcmDashboard
                 allocationCres={allocationCres}
                 appointmentDeletingId={appointmentDeletingId}
-                appointments={appointments}
                 callError={callError}
                 dashboardData={dashboardData}
                 deleteAppointment={deleteAppointment}
@@ -3576,7 +3639,6 @@ function App() {
             ) : currentRole === 'GM' ? (
             <Suspense fallback={<SectionSkeleton />}>
               <GmDashboard
-                appointments={appointments}
                 dashboardData={dashboardData}
                 openAllocations={openAllocations}
                 openImports={openImports}

@@ -644,9 +644,14 @@ test('Customer list is slim while the single-customer endpoint keeps full repair
   });
   const ids = Array.from({ length: 5 }, (_, index) => `customer-${index}`);
   const calls = [];
+  const originalCount = prisma.customer.count;
+  prisma.customer.count = async () => ids.length;
   prisma.customer.findMany = async (args) => {
     calls.push(args);
-    if (args.select) return ids.map((id) => ({ id }));
+    if (args.select) {
+      const start = args.skip ?? 0;
+      return ids.slice(start, args.take === undefined ? undefined : start + args.take).map((id) => ({ id }));
+    }
     return args.where.AND[1].id.in.map(rowFor);
   };
   prisma.user.findMany = async () => [{ ccmId: 'ccm-a', dealerCode: 'D1' }];
@@ -686,6 +691,7 @@ test('Customer list is slim while the single-customer endpoint keeps full repair
     assert.equal(res.statusCode, 403);
   } finally {
     prisma.customer.findMany = original;
+    prisma.customer.count = originalCount;
     prisma.user.findMany = originalUser;
   }
 });

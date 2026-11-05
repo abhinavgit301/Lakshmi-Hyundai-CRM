@@ -1,0 +1,9 @@
+{
+  "want": "Etc/UTC",
+  "connections": 6,
+  "verified": 6,
+  "wrong": 0,
+  "observed": {
+    "Etc/UTC": 6
+  }
+}

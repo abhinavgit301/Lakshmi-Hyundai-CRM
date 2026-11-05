@@ -1,0 +1,257 @@
+[
+  {
+    "label": "ADMIN default",
+    "planning": 4.718,
+    "execution": 42.917,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m"
+    ],
+    "indexScans": 0,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 1791kB",
+      "Sort Method: quicksort  Memory: 947kB"
+    ],
+    "joins": 1,
+    "topBuffers": "Buffers: shared hit=258"
+  },
+  {
+    "label": "ADMIN dueCategory=1y",
+    "planning": 2.858,
+    "execution": 100.087,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on vehicles v"
+    ],
+    "indexScans": 1,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 1791kB",
+      "Sort Method: quicksort  Memory: 30kB"
+    ],
+    "joins": 3,
+    "topBuffers": "Buffers: shared hit=38225"
+  },
+  {
+    "label": "ADMIN search=test",
+    "planning": 0.805,
+    "execution": 166.658,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on vehicles v"
+    ],
+    "indexScans": 1,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 2267kB",
+      "Sort Method: quicksort  Memory: 947kB"
+    ],
+    "joins": 3,
+    "topBuffers": "Buffers: shared hit=38230"
+  },
+  {
+    "label": "GM default",
+    "planning": 2.399,
+    "execution": 19.552,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on users u"
+    ],
+    "indexScans": 0,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 979kB",
+      "Sort Method: quicksort  Memory: 507kB"
+    ],
+    "joins": 2,
+    "topBuffers": "Buffers: shared hit=245"
+  },
+  {
+    "label": "GM dueCategory=1y",
+    "planning": 0.449,
+    "execution": 54.456,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on users u",
+      "->  Seq Scan on vehicles v"
+    ],
+    "indexScans": 1,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 979kB",
+      "Sort Method: quicksort  Memory: 28kB"
+    ],
+    "joins": 4,
+    "topBuffers": "Buffers: shared hit=21602"
+  },
+  {
+    "label": "GM search=test",
+    "planning": 0.652,
+    "execution": 96.688,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on users u",
+      "->  Seq Scan on vehicles v"
+    ],
+    "indexScans": 1,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 1245kB",
+      "Sort Method: quicksort  Memory: 507kB"
+    ],
+    "joins": 4,
+    "topBuffers": "Buffers: shared hit=21602"
+  },
+  {
+    "label": "CCM default",
+    "planning": 2.331,
+    "execution": 18.173,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on vehicles v",
+      "->  Seq Scan on allocations a"
+    ],
+    "indexScans": 0,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 568kB",
+      "Sort Method: quicksort  Memory: 25kB",
+      "Sort Method: quicksort  Memory: 285kB"
+    ],
+    "joins": 2,
+    "topBuffers": "Buffers: shared hit=685"
+  },
+  {
+    "label": "CCM dueCategory=1y",
+    "planning": 0.554,
+    "execution": 31.613,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on vehicles v"
+    ],
+    "indexScans": 1,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 568kB",
+      "Sort Method: quicksort  Memory: 26kB"
+    ],
+    "joins": 3,
+    "topBuffers": "Buffers: shared hit=13126"
+  },
+  {
+    "label": "CCM search=test",
+    "planning": 1.821,
+    "execution": 53.291,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on vehicles v",
+      "->  Seq Scan on vehicles v_1",
+      "->  Seq Scan on allocations a"
+    ],
+    "indexScans": 1,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 727kB",
+      "Sort Method: quicksort  Memory: 25kB",
+      "Sort Method: quicksort  Memory: 285kB"
+    ],
+    "joins": 4,
+    "topBuffers": "Buffers: shared hit=13567"
+  },
+  {
+    "label": "CRE default",
+    "planning": 0.23,
+    "execution": 3.177,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m"
+    ],
+    "indexScans": 0,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 190kB",
+      "Sort Method: quicksort  Memory: 105kB"
+    ],
+    "joins": 1,
+    "topBuffers": "Buffers: shared hit=244"
+  },
+  {
+    "label": "CRE dueCategory=1y",
+    "planning": 0.322,
+    "execution": 10.623,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on vehicles v"
+    ],
+    "indexScans": 1,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 25kB",
+      "Sort Method: quicksort  Memory: 190kB",
+      "Sort Method: quicksort  Memory: 25kB"
+    ],
+    "joins": 3,
+    "topBuffers": "Buffers: shared hit=4272"
+  },
+  {
+    "label": "CRE search=test",
+    "planning": 0.579,
+    "execution": 18.17,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on vehicles v"
+    ],
+    "indexScans": 1,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 238kB",
+      "Sort Method: quicksort  Memory: 105kB"
+    ],
+    "joins": 3,
+    "topBuffers": "Buffers: shared hit=4272"
+  },
+  {
+    "label": "CCM repairType=Paid",
+    "planning": 5.214,
+    "execution": 72.217,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on vehicles v",
+      "->  Seq Scan on monthly_customer_data_entries en",
+      "->  Seq Scan on monthly_customer_datasets d",
+      "->  Seq Scan on allocations a",
+      "->  Seq Scan on vehicles v_1",
+      "->  Seq Scan on allocations a_1"
+    ],
+    "indexScans": 1,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 818kB",
+      "Sort Method: quicksort  Memory: 25kB",
+      "Sort Method: quicksort  Memory: 71kB",
+      "Sort Method: quicksort  Memory: 276kB",
+      "Sort Method: quicksort  Memory: 25kB",
+      "Sort Method: quicksort  Memory: 58kB"
+    ],
+    "joins": 9,
+    "topBuffers": "Buffers: shared hit=13852"
+  },
+  {
+    "label": "ADMIN pastDue",
+    "planning": 0.656,
+    "execution": 116.497,
+    "seqScans": [
+      "->  Seq Scan on master_call_lists m",
+      "->  Seq Scan on vehicles v",
+      "->  Seq Scan on monthly_customer_data_entries en",
+      "->  Seq Scan on monthly_customer_datasets d"
+    ],
+    "indexScans": 1,
+    "sorts": [
+      "Sort Method: quicksort  Memory: 26kB",
+      "Sort Method: quicksort  Memory: 2537kB",
+      "Sort Method: quicksort  Memory: 259kB",
+      "Sort Method: quicksort  Memory: 111kB"
+    ],
+    "joins": 6,
+    "topBuffers": "Buffers: shared hit=38308"
+  }
+]

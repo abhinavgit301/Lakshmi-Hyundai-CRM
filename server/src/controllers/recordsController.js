@@ -4,7 +4,7 @@ import { appointmentVisibilityWhere } from '../utils/appointmentAccess.js';
 import { evaluateRepairOrderRow } from '../utils/businessRules.js';
 import { creCustomerWhere, creVehicleWhere, workshopVisitVisibilityWhere } from '../utils/creAccess.js';
 import { normalizeVin } from '../utils/roleAccess.js';
-import { addMonths, classifyServiceDue, getLatestServiceDate, getYearlyDueDate, parseStoredDate } from '../utils/serviceDue.js';
+import { addMonths, classifyServiceDue, dueCohortServiceDateRanges, getLatestServiceDate, getYearlyDueDate, parseStoredDate } from '../utils/serviceDue.js';
 import {
   normalizeSaleDate,
   countRemainingFreeServiceMilestones,
@@ -22,11 +22,13 @@ import { addCanonicalMasterCallListEntry, buildAllocationQueueRecords, findCanon
 import { allowedServiceSources, canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { classifyMasterRepairType } from '../utils/repairTypes.js';
 import { filterMasterCallListRecords, validateMasterCallListFilters } from '../utils/masterCallListFilters.js';
-import { filterServiceListRecords, paginateRecords, parsePagination } from '../utils/pagination.js';
+import { isMasterCallListSqlEnabled, runMasterCallListPagePrisma } from '../utils/masterCallListSql.js';
+import { compareByDueDateThenId, decodeDueCursor, encodeDueCursor, filterServiceListRecords, paginateByCursor, paginateRecords, parsePagination } from '../utils/pagination.js';
 import { buildRepairOrderKey, normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
 import { latestWorkshopVisitOrderBy } from '../utils/workshopVisitOrdering.js';
 import { addOriginatingDealerCodes, getOriginatingDealerCodeMap } from '../utils/serviceHistoryDealerCodes.js';
 import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
+import { cachedCallList, cacheScopeCcm, scopeCacheInvalidation, withCachedResponse } from '../utils/callListCache.js';
 
 const CALL_LIST_QUERY_CHUNK_SIZE = 100;
 const RELATED_ID_QUERY_CHUNK_SIZE = 500;
@@ -270,7 +272,16 @@ export function operationalReadScope(user) {
   };
 }
 
-export async function getDashboardSummary(req, res) {
+const cachedCreDashboardSummary = withCachedResponse('dashboard-cre', loadDashboardSummary, { kind: 'workflow' });
+
+// Only the CRE dashboard is cached: it loads the CRE's whole due cohort. The `workflow` kind is
+// cleared by every write that can change calls, follow-ups, appointments, allocations or visits.
+export function getDashboardSummary(req, res) {
+  if (normalizeRole(req.user?.role) !== 'CRE') return loadDashboardSummary(req, res);
+  return cachedCreDashboardSummary(req, res);
+}
+
+async function loadDashboardSummary(req, res) {
   const user = req.user;
   const role = normalizeRole(user?.role);
   const now = new Date();
@@ -1053,15 +1064,121 @@ export async function getCallList(req, res) {
   const paginationResult = parsePagination(req.query);
   if (paginationResult.error) return res.status(400).json({ message: paginationResult.error });
   const role = normalizeRole(req.user?.role);
+  if (isMasterCallListSqlEnabled()) {
+    const requestedCcmId = ['ADMIN', 'GM'].includes(role) ? String(req.query.ccmId || '').trim() : '';
+    const cacheKey = `${req.user?.id}|${role}|${req.user?.ccmId || ''}|${JSON.stringify(req.query)}`;
+    let sqlResult;
+    try {
+      sqlResult = await cachedCallList(cacheKey, async () => {
+        const page = await loadCallListPageTwoPhase({
+          user: req.user,
+          requestedCcmId,
+          filters: validated.filters,
+          pagination: paginationResult,
+          runPage: (params) => runMasterCallListPagePrisma(prisma, params),
+        });
+        // Not cached: a forbidden team request must be re-evaluated against the current GM team list.
+        if (page.error) throw Object.assign(new Error(page.error), { forbidden: true });
+        return page;
+      }, { kind: 'master', ccmId: cacheScopeCcm(req.user) });
+    } catch (error) {
+      if (error?.forbidden) return res.status(403).json({ message: error.message });
+      throw error;
+    }
+    return res.json(sqlResult);
+  }
   const scope = await resolveMasterCallListVisibility(
     req.user,
     ['ADMIN', 'GM'].includes(role) ? String(req.query.ccmId || '').trim() : '',
   );
   if (scope.error) return res.status(403).json({ message: scope.error });
+  const cacheKey = `${req.user?.id}|${role}|${req.user?.ccmId || ''}|${JSON.stringify(req.query)}`;
+  const response = await cachedCallList(cacheKey, () => loadCallListPageResponse({
+    user: req.user,
+    scope,
+    pagination: paginationResult,
+    filters: validated.filters,
+  }), { kind: 'master', ccmId: cacheScopeCcm(req.user) });
+  return res.json(response);
+}
+
+// SQL-backed page selection (MASTER_CALL_LIST_SQL_ENABLED). `runPage` executes the page statement and returns
+// { forbidden, total, ids, queueIds }; only those ids are then loaded and enriched by the existing record builder.
+export async function loadCallListPageTwoPhase({
+  user,
+  requestedCcmId = '',
+  filters,
+  pagination,
+  now = new Date(),
+  today = now,
+  options = {},
+  runPage,
+}) {
+  const role = normalizeRole(user?.role);
+  if (role === 'FREE_SERVICE_CRE') return { error: 'Free-Service CRE accounts cannot access the Master Call List.' };
+  const page = await runPage({ user, filters, pagination, requestedCcmId, now, today, options });
+  if (page.forbidden) return { error: 'You are not permitted to view this CCM team.' };
+
+  let allocationQueueRecords = [];
+  if (role === 'CCM') {
+    const ccmId = user?.ccmId || 'no-access';
+    const unassignedAllocations = await prisma.allocation.findMany({
+      where: { ccmId, status: 'assigned', creId: null },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        ccmId: true,
+        serviceType: true,
+        vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true, customer: { select: { id: true } } } },
+      },
+    });
+    allocationQueueRecords = buildAllocationQueueRecords([], unassignedAllocations, ccmId);
+  }
+
+  const queueIds = new Set(page.queueIds);
+  const masterIds = page.ids.filter((id) => !queueIds.has(id));
+  const byId = new Map();
+  if (masterIds.length) {
+    const roleScope = ['CCM', 'CRE'].includes(role) ? getVisibilityWhere(user) : {};
+    // Visibility is enforced again here; the id list narrows the load to the selected page only.
+    const detail = await loadCallListRecords(
+      { AND: [roleScope, { id: { in: masterIds } }] },
+      now,
+      user,
+      {
+        page: { limit: Number.MAX_SAFE_INTEGER, offset: 0 },
+        filters: { creId: '', dueCategory: '', repairType: '', search: '' },
+        allocationQueueRecords,
+      },
+    );
+    for (const record of detail.records) byId.set(record.id, record);
+  }
+  for (const record of allocationQueueRecords) byId.set(record.id, record);
+
+  // The SQL page and the record builder read the database separately. If a selected id cannot be built (a concurrent
+  // delete, or any divergence), fail loudly instead of returning a short or mis-counted page. Nothing is cached.
+  const missing = page.ids.filter((id) => !byId.has(id));
+  if (missing.length) {
+    throw Object.assign(
+      new Error(`Master Call List page could not be assembled: ${missing.length} selected record(s) were not loadable.`),
+      { code: 'MASTER_CALL_LIST_PAGE_INCOMPLETE', missingIds: missing },
+    );
+  }
+  const records = page.ids.map((id) => byId.get(id));
+  return {
+    records,
+    total: page.total,
+    limit: pagination.limit,
+    offset: pagination.offset,
+    hasMore: pagination.offset + records.length < page.total,
+  };
+}
+
+async function loadCallListPageResponse({ user, scope, pagination, filters }) {
   const memoryTracker = createCallListMemoryTracker();
   let allocationQueueRecords = [];
-  if (normalizeRole(req.user?.role) === 'CCM') {
-    const ccmId = req.user?.ccmId || 'no-access';
+  if (normalizeRole(user?.role) === 'CCM') {
+    const ccmId = user?.ccmId || 'no-access';
     const unassignedAllocations = await prisma.allocation.findMany({
       where: { ccmId, status: 'assigned', creId: null },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -1085,11 +1202,11 @@ export async function getCallList(req, res) {
   const response = await loadCallListRecords(
     scope.where,
     new Date(),
-    req.user,
+    user,
     {
       memoryTracker,
-      page: paginationResult,
-      filters: validated.filters,
+      page: pagination,
+      filters,
       allocationQueueRecords,
     },
   );
@@ -1099,7 +1216,7 @@ export async function getCallList(req, res) {
   memoryTracker.metrics.memory = sample;
   logCallListMemory('filtered', memoryTracker.metrics, memoryTracker.peak);
   logCallListMemory('response-ready', memoryTracker.metrics, memoryTracker.peak);
-  return res.json(response);
+  return response;
 }
 
 // The MasterCallList scope for one CRE's own due-list and performance figures: vehicles they
@@ -1121,9 +1238,31 @@ export async function loadDueRecords(where, dueWindow, asOf = new Date(), user =
   return dueWindow === '1y' ? cohorts.oneYear : cohorts.sixMonth;
 }
 
-// Both cohorts from a single load of the master call list.
-export async function loadDueCohorts(where, asOf = new Date(), user = null) {
-  return classifyDueCohorts(await loadCallListRecords(where, asOf, user), asOf);
+// Both cohorts from a single load of the master call list. With `useStoredLastServiceDate`, only vehicles
+// whose stored latest visit can place them in a cohort are loaded (plus any with a future-dated visit,
+// whose true latest past service date needs the full visit list); classifyDueCohorts still decides.
+export async function loadDueCohorts(where, asOf = new Date(), user = null, { useStoredLastServiceDate = false } = {}) {
+  const scopedWhere = useStoredLastServiceDate ? { AND: [where, dueCohortCandidateWhere(asOf)] } : where;
+  return classifyDueCohorts(await loadCallListRecords(scopedWhere, asOf, user), asOf);
+}
+
+export function dueCohortCandidateWhere(asOf) {
+  const { oneYear, sixMonth } = dueCohortServiceDateRanges(asOf);
+  return {
+    vehicle: {
+      is: {
+        physicalVehicle: {
+          is: {
+            OR: [
+              { lastServiceDate: oneYear },
+              { lastServiceDate: sixMonth },
+              { lastServiceDate: { gt: asOf } },
+            ],
+          },
+        },
+      },
+    },
+  };
 }
 
 export function classifyDueCohorts(records, asOf = new Date()) {
@@ -1137,7 +1276,7 @@ export function classifyDueCohorts(records, asOf = new Date()) {
       lastServiceDate,
       dueDate: addMonths(lastServiceDate, window === '1y' ? 12 : 6),
     }))
-    .sort((left, right) => left.dueDate - right.dueDate || String(left.id).localeCompare(String(right.id)));
+    .sort(compareByDueDateThenId);
   return { oneYear: cohort('1y'), sixMonth: cohort('6m') };
 }
 
@@ -1150,23 +1289,39 @@ export function countOverdueRecords(records, now = new Date()) {
 
 // Only the CRE's own assigned vehicles (or, for a CCM, their whole team), classified from the
 // latest dated repair order.
-export async function getDueCallList(req, res) {
+export const getDueCallList = withCachedResponse('due', loadDueCallListResponse);
+
+async function loadDueCallListResponse(req, res) {
   const dueWindow = req.query.window;
   if (!['1y', '6m'].includes(dueWindow)) {
     return res.status(400).json({ message: 'window must be 1y or 6m.' });
   }
   const paginationResult = parsePagination(req.query);
   if (paginationResult.error) return res.status(400).json({ message: paginationResult.error });
+  let cursor = null;
+  if (req.query.cursor) {
+    cursor = decodeDueCursor(req.query.cursor);
+    if (!cursor) return res.status(400).json({ message: 'cursor is not valid.' });
+  }
 
   const role = normalizeRole(req.user?.role);
   const where = role === 'CCM'
     ? { ccmId: req.user?.ccmId || 'no-access' }
     : creDueWhere(req.user?.id, req.user?.ccmId);
-  const due = await loadDueRecords(where, dueWindow, new Date(), req.user);
+  const cohortKey = `due-cohorts|${req.user?.id}|${role}|${req.user?.ccmId || ''}`;
+  const useStoredLastServiceDate = process.env.DUE_LIST_STORED_DATE_FILTER !== 'false';
+  const cohorts = await cachedCallList(
+    cohortKey,
+    () => loadDueCohorts(where, new Date(), req.user, { useStoredLastServiceDate }),
+    { kind: 'master', ccmId: cacheScopeCcm(req.user) },
+  );
+  const due = dueWindow === '1y' ? cohorts.oneYear : cohorts.sixMonth;
   const filtered = filterServiceListRecords(due, req.query);
   if (filtered.error) return res.status(400).json({ message: filtered.error });
   if (!paginationResult.hasPagination) return res.json({ records: filtered.records });
-  return res.json(paginateRecords(filtered.records, paginationResult));
+  if (cursor) return res.json(paginateByCursor(filtered.records, { limit: paginationResult.limit, cursor }));
+  const page = paginateRecords(filtered.records, paginationResult);
+  return res.json({ ...page, nextCursor: page.hasMore ? encodeDueCursor(page.records.at(-1)) : null });
 }
 
 export async function updateCallListAssignee(req, res) {
@@ -1256,6 +1411,7 @@ export async function updateCallListAssignee(req, res) {
   }
   if (!updated) return res.status(400).json({ message: 'Choose an active CRE assigned to your team.' });
 
+  scopeCacheInvalidation(res, { ccmIds: [entry.ccmId] });
   return res.json({
     record: {
       id: updated.record.id,
@@ -1701,23 +1857,127 @@ function customersForbidden(req, res) {
   return true;
 }
 
+const CUSTOMER_SEARCH_MAX_LENGTH = 200;
+
+function customerVehicleScope(user) {
+  const role = normalizeRole(user?.role);
+  if (role === 'CCM') return { ccmId: user?.ccmId || 'no-access' };
+  if (role === 'CRE') return creVehicleWhere(user);
+  return {};
+}
+
+// Case-insensitive contains match in PostgreSQL. Vehicle fields only match the vehicles the caller may see.
+function customerSearchWhere(search, user) {
+  if (!search) return null;
+  const contains = { contains: search, mode: 'insensitive' };
+  return {
+    OR: [
+      { fullName: contains },
+      { mobileNumber: contains },
+      { customerCode: contains },
+      {
+        vehicles: {
+          some: {
+            AND: [
+              customerVehicleScope(user),
+              { OR: [{ vin: contains }, { registrationNumber: contains }, { model: contains }] },
+            ],
+          },
+        },
+      },
+    ],
+  };
+}
+
+const CUSTOMER_LIST_ORDER = [{ createdAt: 'desc' }, { id: 'desc' }];
+
+// Light projection for selection controls: no visit history, only the fields a picker shows.
+async function loadCustomerPickerPage(user, where, pagination) {
+  const [rows, total] = await Promise.all([
+    prisma.customer.findMany({
+      where,
+      orderBy: CUSTOMER_LIST_ORDER,
+      skip: pagination.offset,
+      take: pagination.limit,
+      select: {
+        id: true,
+        fullName: true,
+        mobileNumber: true,
+        ccmId: true,
+        vehicles: {
+          where: customerVehicleScope(user),
+          select: { id: true, vin: true, model: true, registrationNumber: true, ccmId: true },
+        },
+      },
+    }),
+    prisma.customer.count({ where }),
+  ]);
+  return {
+    customers: rows.map(({ mobileNumber, vehicles, ...customer }) => ({
+      ...customer,
+      name: customer.fullName,
+      customerName: customer.fullName,
+      mobile: usableMobileNumber(mobileNumber),
+      vehicleCount: vehicles.length,
+      vehicles,
+    })),
+    total,
+  };
+}
+
 export async function getCustomers(req, res) {
   if (customersForbidden(req, res)) return undefined;
   const query = req.query || {};
   const pagination = Object.hasOwn(query, 'limit') || Object.hasOwn(query, 'offset') ? parsePagination(query) : null;
   if (pagination?.error) return res.status(400).json({ message: pagination.error });
+  const search = String(query.search || '').trim();
+  if (search.length > CUSTOMER_SEARCH_MAX_LENGTH) {
+    return res.status(400).json({ message: `search must be ${CUSTOMER_SEARCH_MAX_LENGTH} characters or fewer.` });
+  }
+  const picker = query.fields === 'picker';
+  if (query.fields !== undefined && !picker) return res.status(400).json({ message: 'fields must be picker.' });
+  if (picker && !pagination) return res.status(400).json({ message: 'The picker projection requires limit and offset.' });
+
+  const { where: scopeWhere } = customerReadScope(req.user);
+  const searchWhere = customerSearchWhere(search, req.user);
+  const where = searchWhere ? { AND: [scopeWhere, searchWhere] } : scopeWhere;
+
+  if (picker) {
+    const { customers, total } = await loadCustomerPickerPage(req.user, where, pagination);
+    return res.json({
+      customers,
+      total,
+      limit: pagination.limit,
+      offset: pagination.offset,
+      hasMore: pagination.offset + customers.length < total,
+    });
+  }
 
   const logMemory = createCustomerMemoryLogger();
   logMemory('start');
-  const { where } = customerReadScope(req.user);
   const loadBatch = createCustomerBatchLoader(req.user);
-  const allIds = [...new Set((await prisma.customer.findMany({
-    where,
-    select: { id: true },
-    orderBy: { createdAt: 'desc' },
-  })).map((customer) => customer.id))];
-  const pageIds = pagination ? allIds.slice(pagination.offset, pagination.offset + pagination.limit) : allIds;
-  logMemory('ids-loaded', { totalIds: allIds.length, pageIds: pageIds.length });
+  let pageIds;
+  let total;
+  if (pagination) {
+    [pageIds, total] = await Promise.all([
+      prisma.customer.findMany({
+        where,
+        select: { id: true },
+        orderBy: CUSTOMER_LIST_ORDER,
+        skip: pagination.offset,
+        take: pagination.limit,
+      }).then((rows) => rows.map((customer) => customer.id)),
+      prisma.customer.count({ where }),
+    ]);
+  } else {
+    pageIds = [...new Set((await prisma.customer.findMany({
+      where,
+      select: { id: true },
+      orderBy: CUSTOMER_LIST_ORDER,
+    })).map((customer) => customer.id))];
+    total = pageIds.length;
+  }
+  logMemory('ids-loaded', { totalIds: total, pageIds: pageIds.length });
 
   const customers = [];
   let batchNumber = 0;
@@ -1730,10 +1990,10 @@ export async function getCustomers(req, res) {
   return res.json({
     customers,
     ...(pagination ? {
-      total: allIds.length,
+      total,
       limit: pagination.limit,
       offset: pagination.offset,
-      hasMore: pagination.offset + pageIds.length < allIds.length,
+      hasMore: pagination.offset + pageIds.length < total,
     } : {}),
   });
 }
@@ -1746,18 +2006,84 @@ export async function getCustomerById(req, res) {
   return res.json({ customer });
 }
 
+const APPOINTMENT_STATUSES = new Set(['PENDING', 'CONFIRMED', 'RESCHEDULED', 'CANCELLED', 'NO_SHOW']);
+
+function parseAppointmentDate(value) {
+  if (value === undefined || value === '') return { value: undefined };
+  const parsed = new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? { error: true } : { value: parsed };
+}
+
+// Optional filters AND-ed onto the unchanged visibility scope, so they can only narrow results.
+function appointmentFilterWhere(query = {}) {
+  const from = parseAppointmentDate(query.from);
+  const to = parseAppointmentDate(query.to);
+  if (from.error || to.error) return { error: 'from and to must be valid dates.' };
+  const clauses = [];
+  if (from.value || to.value) {
+    clauses.push({ scheduledAt: { ...(from.value ? { gte: from.value } : {}), ...(to.value ? { lt: to.value } : {}) } });
+  }
+  const status = String(query.status || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+  if (status) {
+    if (!APPOINTMENT_STATUSES.has(status)) return { error: 'status is not a valid appointment status.' };
+    clauses.push({ status });
+  }
+  const search = String(query.search || '').trim().slice(0, 200);
+  if (search) {
+    const contains = { contains: search, mode: 'insensitive' };
+    clauses.push({
+      OR: [
+        { customerName: contains },
+        { vehicleName: contains },
+        { customer: { is: { fullName: contains } } },
+        { vehicle: { is: { OR: [{ vin: contains }, { registrationNumber: contains }, { model: contains }] } } },
+      ],
+    });
+  }
+  return { clauses };
+}
+
 export async function getAppointments(req, res) {
-  const rows = await prisma.appointment.findMany({
-    where: appointmentVisibilityWhere(req.user),
-    include: {
-      customer: { select: { id: true, fullName: true } },
-      vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
-      assignee: { select: { id: true, name: true } },
-    },
-    orderBy: { scheduledAt: 'asc' },
-  });
+  const pagination = parsePagination(req.query || {});
+  if (pagination.error) return res.status(400).json({ message: pagination.error });
+  const filters = appointmentFilterWhere(req.query || {});
+  if (filters.error) return res.status(400).json({ message: filters.error });
+
+  const visibility = appointmentVisibilityWhere(req.user);
+  const where = filters.clauses.length ? { AND: [visibility, ...filters.clauses] } : visibility;
+  const paged = pagination.hasPagination;
+  const [rows, total] = await Promise.all([
+    prisma.appointment.findMany({
+      where,
+      select: {
+        id: true,
+        customerId: true,
+        customerName: true,
+        vehicleId: true,
+        vehicleName: true,
+        scheduledAt: true,
+        status: true,
+        confirmationCall: true,
+        ccmId: true,
+        assigneeId: true,
+        assigneeNameSnapshot: true,
+        customer: { select: { fullName: true } },
+        vehicle: { select: { model: true } },
+        assignee: { select: { name: true } },
+      },
+      orderBy: [{ scheduledAt: 'asc' }, { id: 'asc' }],
+      ...(paged ? { skip: pagination.offset, take: pagination.limit } : {}),
+    }),
+    paged ? prisma.appointment.count({ where }) : Promise.resolve(null),
+  ]);
 
   return res.json({
+    ...(paged ? {
+      total,
+      limit: pagination.limit,
+      offset: pagination.offset,
+      hasMore: pagination.offset + rows.length < total,
+    } : {}),
     appointments: rows.map((appointment) => ({
       id: appointment.id,
       customer: appointment.customer?.fullName || appointment.customerName,

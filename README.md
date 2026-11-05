@@ -212,14 +212,6 @@ npm run prisma:generate
 npm run prisma:push
 ```
 
-Run backend tests with the approved local test database rather than a production `.env`:
-
-```powershell
-cd .\server
-$env:DATABASE_URL='postgresql://test:test@127.0.0.1:1/lh_import_rollback_test'
-npm test
-```
-
 Integration tests may require a separately configured test database. If a test fails due to missing mock data or an unavailable integration prerequisite, report that prerequisite rather than bypassing it.
 
 ## Security and operations

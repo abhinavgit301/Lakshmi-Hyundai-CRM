@@ -17,6 +17,10 @@ import { allowedServiceSources, canAccessServiceSource } from '../utils/creServi
 import { appointmentVisibilityWhere } from '../utils/appointmentAccess.js';
 import { scopeCacheInvalidation, withCachedResponse } from '../utils/callListCache.js';
 import { appointmentConversionRatePercent } from '../utils/performanceMetrics.js';
+import { addCallToAggregates } from '../utils/creCallAggregates.js';
+import { readCreCallCounts, readCreDailyRows } from '../utils/creCallAggregateReaders.js';
+import { describeSnapshot, isPerformanceAggregatesEnabled } from '../utils/performanceSnapshotState.js';
+import { getSnapshot, requestSnapshotRefresh } from '../services/performanceSnapshotService.js';
 import { parsePagination } from '../utils/pagination.js';
 import { classifyDueCohorts, countOverdueRecords, creDueWhere, loadCallListRecords } from './recordsController.js';
 
@@ -27,6 +31,17 @@ function normalizeRole(role) {
   if (value === 'CCM') return 'CCM';
   if (value === 'FREE_SERVICE_CRE' || value === 'FREE-SERVICE CRE') return 'FREE_SERVICE_CRE';
   return value;
+}
+
+function freeServiceCallScope(ccmId) {
+  const teamCcmId = ccmId || 'no-access';
+  return {
+    ccmId: teamCcmId,
+    OR: [
+      { vehicleId: null, customer: { is: { ccmId: teamCcmId } } },
+      { vehicle: { is: { ccmId: teamCcmId } } },
+    ],
+  };
 }
 
 async function findAccessibleCustomer(customerId, user, vehicleId = null) {
@@ -190,13 +205,68 @@ export async function getFreeServicePerformanceSummary(req, res) {
   }
   const { start, end } = monthRange;
   const selectedRange = performanceRange === 'month' ? monthRange : requestedDay;
-  const teamCallScope = {
-    ccmId: target.ccmId || 'no-access',
-    OR: [
-      { vehicleId: null, customer: { is: { ccmId: target.ccmId || 'no-access' } } },
-      { vehicle: { is: { ccmId: target.ccmId || 'no-access' } } },
-    ],
+  const respondFreeService = ({ dailyRows, callsThisMonth, selectedActivity, recentCalls, snapshot }) => res.json({
+    user: { id: target.id, name: target.name, role: 'FREE_SERVICE_CRE' },
+    performanceDate: performanceDateKey,
+    performanceRange,
+    dailyTargets: {
+      callsMade: { actual: selectedActivity.callsMade, target: DAILY_TARGETS.callsMade },
+      callsPickedUp: { actual: selectedActivity.callsPickedUp, target: DAILY_TARGETS.callsPickedUp },
+    },
+    callsThisMonth,
+    dailyPerformance: dailyRows,
+    recentCalls,
+    ...(snapshot ? { snapshot } : {}),
+  });
+  const teamCallScope = freeServiceCallScope(target.ccmId);
+  const recentCallsQuery = {
+    where: {
+      ...teamCallScope,
+      createdById: target.id,
+      callSource: 'FREE_SERVICE',
+      createdAt: { gte: selectedRange.start, lt: selectedRange.end },
+    },
+    include: {
+      customer: { select: { id: true, fullName: true, mobileNumber: true } },
+      vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    ...(performanceRange === 'day' ? { take: 6 } : {}),
   };
+
+  // Daily activity is immediate; this endpoint's month total is its persisted snapshot-tier metric.
+  if (isPerformanceAggregatesEnabled() && target.ccmId) {
+    const snapshotKey = {
+      creId: target.id,
+      ccmId: target.ccmId,
+      year,
+      month,
+      viewer: 'FREE_SERVICE_CRE',
+    };
+    const [dailyRows, recentCalls, snapshotRow] = await Promise.all([
+      readCreDailyRows({
+        userId: target.id, ccmId: target.ccmId, kind: 'TEAM', callSource: 'FREE_SERVICE', start, end,
+      }),
+      prisma.callLog.findMany(recentCallsQuery),
+      getSnapshot(snapshotKey),
+    ]);
+    const selectedRows = performanceRange === 'month'
+      ? dailyRows
+      : dailyRows.filter((row) => row.date === performanceDateKey);
+    const now = new Date();
+    const snapshot = describeSnapshot(snapshotRow, { now, isCurrentMonth: true });
+    if (['pending', 'dirty', 'stale'].includes(snapshot.status)) requestSnapshotRefresh(snapshotKey);
+    return respondFreeService({
+      dailyRows,
+      callsThisMonth: snapshotRow?.computedAt ? snapshotRow.callsThisMonth : null,
+      selectedActivity: {
+        callsMade: selectedRows.reduce((sum, row) => sum + row.callsMade, 0),
+        callsPickedUp: selectedRows.reduce((sum, row) => sum + row.callsPickedUp, 0),
+      },
+      recentCalls,
+      snapshot,
+    });
+  }
   const calls = await prisma.callLog.findMany({
     where: {
       ...teamCallScope,
@@ -253,7 +323,133 @@ export async function getFreeServicePerformanceSummary(req, res) {
   });
 }
 
+export async function computeFreeServiceCrePerformanceMetrics({ targetCre, year, month, now = new Date(), db = prisma }) {
+  const { start, end } = workshopMonthRange(year, month);
+  const ccmId = targetCre.ccmId || 'no-access';
+  const callsThisMonth = await db.callLog.count({
+    where: {
+      ...freeServiceCallScope(ccmId),
+      createdById: targetCre.id,
+      callSource: 'FREE_SERVICE',
+      createdAt: { gte: start, lt: end },
+    },
+  });
+  const current = workshopMonthOf(now);
+  const isCurrentMonth = current.year === year && current.month === month;
+  return {
+    callsThisMonth,
+    asOf: isCurrentMonth ? now : new Date(end.getTime() - 1),
+  };
+}
+
 const cachedCrePerformanceSummary = withCachedResponse('performance-cre', loadCrePerformanceSummary, { kind: 'workflow' });
+
+// Snapshot-tier metrics for one CRE and month, calculated with the same rules as the live summary above.
+// The snapshot refresh job calls this, so a stored snapshot always equals what the live path would return.
+// `viewer` is the role of the person looking at the CRE: a CCM sees every service category enabled, while a
+// CRE viewer is evaluated with the CRE's own (default-off) Free Service and Warranty flags, as the live path does.
+export async function computeCrePerformanceMetrics({ targetCre, viewer, year, month, now = new Date() }) {
+  const targetUser = {
+    id: targetCre.id,
+    role: 'CRE',
+    ccmId: targetCre.ccmId,
+    freeServiceEnabled: viewer === 'CCM' || targetCre.freeServiceEnabled === true,
+    warrantyEnabled: viewer === 'CCM' || targetCre.warrantyEnabled === true,
+  };
+  const { start: monthStart, end: monthEnd } = workshopMonthRange(year, month);
+  const current = workshopMonthOf(now);
+  const isCurrentMonth = current.year === year && current.month === month;
+  const asOf = isCurrentMonth ? now : new Date(monthEnd.getTime() - 1);
+
+  const latestMonthlyImport = await prisma.monthlyCustomerDataImport.findFirst({
+    where: {
+      status: 'completed',
+      addedRows: { gt: 0 },
+      dataset: { is: { ccmId: targetCre.ccmId, year, month } },
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true },
+  });
+  const cycleStart = latestMonthlyImport && latestMonthlyImport.createdAt > monthStart ? latestMonthlyImport.createdAt : monthStart;
+
+  const callVisibility = callLogVisibility(targetUser);
+  const ordinaryCallSources = allowedServiceSources(targetUser).filter((source) => source !== 'WARRANTY');
+  const monthFilter = {
+    ...callVisibility,
+    callSource: { in: ordinaryCallSources },
+    createdAt: { gte: cycleStart, lt: monthEnd },
+  };
+  const dueWhere = creDueWhere(targetCre.id, targetCre.ccmId);
+  const ccmScope = targetCre.ccmId || 'no-access';
+  const ownedVehicleScope = {
+    ccmId: ccmScope,
+    customer: { is: creCustomerWhere(targetUser) },
+    AND: [{ OR: [{ vehicleId: null }, { vehicle: { is: { ccmId: ccmScope, ...creVehicleWhere(targetUser) } } }] }],
+  };
+
+  const [callsThisMonth, customersReached, scopedRecords, pendingFollowUps, appointmentsSetThisMonth, missedWarrantyCases, lifetimeCalls, lifetimeAppointments] = await Promise.all([
+    prisma.callLog.count({ where: monthFilter }),
+    prisma.callLog.groupBy({ by: ['customerId'], where: monthFilter }),
+    loadCallListRecords(dueWhere, now, targetUser),
+    prisma.followUp.count({ where: { ...followUpVisibility(targetUser), status: 'pending' } }),
+    prisma.callLog.count({ where: { ...monthFilter, outcome: 'APPOINTMENT_SET' } }),
+    canAccessServiceSource(targetUser, 'WARRANTY')
+      ? findMissedWarrantyCases({
+        scope: dueWhere,
+        vehicleScope: viewer === 'CCM'
+          ? { ccmId: ccmScope }
+          : { ccmId: ccmScope, ...creVehicleWhere(targetUser) },
+        callScope: callVisibility,
+        year,
+        month,
+        now,
+      })
+      : Promise.resolve([]),
+    prisma.callLog.count({
+      where: {
+        createdById: targetCre.id,
+        callSource: { in: allowedServiceSources(targetUser) },
+        ...ownedVehicleScope,
+      },
+    }),
+    prisma.appointment.count({ where: appointmentVisibilityWhere(targetUser) }),
+  ]);
+
+  const cohorts = classifyDueCohorts(scopedRecords, asOf);
+  const freeServiceIds = canAccessServiceSource(targetUser, 'FREE_SERVICE')
+    ? freeServiceCustomerIdsForMonth(scopedRecords, year, month, asOf)
+    : new Set();
+  const assignedCustomerCount = new Set([
+    ...cohorts.oneYear.map((record) => record.customerId),
+    ...cohorts.sixMonth.map((record) => record.customerId),
+    ...freeServiceIds,
+  ].filter(Boolean)).size;
+
+  return {
+    asOf,
+    cycleStartedAt: cycleStart,
+    callsThisMonth,
+    assignedCustomerCount,
+    pendingFollowUps,
+    dueServicesCount: countOverdueRecords(scopedRecords, now),
+    missedWarrantyCount: canAccessServiceSource(targetUser, 'WARRANTY') ? missedWarrantyCases.length : null,
+    details: {
+      lifetimeCalls,
+      lifetimeAppointments,
+      appointmentConversionRatePercent: appointmentConversionRatePercent(lifetimeAppointments, lifetimeCalls),
+      customersReachedThisMonth: customersReached.length,
+      assignedBreakdown: {
+        oneYear: new Set(cohorts.oneYear.map((record) => record.customerId)).size,
+        sixMonth: new Set(cohorts.sixMonth.map((record) => record.customerId)).size,
+        freeService: canAccessServiceSource(targetUser, 'FREE_SERVICE') ? freeServiceIds.size : null,
+      },
+      customerReachPercent: assignedCustomerCount
+        ? Math.min(100, Math.round((customersReached.length / assignedCustomerCount) * 100))
+        : 0,
+      appointmentsSetThisMonth,
+    },
+  };
+}
 
 // The key carries user, role, CCM and the full query (including creId for a CCM), so one CRE's view is
 // never served for another.
@@ -261,6 +457,73 @@ export function getCrePerformanceSummary(req, res) {
   const role = normalizeRole(req.user?.role);
   if (role !== 'CRE' && role !== 'CCM') return res.status(403).json({ message: 'Not permitted.' });
   return cachedCrePerformanceSummary(req, res);
+}
+
+// Feature-flagged read path. Today's call activity comes from the transactional counters and never depends on a
+// snapshot. The remaining fields come from the persisted snapshot; this path never recalculates them inline.
+// A missing snapshot is queued for refresh and reported as "pending" with null values.
+async function buildAggregatedCreSummary({
+  role, targetCre, targetUser, year, month, now, isCurrentMonth, performanceDateKey, performanceRange, selectedRange,
+}) {
+  const ccmId = targetCre.ccmId;
+  const callVisibility = callLogVisibility(targetUser);
+  const ordinaryCallSources = allowedServiceSources(targetUser).filter((source) => source !== 'WARRANTY');
+  const key = { creId: targetCre.id, ccmId, year, month, viewer: role === 'CCM' ? 'CCM' : 'CRE' };
+
+  const [periodCounts, recentCalls, row] = await Promise.all([
+    readCreCallCounts({
+      userId: targetCre.id, ccmId, kind: 'OWNED', callSources: ordinaryCallSources, start: selectedRange.start, end: selectedRange.end,
+    }),
+    prisma.callLog.findMany({
+      where: {
+        ...callVisibility,
+        callSource: { in: ordinaryCallSources },
+        createdAt: { gte: selectedRange.start, lt: selectedRange.end },
+      },
+      include: {
+        customer: { select: { id: true, fullName: true, mobileNumber: true } },
+        vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      ...(performanceRange === 'day' ? { take: 6 } : {}),
+    }),
+    getSnapshot(key),
+  ]);
+
+  const snapshot = describeSnapshot(row, { now, isCurrentMonth });
+  if (['pending', 'dirty', 'stale'].includes(snapshot.status)) requestSnapshotRefresh(key);
+  const hasValues = Boolean(row?.computedAt);
+  const details = (hasValues && row.details) || {};
+  const pick = (value) => (hasValues ? value : null);
+
+  return {
+    cre: { id: targetCre.id, name: targetCre.name },
+    period: { year, month, isCurrentMonth },
+    performanceDate: performanceDateKey,
+    performanceRange,
+    callsToday: periodCounts.callsMade,
+    dailyTargets: {
+      callsMade: { actual: periodCounts.callsMade, target: DAILY_TARGETS.callsMade },
+      callsPickedUp: { actual: periodCounts.callsPickedUp, target: DAILY_TARGETS.callsPickedUp },
+    },
+    callsThisMonth: pick(row?.callsThisMonth),
+    lifetimeCalls: pick(details.lifetimeCalls),
+    lifetimeAppointments: pick(details.lifetimeAppointments),
+    appointmentConversionRatePercent: pick(details.appointmentConversionRatePercent),
+    customersReachedThisMonth: pick(details.customersReachedThisMonth),
+    assignedCustomerCount: pick(row?.assignedCustomerCount),
+    assignedBreakdown: hasValues
+      ? details.assignedBreakdown
+      : { oneYear: null, sixMonth: null, freeService: null },
+    customerReachPercent: pick(details.customerReachPercent),
+    pendingFollowUps: pick(row?.pendingFollowUps),
+    appointmentsSetThisMonth: pick(details.appointmentsSetThisMonth),
+    dueServicesCount: pick(row?.dueServicesCount),
+    missedWarrantyCount: pick(row?.missedWarrantyCount),
+    cycleStartedAt: hasValues ? row.cycleStartedAt : null,
+    recentCalls,
+    snapshot,
+  };
 }
 
 async function loadCrePerformanceSummary(req, res) {
@@ -291,7 +554,13 @@ async function loadCrePerformanceSummary(req, res) {
     });
     if (!targetCre) return res.status(404).json({ message: 'CRE not found in your team.' });
   } else {
-    targetCre = { id: req.user.id, name: req.user.name, ccmId: req.user.ccmId };
+    targetCre = {
+      id: req.user.id,
+      name: req.user.name,
+      ccmId: req.user.ccmId,
+      freeServiceEnabled: req.user.freeServiceEnabled === true,
+      warrantyEnabled: req.user.warrantyEnabled === true,
+    };
   }
   // Reuses the CRE-shaped visibility helpers for whichever CRE is being viewed, whether that is
   // the signed-in CRE or, for a CCM, one of their team members.
@@ -316,6 +585,12 @@ async function loadCrePerformanceSummary(req, res) {
   // Historical months are classified using only the service history that existed by their end,
   // so a past month's figures never change if a later repair order is imported today.
   const asOf = isCurrentMonth ? now : new Date(monthEnd.getTime() - 1);
+
+  if (isPerformanceAggregatesEnabled() && targetCre.ccmId) {
+    return res.json(await buildAggregatedCreSummary({
+      role, targetCre, targetUser, year, month, now, isCurrentMonth, performanceDateKey, performanceRange, selectedRange,
+    }));
+  }
 
   const latestMonthlyImport = await prisma.monthlyCustomerDataImport.findFirst({
     where: {
@@ -513,6 +788,7 @@ export async function createCallLog(req, res) {
         vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
       },
     });
+    await addCallToAggregates(transaction, callLog);
 
     // Follow-ups are isolated per list (Service, Free Service, Warranty). A new call settles this
     // customer's open follow-up in the same list: it is rescheduled in place when the call sets a new

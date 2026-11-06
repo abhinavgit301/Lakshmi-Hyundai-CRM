@@ -1,5 +1,5 @@
 import { prisma } from '../config/prisma.js';
-import { getCreCallCounts } from '../utils/callMetrics.js';
+import { getCreCallCountsForScope } from '../utils/creCallAggregateReaders.js';
 import { DAILY_TARGETS, buildQuotaNotifications, buildQuotaRows } from '../utils/serviceCalendar.js';
 import { getWorkshopTimezone, parseDateKey, workshopDayRange } from '../utils/workshopTime.js';
 
@@ -10,11 +10,12 @@ async function loadQuotaRows(ccmId, range) {
     select: { id: true, name: true },
     orderBy: { name: 'asc' },
   });
-  const counts = await getCreCallCounts({
+  const counts = await getCreCallCountsForScope({
     creIds: cres.map((cre) => cre.id),
     start: range.start,
     end: range.end,
     ccmId,
+    kind: 'TEAM',
     scopeWhere: {
       ccmId,
       OR: [

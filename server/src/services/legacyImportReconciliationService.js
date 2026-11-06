@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 import { prisma } from '../config/prisma.js';
 import { importBatchMutationEvidenceIsComplete, importChangeLogIsComplete } from '../utils/importBatchStats.js';
 import { normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
+import {
+  noteCreCallEntityScopeChange,
+  noteCreOwnershipChange,
+  removeCallFromAggregates,
+} from '../utils/creCallAggregates.js';
 
 const DELETED = 'permanently_deleted';
 const entities = {
@@ -652,6 +657,20 @@ export async function cleanupLegacyImport(batchId, adminId, confirmationToken, d
 
     for (const candidate of plan.candidates) {
       const config = entities[candidate.entityType];
+      if (candidate.entityType === 'Customer') {
+        await noteCreCallEntityScopeChange(transaction, { customerIds: [candidate.entityId] });
+      } else if (candidate.entityType === 'Vehicle') {
+        await noteCreCallEntityScopeChange(transaction, { vehicleIds: [candidate.entityId] });
+      } else if (candidate.entityType === 'Allocation' || candidate.entityType === 'MasterCallList') {
+        const entity = await transaction[config.delegate].findUnique({ where: { id: candidate.entityId } });
+        noteCreOwnershipChange(transaction, {
+          creIds: [entity?.creId || entity?.ownerUserId],
+        });
+      }
+      if (candidate.entityType === 'CallLog') {
+        const callLog = await transaction.callLog.findUnique({ where: { id: candidate.entityId } });
+        await removeCallFromAggregates(transaction, callLog);
+      }
       const deleted = await transaction[config.delegate].deleteMany({ where: { id: candidate.entityId } });
       if (deleted.count !== 1) {
         throw new LegacyImportReconciliationConflict(`Record ${candidate.entityType} ${candidate.entityId} changed during cleanup.`);

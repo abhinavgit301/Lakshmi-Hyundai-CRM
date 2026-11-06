@@ -1,0 +1,19 @@
+[Unit]
+Description=Apply committed Lakshmi Hyundai CRM Prisma migrations for release %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=lhcrm-app
+Group=lhcrm-app
+EnvironmentFile=/opt/lakshmi-hyundai/shared/backend.env
+WorkingDirectory=/opt/lakshmi-hyundai/releases/%i/backend
+ExecStartPre=/usr/bin/node /opt/lakshmi-hyundai/releases/%i/backend/deploy/check-prisma-migrations.mjs apply
+ExecStart=/usr/bin/node /opt/lakshmi-hyundai/releases/%i/backend/node_modules/prisma/build/index.js migrate deploy
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/lakshmi-hyundai/releases/%i
+ReadOnlyPaths=/opt/lakshmi-hyundai/shared/backend.env

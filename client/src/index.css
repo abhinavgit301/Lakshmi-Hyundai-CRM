@@ -1446,6 +1446,8 @@ tbody tr:hover td { background: #fafbfb; }
 
 .performance-workspace { display: grid; gap: calc(var(--crm-density-scale, 1) * 16px); }
 .performance-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: calc(var(--crm-density-scale, 1) * 12px); }
+.performance-freshness { margin: 0; font-size: 0.8rem; color: var(--navy-700); opacity: 0.75; }
+.performance-freshness.stale { opacity: 1; font-weight: 600; }
 .performance-kpi { display: grid; align-content: start; gap: calc(var(--crm-density-scale, 1) * 10px); min-width: 0; min-height: calc(var(--crm-density-scale, 1) * 142px); border: calc(var(--crm-density-scale, 1) * 1px) solid #e0e6e7; border-top: calc(var(--crm-density-scale, 1) * 3px) solid #dc5c43; border-radius: calc(var(--crm-density-scale, 1) * 8px); padding: calc(var(--crm-density-scale, 1) * 15px) calc(var(--crm-density-scale, 1) * 16px); background: #fff; }
 .performance-kpi.teal { border-top-color: #247a79; }
 .performance-kpi.gold { border-top-color: #bd8737; }

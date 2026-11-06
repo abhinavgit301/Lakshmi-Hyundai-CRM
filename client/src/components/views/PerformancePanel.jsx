@@ -2,6 +2,29 @@ import { Activity, CalendarCheck, CalendarClock, CalendarDays, Clock3, PhoneCall
 import { formatDate } from '../../utils/crmHelpers.js';
 import { monthOptions } from '../../utils/months.js';
 
+function PerformanceFreshness({ snapshot }) {
+  if (!snapshot) return null;
+  const noSavedValues = !snapshot.computedAt;
+  const time = snapshot.computedAt
+    ? new Date(snapshot.computedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '';
+  let message;
+  if (snapshot.status === 'pending' || (snapshot.status === 'refreshing' && noSavedValues)) {
+    message = 'Preparing monthly figures — they will appear shortly. Today’s call counts are live.';
+  } else if (snapshot.status === 'failed' && noSavedValues) {
+    message = 'Monthly figures are unavailable — the latest refresh failed. Today’s call counts are live.';
+  } else {
+    const freshness = snapshot.isStale ? 'Showing last calculated figures' : 'Updated';
+    const detail = snapshot.status === 'failed'
+      ? ' — the latest refresh failed'
+      : snapshot.status === 'refreshing'
+        ? ' — refresh in progress'
+        : snapshot.isStale ? ' — refreshing' : '';
+    message = `${freshness} ${time}${detail} · Today’s call counts are live`;
+  }
+  return <p className={`performance-freshness${snapshot.isStale ? ' stale' : ''}`} role="status">{message}</p>;
+}
+
 export default function PerformancePanel(props) {
   const {
     performance,
@@ -43,10 +66,11 @@ export default function PerformancePanel(props) {
                   })}
                   {performanceRange === 'day' && <article className="performance-kpi coral">
                     <div className="performance-kpi-heading"><span>Calls this month</span><Activity size={17} aria-hidden="true" /></div>
-                    <strong>{performance?.callsThisMonth ?? 0}</strong>
+                    <strong>{performance?.callsThisMonth ?? '—'}</strong>
                     <small>Persisted Free-Service call activity</small>
                   </article>}
                 </section>
+                <PerformanceFreshness snapshot={performance?.snapshot} />
                 <section className="panel customer-list-panel">
                   <div className="panel-header"><h3>Historical daily activity</h3><span>{monthOptions[performanceMonth - 1]} {performanceYear}</span></div>
                   <div className="table-scroll"><table><thead><tr><th>Date</th><th>Calls made</th><th>Pickups achieved</th></tr></thead><tbody>
@@ -71,13 +95,13 @@ export default function PerformancePanel(props) {
                 ...(currentRole === 'CRE' ? [{
                   label: 'Appointment Conversion Rate',
                   value: performance?.appointmentConversionRatePercent == null ? '—' : `${performance.appointmentConversionRatePercent}%`,
-                  detail: performance
+                  detail: performance?.lifetimeCalls != null
                     ? `${performance.lifetimeAppointments} appointments from ${performance.lifetimeCalls} calls ever logged`
                     : 'Lifetime totals',
                   icon: CalendarCheck,
                   tone: 'green',
                 }] : []),
-                { label: 'Assigned customers', value: performance?.assignedCustomerCount ?? '—', detail: performance?.assignedBreakdown ? [
+                { label: 'Assigned customers', value: performance?.assignedCustomerCount ?? '—', detail: performance?.assignedBreakdown?.oneYear != null ? [
                   `${performance.assignedBreakdown.oneYear} 1-year`,
                   `${performance.assignedBreakdown.sixMonth} 6-month`,
                   ...(performance.assignedBreakdown.freeService == null ? [] : [`${performance.assignedBreakdown.freeService} free service`]),
@@ -93,6 +117,7 @@ export default function PerformancePanel(props) {
                 </article>
               ))}
             </section>
+            <PerformanceFreshness snapshot={performance?.snapshot} />
 
             <section className="performance-detail-grid">
               <article className="panel reach-panel">

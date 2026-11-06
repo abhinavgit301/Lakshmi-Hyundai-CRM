@@ -2,11 +2,13 @@ import compression from 'compression';
 import express from 'express';
 import apiRoutes from './routes/api.js';
 import { callListCacheMiddleware } from './utils/callListCache.js';
+import { performanceDirtyMiddleware } from './utils/performanceDirty.js';
 
 const app = express();
 
 app.use(compression());
 app.use(callListCacheMiddleware);
+app.use(performanceDirtyMiddleware);
 
 app.use((req, res, next) => {
   const rawCookieHeader = req.headers.cookie || '';

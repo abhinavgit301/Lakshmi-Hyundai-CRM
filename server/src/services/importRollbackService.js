@@ -3,6 +3,7 @@ import { lockCcmAllocationTeam } from '../utils/customerAllocation.js';
 import { importChangeLogIsComplete, importRollbackCompleteness } from '../utils/importBatchStats.js';
 import { normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
 import { recordCreAssignmentEvent } from '../utils/creAssignmentHistory.js';
+import { noteCreCallEntityScopeChange } from '../utils/creCallAggregates.js';
 
 const entityDelegates = {
   Customer: 'customer',
@@ -189,6 +190,11 @@ async function reverseChange(transaction, change, actorUserId) {
       null,
       actorUserId,
     );
+    if (change.entityType === 'Customer') {
+      await noteCreCallEntityScopeChange(transaction, { customerIds: [change.entityId] });
+    } else if (change.entityType === 'Vehicle') {
+      await noteCreCallEntityScopeChange(transaction, { vehicleIds: [change.entityId] });
+    }
     await delegate.delete({ where: { id: change.entityId } });
     return;
   }
@@ -218,6 +224,13 @@ async function reverseChange(transaction, change, actorUserId) {
       restoredValues[assignmentField] ?? null,
       actorUserId,
     );
+  }
+  if (change.entityType === 'Customer'
+    && ['ccmId'].some((field) => Object.hasOwn(restoredValues, field))) {
+    await noteCreCallEntityScopeChange(transaction, { customerIds: [change.entityId] });
+  } else if (change.entityType === 'Vehicle'
+    && ['ccmId', 'customerId'].some((field) => Object.hasOwn(restoredValues, field))) {
+    await noteCreCallEntityScopeChange(transaction, { vehicleIds: [change.entityId] });
   }
   await delegate.update({
     where: { id: change.entityId },

@@ -1,0 +1,317 @@
+name: CI and controlled production deployment
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      deploy_sha:
+        description: Optional full commit SHA already merged to main
+        required: false
+        type: string
+      apply_migrations:
+        description: Explicitly apply pending committed production migrations
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Backend tests and frontend build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    outputs:
+      deploy_sha: ${{ steps.revision.outputs.deploy_sha }}
+      release_id: ${{ steps.revision.outputs.release_id }}
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci?schema=public
+      JWT_SECRET: ci-only-not-a-production-secret
+      NODE_ENV: test
+      RUN_STARTUP_REPAIRS: "false"
+      TZ: Asia/Kolkata
+      WORKSHOP_TIMEZONE: Asia/Kolkata
+    steps:
+      # actions/checkout v4.2.2
+      - name: Check out requested commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.deploy_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # actions/setup-node v4.4.0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+
+      - name: Verify deployment revision
+        id: revision
+        shell: bash
+        env:
+          REQUESTED_SHA: ${{ inputs.deploy_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          PUSH_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$EVENT_REF" != "refs/heads/main" ]]; then
+            echo "Manual production runs must be started from the main branch." >&2
+            exit 1
+          fi
+          if [[ -n "$REQUESTED_SHA" ]]; then
+            [[ "$REQUESTED_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || {
+              echo "deploy_sha must be a full 40-character commit SHA." >&2
+              exit 1
+            }
+            DEPLOY_SHA="$(git rev-parse "$REQUESTED_SHA^{commit}")"
+            git merge-base --is-ancestor "$DEPLOY_SHA" origin/main || {
+              echo "Requested commit is not contained in origin/main." >&2
+              exit 1
+            }
+          else
+            DEPLOY_SHA="$(git rev-parse HEAD)"
+          fi
+          if [[ "$EVENT_NAME" == "push" && "$DEPLOY_SHA" != "$PUSH_SHA" ]]; then
+            echo "Checked-out commit does not match the push event." >&2
+            exit 1
+          fi
+          RELEASE_ID="${DEPLOY_SHA}-${RUN_ID}-${RUN_ATTEMPT}"
+          echo "deploy_sha=$DEPLOY_SHA" >> "$GITHUB_OUTPUT"
+          echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+          echo "Validated deployment commit: $DEPLOY_SHA"
+
+      - name: Install backend dependencies
+        working-directory: server
+        run: npm ci --no-audit --no-fund
+
+      - name: Validate Prisma schema
+        working-directory: server
+        run: npm exec -- prisma validate
+
+      - name: Prepare disposable CI schema
+        working-directory: server
+        run: npm exec -- prisma db push --skip-generate
+
+      - name: Check backend JavaScript syntax
+        working-directory: server
+        shell: bash
+        run: find src -type f -name '*.js' -print0 | xargs -0 -n 1 node --check
+
+      - name: Run backend test suite
+        working-directory: server
+        run: npm test
+
+      - name: Install frontend dependencies
+        working-directory: client
+        run: npm ci --no-audit --no-fund
+
+      - name: Build frontend
+        working-directory: client
+        env:
+          NODE_ENV: production
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VITE_API_BASE_URL" =~ ^https://[^[:space:]]+/api/v1/?$ ]]; then
+            echo "Set repository variable VITE_API_BASE_URL to the production HTTPS API base ending in /api/v1." >&2
+            exit 1
+          fi
+          npm run build
+          test -s dist/index.html
+
+      - name: Prepare release package
+        shell: bash
+        env:
+          DEPLOY_SHA: ${{ steps.revision.outputs.deploy_sha }}
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/lhcrm-release"
+          mkdir -p "$package/backend" "$package/frontend"
+          cp -a server/src "$package/backend/src"
+          mkdir -p "$package/backend/prisma"
+          cp server/prisma/schema.prisma "$package/backend/prisma/"
+          cp -a server/prisma/migrations "$package/backend/prisma/migrations"
+          cp server/package.json server/package-lock.json server/prisma.config.ts "$package/backend/"
+          mkdir -p "$package/backend/deploy"
+          cp deploy/check-prisma-migrations.mjs "$package/backend/deploy/"
+          cp -a client/dist "$package/frontend/dist"
+          printf '%s\n' "$DEPLOY_SHA" > "$package/RELEASE_COMMIT"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/lhcrm-release.tar.gz" -C "$package" .
+          if tar -tzf "$RUNNER_TEMP/lhcrm-release.tar.gz" | grep -E '(^|/)(\.env([^/]*|$)|node_modules|\.git|tests|coverage)(/|$)' >/dev/null; then
+            echo "Release package unexpectedly contains excluded files." >&2
+            exit 1
+          fi
+          test -s "$RUNNER_TEMP/lhcrm-release.tar.gz"
+
+      # actions/upload-artifact v4.6.2
+      - name: Publish deployment package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lhcrm-release-${{ steps.revision.outputs.release_id }}
+          path: ${{ runner.temp }}/lhcrm-release.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  deploy:
+    name: Approved production deployment
+    needs: ci
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment:
+      name: production
+    concurrency:
+      group: lakshmi-hyundai-production
+      cancel-in-progress: false
+    steps:
+      # actions/download-artifact v4.3.0
+      - name: Download validated release package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: lhcrm-release-${{ needs.ci.outputs.release_id }}
+          path: ${{ runner.temp }}/lhcrm-artifact
+
+      # actions/checkout v4.2.2
+      - name: Check out deployment scripts
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.ci.outputs.deploy_sha }}
+          persist-credentials: false
+
+      - name: Configure verified SSH identity
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VPS_HOST" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "VPS_HOST is missing or invalid." >&2; exit 1; }
+          [[ "$VPS_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || { echo "VPS_USER is missing or invalid." >&2; exit 1; }
+          [[ -n "$VPS_SSH_PRIVATE_KEY" && -n "$VPS_SSH_KNOWN_HOSTS" ]] || {
+            echo "SSH key or pinned known-host entries are missing." >&2
+            exit 1
+          }
+          ssh_dir="$RUNNER_TEMP/lhcrm-ssh"
+          install -d -m 700 "$ssh_dir"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$ssh_dir/id_ed25519"
+          printf '%s\n' "$VPS_SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/id_ed25519" "$ssh_dir/known_hosts"
+          ssh-keygen -y -f "$ssh_dir/id_ed25519" >/dev/null
+          ssh-keygen -lf "$ssh_dir/known_hosts" >/dev/null
+          cat > "$ssh_dir/config" <<EOF
+          Host production-vps
+            HostName $VPS_HOST
+            User $VPS_USER
+            IdentityFile $ssh_dir/id_ed25519
+            IdentitiesOnly yes
+            UserKnownHostsFile $ssh_dir/known_hosts
+            StrictHostKeyChecking yes
+            BatchMode yes
+            PasswordAuthentication no
+            PreferredAuthentications publickey
+            ConnectTimeout 20
+            ServerAliveInterval 15
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          EOF
+          chmod 600 "$ssh_dir/config"
+
+      - name: Transfer package and deploy release
+        id: remote_deploy
+        shell: bash
+        env:
+          RELEASE_ID: ${{ needs.ci.outputs.release_id }}
+          DEPLOY_SHA: ${{ needs.ci.outputs.deploy_sha }}
+          APPLY_MIGRATIONS: ${{ inputs.apply_migrations && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_ID" =~ ^[0-9a-f]{40}-[0-9]+-[0-9]+$ ]]
+          [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$APPLY_MIGRATIONS" == true || "$APPLY_MIGRATIONS" == false ]]
+          ssh_config="$RUNNER_TEMP/lhcrm-ssh/config"
+          scp -F "$ssh_config" "$RUNNER_TEMP/lhcrm-artifact/lhcrm-release.tar.gz" \
+            "production-vps:/opt/lakshmi-hyundai/incoming/$RELEASE_ID.tar.gz"
+          ssh -F "$ssh_config" production-vps "bash -s -- '$RELEASE_ID' '$DEPLOY_SHA' '$APPLY_MIGRATIONS'" \
+            < deploy/deploy-release.sh
+
+      - name: Verify public frontend and API
+        id: external_health
+        shell: bash
+        env:
+          PRODUCTION_FRONTEND_URL: ${{ vars.PRODUCTION_FRONTEND_URL }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+        run: |
+          set -euo pipefail
+          [[ "$PRODUCTION_FRONTEND_URL" =~ ^https://[^[:space:]]+$ ]] || {
+            echo "Set production variable PRODUCTION_FRONTEND_URL to the HTTPS website URL." >&2
+            exit 1
+          }
+          [[ "$VITE_API_BASE_URL" =~ ^https://[^[:space:]]+/api/v1/?$ ]] || {
+            echo "Production API base URL is missing or invalid." >&2
+            exit 1
+          }
+          HTTP_FRONTEND_URL="http://${PRODUCTION_FRONTEND_URL#https://}"
+          curl --silent --show-error --fail --location --retry 10 --retry-delay 5 --retry-connrefused \
+            --max-time 15 "$HTTP_FRONTEND_URL" --output /dev/null
+          curl --silent --show-error --fail --retry 10 --retry-delay 5 --retry-connrefused \
+            --max-time 15 "$PRODUCTION_FRONTEND_URL" --output /dev/null
+          curl --silent --show-error --fail --retry 10 --retry-delay 5 --retry-connrefused \
+            --max-time 15 "${VITE_API_BASE_URL%/}/health" --output /dev/null
+
+      - name: Roll back failed public health checks
+        if: failure() && steps.remote_deploy.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -F "$RUNNER_TEMP/lhcrm-ssh/config" production-vps 'bash -s' \
+            < deploy/rollback-release.sh
+
+      - name: Record deployment result
+        if: success()
+        shell: bash
+        env:
+          DEPLOY_SHA: ${{ needs.ci.outputs.deploy_sha }}
+          RELEASE_ID: ${{ needs.ci.outputs.release_id }}
+        run: |
+          {
+            echo "Production deployment completed."
+            echo "Commit: \`$DEPLOY_SHA\`"
+            echo "Release: \`$RELEASE_ID\`"
+            echo "Database migration approval: \`${{ inputs.apply_migrations && 'enabled' || 'disabled' }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary SSH credentials
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/lhcrm-ssh"

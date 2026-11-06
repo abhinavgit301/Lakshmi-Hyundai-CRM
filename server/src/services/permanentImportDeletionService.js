@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { prisma } from '../config/prisma.js';
 import { importBatchMutationEvidenceIsComplete, importChangeLogIsComplete, importRollbackCompleteness } from '../utils/importBatchStats.js';
 import { normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
+import { noteCreCallEntityScopeChange, noteCreOwnershipChange } from '../utils/creCallAggregates.js';
 
 const DELETION_MARKER = 'permanently_deleted';
 const PERMANENT_DELETION_TRANSACTION_TIMEOUT_MS = 90_000;
@@ -1159,6 +1160,19 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
       const delegate = entityConfig[entityType].delegate;
       for (let offset = 0; offset < ids.length; offset += RECORD_QUERY_CHUNK_SIZE) {
         const chunk = ids.slice(offset, offset + RECORD_QUERY_CHUNK_SIZE);
+        if (entityType === 'Customer') {
+          await noteCreCallEntityScopeChange(transaction, { customerIds: chunk });
+        } else if (entityType === 'Vehicle') {
+          await noteCreCallEntityScopeChange(transaction, { vehicleIds: chunk });
+        } else if (entityType === 'Allocation' || entityType === 'MasterCallList') {
+          const records = await transaction[delegate].findMany({
+            where: { id: { in: chunk } },
+            select: { creId: true, ownerUserId: true },
+          });
+          noteCreOwnershipChange(transaction, {
+            creIds: records.map((record) => record.creId || record.ownerUserId),
+          });
+        }
         const result = await transaction[delegate].deleteMany({
           where: { id: { in: chunk } },
         });

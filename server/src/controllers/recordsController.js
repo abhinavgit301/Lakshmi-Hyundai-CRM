@@ -15,6 +15,7 @@ import {
 } from '../utils/serviceCalendar.js';
 import { workshopDayRange, workshopMonthOf } from '../utils/workshopTime.js';
 import { getCreCallCounts } from '../utils/callMetrics.js';
+import { getCreCallCountsForScope } from '../utils/creCallAggregateReaders.js';
 import { findMissedWarrantyCases } from '../utils/serviceLists.js';
 import { lockCcmAllocationTeam } from '../utils/customerAllocation.js';
 import { recordCreAssignmentEvent, validateAssignmentReason } from '../utils/creAssignmentHistory.js';
@@ -296,12 +297,13 @@ async function loadDashboardSummary(req, res) {
         { vehicle: { is: { ccmId: user.ccmId || 'no-access' } } },
       ],
     };
-    const counts = await getCreCallCounts({
+    const counts = await getCreCallCountsForScope({
       creIds: [user.id],
       start: dayRange.start,
       end: dayRange.end,
       callSources: ['FREE_SERVICE'],
       ccmId: user.ccmId || 'no-access',
+      kind: 'TEAM',
       scopeWhere: teamCallScope,
     });
     const activity = counts.get(user.id) || { callsMade: 0, callsPickedUp: 0 };
@@ -389,12 +391,13 @@ async function loadDashboardSummary(req, res) {
     const dueWhere = creDueWhere(user.id, user.ccmId);
     const [scopedRecords, creCounts, followUps, todayAppointments, missedWarranty] = await Promise.all([
       loadCallListRecords(dueWhere, now, user),
-      getCreCallCounts({
+      getCreCallCountsForScope({
         creIds: [user.id],
         start: dayRange.start,
         end: dayRange.end,
         callSources: allowedServiceSources(user).filter((source) => source !== 'WARRANTY'),
         ccmId: user.ccmId || 'no-access',
+        kind: 'OWNED',
         scopeWhere: {
           ccmId: user.ccmId || 'no-access',
           customer: { is: creCustomerWhere(user) },
@@ -538,18 +541,20 @@ async function loadDashboardSummary(req, res) {
     const creIds = cres.map((c) => c.id);
     const prevDayRange = workshopDayRange(now, -1);
     const [todayCounts, prevCounts] = await Promise.all([
-      getCreCallCounts({
+      getCreCallCountsForScope({
         creIds,
         start: dayRange.start,
         end: dayRange.end,
         ccmId,
+        kind: 'TEAM',
         scopeWhere: scope.call,
       }),
-      getCreCallCounts({
+      getCreCallCountsForScope({
         creIds,
         start: prevDayRange.start,
         end: prevDayRange.end,
         ccmId,
+        kind: 'TEAM',
         scopeWhere: scope.call,
       }),
     ]);

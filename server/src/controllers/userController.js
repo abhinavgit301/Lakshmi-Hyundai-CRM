@@ -12,6 +12,8 @@ import {
 } from '../utils/customerAllocation.js';
 import { resolveCreServicePermissions } from '../utils/creServicePermissions.js';
 import { validateAssignmentReason } from '../utils/creAssignmentHistory.js';
+import { noteCreAccountChangeIfAffected, noteCreDeleted } from '../utils/creCallAggregates.js';
+
 
 const MANAGED_ROLES = ['ADMIN', 'GM', 'CCM', 'CRE', 'FREE_SERVICE_CRE'];
 
@@ -287,6 +289,7 @@ async function updateManagedUserHandler(req, res) {
     if (existing.role === 'FREE_SERVICE_CRE' && nextRole === 'CRE' && nextCcmId) {
       await allocateUnassignedMasterCallListEntries(transaction, nextCcmId, req.user.id);
     }
+    noteCreAccountChangeIfAffected(transaction, existing, user);
     if (isCreCcmTransfer) {
       await transaction.auditLog.create({
         data: {
@@ -350,6 +353,7 @@ async function updateUserStatusHandler(req, res) {
       });
     }
     const user = await transaction.user.update({ where: { id }, data: { status: nextStatus } });
+    noteCreAccountChangeIfAffected(transaction, existing, user);
     if (['CRE', 'FREE_SERVICE_CRE'].includes(existing.role)
       && existing.status === 'active'
       && nextStatus === 'inactive') {
@@ -414,13 +418,12 @@ async function assignUserToCcmHandler(req, res) {
         },
       });
     }
-    return {
-      user: await transaction.user.update({
-        where: { id },
-        data: { ccmId: nextCcmId },
-      }),
-      pendingCustomers,
-    };
+    const assignedUser = await transaction.user.update({
+      where: { id },
+      data: { ccmId: nextCcmId },
+    });
+    noteCreAccountChangeIfAffected(transaction, existing, assignedUser);
+    return { user: assignedUser, pendingCustomers };
   });
   if (transferResult.error) {
     const messages = {
@@ -505,6 +508,7 @@ async function deleteManagedUserHandler(req, res) {
       },
     });
     await snapshotDeletedUserReferences(transaction, target);
+    noteCreDeleted(transaction, { creId: target.id });
 
     if (existing.role === 'CCM' && existing.ccmId) {
       await transaction.monthlyCustomerDataset.updateMany({

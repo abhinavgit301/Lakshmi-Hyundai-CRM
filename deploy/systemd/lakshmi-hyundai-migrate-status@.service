@@ -1,0 +1,19 @@
+[Unit]
+Description=Check Lakshmi Hyundai CRM Prisma migration status for release %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=lhcrm-app
+Group=lhcrm-app
+EnvironmentFile=/opt/lakshmi-hyundai/shared/backend.env
+WorkingDirectory=/opt/lakshmi-hyundai/releases/%i/backend
+ExecStart=/usr/bin/node /opt/lakshmi-hyundai/releases/%i/backend/deploy/check-prisma-migrations.mjs status
+ExecStart=/usr/bin/node /opt/lakshmi-hyundai/releases/%i/backend/node_modules/prisma/build/index.js migrate status
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/lakshmi-hyundai/releases/%i
+ReadOnlyPaths=/opt/lakshmi-hyundai/shared/backend.env

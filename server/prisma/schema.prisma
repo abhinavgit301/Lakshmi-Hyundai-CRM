@@ -395,6 +395,55 @@ model AppointmentEvent {
   @@map("appointment_events")
 }
 
+// Immediate-tier aggregate: per-user daily call counts, maintained in the same transaction as every CallLog
+// write. scopeKind OWNED = calls on customers/vehicles the CRE currently owns; TEAM = calls inside the CCM team.
+model CreCallDaily {
+  userId       String
+  ccmId        String
+  workshopDate DateTime   @db.Date
+  callSource   CallSource
+  scopeKind    String
+  calls        Int        @default(0)
+  answeredCalls Int       @default(0)
+  updatedAt    DateTime   @default(now()) @updatedAt
+
+  @@id([userId, ccmId, workshopDate, callSource, scopeKind])
+  @@index([ccmId, workshopDate])
+  @@map("cre_call_daily")
+}
+
+// Snapshot-tier aggregate: dashboard metrics refreshed at most every 15 minutes, with refresh status.
+// viewer keeps the CRE view and the CCM view separate because their service permissions differ by definition.
+model CrePerformanceSnapshot {
+  creId            String
+  ccmId            String
+  year             Int
+  month            Int
+  viewer           String
+  callsThisMonth   Int?
+  assignedCustomerCount Int?
+  pendingFollowUps Int?
+  dueServicesCount Int?
+  missedWarrantyCount Int?
+  details          Json?
+  cycleStartedAt   DateTime?
+  asOf             DateTime?
+  computedAt       DateTime?
+  status           String    @default("pending")
+  dirtySince       DateTime?
+  lastAttemptAt    DateTime?
+  refreshStartedAt DateTime?
+  lastError        String?
+  failureCount     Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @default(now()) @updatedAt
+
+  @@id([creId, ccmId, year, month, viewer])
+  @@index([status, computedAt])
+  @@index([ccmId, year, month])
+  @@map("cre_performance_snapshots")
+}
+
 model CRETarget {
   id                  String   @id @default(cuid())
   creId               String

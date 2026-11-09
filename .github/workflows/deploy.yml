@@ -64,7 +64,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 24.22.2
           cache: npm
           cache-dependency-path: |
             server/package-lock.json
@@ -103,7 +103,7 @@ jobs:
             echo "Checked-out commit does not match the push event." >&2
             exit 1
           fi
-          RELEASE_ID="${DEPLOY_SHA}-${RUN_ID}-${RUN_ATTEMPT}"
+          RELEASE_ID="$DEPLOY_SHA"
           echo "deploy_sha=$DEPLOY_SHA" >> "$GITHUB_OUTPUT"
           echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
           echo "Validated deployment commit: $DEPLOY_SHA"
@@ -129,6 +129,9 @@ jobs:
         working-directory: server
         run: npm test
 
+      - name: Test deployment archive, authorization, and recovery
+        run: node --test deploy/tests/*.test.mjs
+
       - name: Install frontend dependencies
         working-directory: client
         run: npm ci --no-audit --no-fund
@@ -137,13 +140,9 @@ jobs:
         working-directory: client
         env:
           NODE_ENV: production
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_API_BASE_URL: /api/v1
         run: |
           set -euo pipefail
-          if [[ ! "$VITE_API_BASE_URL" =~ ^https://[^[:space:]]+/api/v1/?$ ]]; then
-            echo "Set repository variable VITE_API_BASE_URL to the production HTTPS API base ending in /api/v1." >&2
-            exit 1
-          fi
           npm run build
           test -s dist/index.html
 
@@ -154,19 +153,37 @@ jobs:
         run: |
           set -euo pipefail
           package="$RUNNER_TEMP/lhcrm-release"
-          mkdir -p "$package/backend" "$package/frontend"
-          cp -a server/src "$package/backend/src"
-          mkdir -p "$package/backend/prisma"
-          cp server/prisma/schema.prisma "$package/backend/prisma/"
-          cp -a server/prisma/migrations "$package/backend/prisma/migrations"
-          cp server/package.json server/package-lock.json server/prisma.config.ts "$package/backend/"
-          mkdir -p "$package/backend/deploy"
-          cp deploy/check-prisma-migrations.mjs "$package/backend/deploy/"
-          cp -a client/dist "$package/frontend/dist"
+          mkdir -p "$package/server" "$package/client"
+          cp -a server/src "$package/server/src"
+          mkdir -p "$package/server/prisma"
+          cp server/prisma/schema.prisma "$package/server/prisma/"
+          cp -a server/prisma/migrations "$package/server/prisma/migrations"
+          cp server/package.json server/package-lock.json server/prisma.config.ts "$package/server/"
+          mkdir -p "$package/server/deploy"
+          cp deploy/check-prisma-migrations.mjs deploy/database-identity.mjs "$package/server/deploy/"
+          cp -a client/src "$package/client/src"
+          if [[ -d client/public ]]; then cp -a client/public "$package/client/public"; fi
+          cp client/index.html client/package.json client/package-lock.json client/vite.config.js "$package/client/"
           printf '%s\n' "$DEPLOY_SHA" > "$package/RELEASE_COMMIT"
-          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+          tar --format=ustar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
             -czf "$RUNNER_TEMP/lhcrm-release.tar.gz" -C "$package" .
-          if tar -tzf "$RUNNER_TEMP/lhcrm-release.tar.gz" | grep -E '(^|/)(\.env([^/]*|$)|node_modules|\.git|tests|coverage)(/|$)' >/dev/null; then
+          tar -tzf "$RUNNER_TEMP/lhcrm-release.tar.gz" > "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './server/deploy/check-prisma-migrations.mjs' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './server/deploy/database-identity.mjs' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './server/package.json' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './server/prisma.config.ts' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './server/prisma/schema.prisma' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './server/prisma/migrations/' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Eq '^\./server/prisma/migrations/[^/]+/migration\.sql$' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './server/package-lock.json' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './server/src/server.js' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './client/index.html' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './client/package.json' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './client/package-lock.json' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './client/vite.config.js' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './client/src/main.jsx' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './RELEASE_COMMIT' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          if tar -tzf "$RUNNER_TEMP/lhcrm-release.tar.gz" | grep -E '(^|/)(\.env([^/]*|$)|node_modules|\.git|tests|coverage|backup|backups|secrets)(/|$)|(^|[._-])backup([._-]|$)|\.(bak|old|orig|save|swp|tmp)$' >/dev/null; then
             echo "Release package unexpectedly contains excluded files." >&2
             exit 1
           fi
@@ -186,7 +203,7 @@ jobs:
     needs: ci
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     environment:
       name: production
     concurrency:
@@ -217,7 +234,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$VPS_HOST" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "VPS_HOST is missing or invalid." >&2; exit 1; }
-          [[ "$VPS_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || { echo "VPS_USER is missing or invalid." >&2; exit 1; }
+          [[ "$VPS_USER" == lakshmi-deploy ]] || { echo "VPS_USER must be the existing lakshmi-deploy account." >&2; exit 1; }
           [[ -n "$VPS_SSH_PRIVATE_KEY" && -n "$VPS_SSH_KNOWN_HOSTS" ]] || {
             echo "SSH key or pinned known-host entries are missing." >&2
             exit 1
@@ -247,6 +264,33 @@ jobs:
           EOF
           chmod 600 "$ssh_dir/config"
 
+      - name: Verify VPS runtime before transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh_config="$RUNNER_TEMP/lhcrm-ssh/config"
+          ssh -F "$ssh_config" production-vps \
+            'set -eu; test "$(id -un)" = lakshmi-deploy; test "$(/usr/bin/node --version)" = v24.22.2; test -x /usr/bin/node; test -d /opt/lakshmi-hyundai/incoming; test -w /opt/lakshmi-hyundai/incoming; test -d /opt/lakshmi-hyundai/releases; test -w /opt/lakshmi-hyundai/releases; test -f /opt/lakshmi-hyundai/shared/backend.env; test -L /opt/lakshmi-hyundai/current; test -x /usr/local/sbin/lakshmi-hyundai-deploy-control; sudo -n /usr/local/sbin/lakshmi-hyundai-deploy-control preflight'
+
+      - name: Create short-lived migration authorization
+        if: github.event_name == 'workflow_dispatch' && inputs.apply_migrations == true
+        shell: bash
+        env:
+          MIGRATION_AUTH_PRIVATE_KEY: ${{ secrets.MIGRATION_AUTH_PRIVATE_KEY }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DEPLOY_SHA: ${{ needs.ci.outputs.deploy_sha }}
+          RELEASE_ID: ${{ needs.ci.outputs.release_id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test -n "$MIGRATION_AUTH_PRIVATE_KEY"
+          node deploy/create-migration-authorization.mjs \
+            "$RUNNER_TEMP/lhcrm-migration-auth.json" "$RELEASE_ID" "$DEPLOY_SHA" "$RUN_ID" "$RUN_ATTEMPT"
+          chmod 600 "$RUNNER_TEMP/lhcrm-migration-auth.json"
+
       - name: Transfer package and deploy release
         id: remote_deploy
         shell: bash
@@ -256,12 +300,20 @@ jobs:
           APPLY_MIGRATIONS: ${{ inputs.apply_migrations && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          [[ "$RELEASE_ID" =~ ^[0-9a-f]{40}-[0-9]+-[0-9]+$ ]]
+          echo "attempt_started=true" >> "$GITHUB_OUTPUT"
+          [[ "$RELEASE_ID" =~ ^[0-9a-f]{40}$ ]]
           [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$APPLY_MIGRATIONS" == true || "$APPLY_MIGRATIONS" == false ]]
           ssh_config="$RUNNER_TEMP/lhcrm-ssh/config"
+          scp -F "$ssh_config" deploy/safe-release-archive.mjs \
+            "production-vps:/opt/lakshmi-hyundai/incoming/$RELEASE_ID.safe-release-archive.mjs"
           scp -F "$ssh_config" "$RUNNER_TEMP/lhcrm-artifact/lhcrm-release.tar.gz" \
             "production-vps:/opt/lakshmi-hyundai/incoming/$RELEASE_ID.tar.gz"
+          if [[ "$APPLY_MIGRATIONS" == true ]]; then
+            test -s "$RUNNER_TEMP/lhcrm-migration-auth.json"
+            scp -F "$ssh_config" "$RUNNER_TEMP/lhcrm-migration-auth.json" \
+              "production-vps:/opt/lakshmi-hyundai/incoming/$RELEASE_ID.migration-auth.json"
+          fi
           ssh -F "$ssh_config" production-vps "bash -s -- '$RELEASE_ID' '$DEPLOY_SHA' '$APPLY_MIGRATIONS'" \
             < deploy/deploy-release.sh
 
@@ -270,15 +322,10 @@ jobs:
         shell: bash
         env:
           PRODUCTION_FRONTEND_URL: ${{ vars.PRODUCTION_FRONTEND_URL }}
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
         run: |
           set -euo pipefail
           [[ "$PRODUCTION_FRONTEND_URL" =~ ^https://[^[:space:]]+$ ]] || {
             echo "Set production variable PRODUCTION_FRONTEND_URL to the HTTPS website URL." >&2
-            exit 1
-          }
-          [[ "$VITE_API_BASE_URL" =~ ^https://[^[:space:]]+/api/v1/?$ ]] || {
-            echo "Production API base URL is missing or invalid." >&2
             exit 1
           }
           HTTP_FRONTEND_URL="http://${PRODUCTION_FRONTEND_URL#https://}"
@@ -287,15 +334,19 @@ jobs:
           curl --silent --show-error --fail --retry 10 --retry-delay 5 --retry-connrefused \
             --max-time 15 "$PRODUCTION_FRONTEND_URL" --output /dev/null
           curl --silent --show-error --fail --retry 10 --retry-delay 5 --retry-connrefused \
-            --max-time 15 "${VITE_API_BASE_URL%/}/health" --output /dev/null
+            --max-time 15 "${PRODUCTION_FRONTEND_URL%/}/api/v1/health" --output /dev/null
 
-      - name: Roll back failed public health checks
-        if: failure() && steps.remote_deploy.outcome == 'success'
+      - name: Finalize healthy release
+        id: finalize_release
+        if: success()
         shell: bash
+        env:
+          RELEASE_ID: ${{ needs.ci.outputs.release_id }}
         run: |
           set -euo pipefail
-          ssh -F "$RUNNER_TEMP/lhcrm-ssh/config" production-vps 'bash -s' \
-            < deploy/rollback-release.sh
+          ssh -F "$RUNNER_TEMP/lhcrm-ssh/config" production-vps \
+            "bash -s -- '$RELEASE_ID'" < deploy/finalize-release.sh
+          echo "finalized=true" >> "$GITHUB_OUTPUT"
 
       - name: Record deployment result
         if: success()
@@ -311,7 +362,20 @@ jobs:
             echo "Database migration approval: \`${{ inputs.apply_migrations && 'enabled' || 'disabled' }}\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Recover any failed or uncertain deployment attempt
+        if: ${{ always() && (failure() || cancelled()) && steps.remote_deploy.outputs.attempt_started == 'true' && steps.finalize_release.outputs.finalized != 'true' }}
+        shell: bash
+        env:
+          RELEASE_ID: ${{ needs.ci.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          ssh_config="$RUNNER_TEMP/lhcrm-ssh/config"
+          ssh -F "$ssh_config" production-vps \
+            "bash -s -- '$RELEASE_ID'" < deploy/recover-release.sh
+
       - name: Remove temporary SSH credentials
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/lhcrm-ssh"
+        run: |
+          rm -rf "$RUNNER_TEMP/lhcrm-ssh"
+          rm -f "$RUNNER_TEMP/lhcrm-migration-auth.json"

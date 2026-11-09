@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+  echo "This helper must be invoked through its restricted sudo rule." >&2
+  exit 1
+fi
+
+require_deployer() {
+  [[ "${SUDO_USER:-}" == lakshmi-deploy ]] || {
+    echo "This action is restricted to the SSH deployment account." >&2
+    exit 1
+  }
+}
+
+case "${1:-}" in
+  restart-backend)
+    [[ $# -eq 1 ]] || exit 2
+    require_deployer
+    exec /usr/bin/systemctl restart lakshmi-hyundai-backend.service
+    ;;
+  backend-active)
+    [[ $# -eq 1 ]] || exit 2
+    require_deployer
+    exec /usr/bin/systemctl is-active --quiet lakshmi-hyundai-backend.service
+    ;;
+  reload-nginx)
+    [[ $# -eq 1 ]] || exit 2
+    require_deployer
+    exec /usr/bin/systemctl reload nginx.service
+    ;;
+  validate-config)
+    [[ $# -eq 1 ]] || exit 2
+    require_deployer
+    /usr/bin/systemd-analyze verify /etc/systemd/system/lakshmi-hyundai-backend.service
+    /usr/sbin/nginx -t
+    nginx_config=$(/usr/sbin/nginx -T 2>&1) || {
+      echo "Unable to inspect the effective Nginx configuration." >&2
+      exit 1
+    }
+    if ! printf '%s\n' "$nginx_config" | /usr/bin/grep -Eq \
+      'root[[:space:]]+/opt/lakshmi-hyundai/current/client/dist;'; then
+      echo "Nginx does not serve the current release client directory." >&2
+      exit 1
+    fi
+    if ! printf '%s\n' "$nginx_config" | /usr/bin/grep -Fq 'proxy_pass http://127.0.0.1:4000'; then
+      echo "Nginx API proxy does not target the existing backend listener." >&2
+      exit 1
+    fi
+    for hostname in lakshmi-hyundai-crm.tech www.lakshmi-hyundai-crm.tech; do
+      if ! printf '%s\n' "$nginx_config" | /usr/bin/grep -Fq "$hostname"; then
+        echo "Nginx configuration is missing an expected production hostname." >&2
+        exit 1
+      fi
+    done
+    if ! printf '%s\n' "$nginx_config" | /usr/bin/grep -Eq 'try_files[^;]*/index\.html'; then
+      echo "Nginx SPA fallback is missing." >&2
+      exit 1
+    fi
+    ;;
+  activate-release)
+    release_name=${2:-}
+    [[ $# -eq 2 && "$release_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ &&
+       "$release_name" != . && "$release_name" != .. ]] || {
+      echo "Invalid release name." >&2
+      exit 2
+    }
+    require_deployer
+    release="/opt/lakshmi-hyundai/releases/$release_name"
+    release_realpath=$(/usr/bin/realpath -e -- "$release") || exit 1
+    releases_realpath=$(/usr/bin/realpath -e -- /opt/lakshmi-hyundai/releases) || exit 1
+    [[ -d "$release" && ! -L "$release" &&
+       "$(dirname "$release_realpath")" == "$releases_realpath" &&
+       -s "$release/server/src/server.js" &&
+       -s "$release/client/dist/index.html" ]] || {
+      echo "Activation target is not a valid server/client release." >&2
+      exit 1
+    }
+    temporary="/opt/lakshmi-hyundai/.current.next.$$.$RANDOM"
+    /usr/bin/ln -s -- "$release" "$temporary" || exit 1
+    exec /usr/bin/mv -Tf -- "$temporary" /opt/lakshmi-hyundai/current
+    ;;
+  startup-check)
+    started_at=${2:-}
+    [[ $# -eq 2 && "$started_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+      echo "Invalid backend restart timestamp." >&2
+      exit 2
+    }
+    require_deployer
+    recent_logs=$(/usr/bin/journalctl -u lakshmi-hyundai-backend.service --since "$started_at" \
+      --output=cat --no-pager) || {
+      echo "Unable to inspect recent backend service logs." >&2
+      exit 1
+    }
+    if printf '%s\n' "$recent_logs" |
+        /usr/bin/grep -Eq 'Server startup failed:|Error: listen EADDRINUSE|Error: Cannot find module|Cannot find package'; then
+      echo "Backend startup failure found in recent service logs." >&2
+      exit 1
+    fi
+    ;;
+  seal-release)
+    release_id=${2:-}
+    [[ $# -eq 2 && "$release_id" =~ ^[0-9a-f]{40}$ ]] || {
+      echo "Invalid release identifier." >&2
+      exit 2
+    }
+    require_deployer
+    release="/opt/lakshmi-hyundai/releases/$release_id"
+    release_realpath=$(/usr/bin/realpath -e -- "$release") || exit 1
+    releases_realpath=$(/usr/bin/realpath -e -- /opt/lakshmi-hyundai/releases) || exit 1
+    deploy_uid=$(/usr/bin/id -u "$SUDO_USER") || exit 1
+    [[ -d "$release" && ! -L "$release" &&
+       "$(dirname "$release_realpath")" == "$releases_realpath" &&
+       "$(/usr/bin/stat -c %u -- "$release")" == "$deploy_uid" &&
+       -s "$release/RELEASE_COMMIT" &&
+       -s "$release/server/package.json" &&
+       -s "$release/server/package-lock.json" &&
+       -s "$release/server/node_modules/prisma/build/index.js" &&
+       -s "$release/server/node_modules/@prisma/client/package.json" &&
+       -s "$release/server/node_modules/@prisma/adapter-pg/package.json" &&
+       -s "$release/server/deploy/check-prisma-migrations.mjs" &&
+       -s "$release/server/deploy/database-identity.mjs" &&
+       -s "$release/server/prisma/schema.prisma" &&
+       -d "$release/server/prisma/migrations" &&
+       -s "$release/client/dist/index.html" ]] || {
+      echo "Only a complete new deployment-owned release can be sealed." >&2
+      exit 1
+    }
+    /usr/bin/chown -R root:lakshmi-deploy -- "$release"
+    exec /usr/bin/chmod -R a-w,a+rX -- "$release"
+    ;;
+  migrate-status|migrate-preflight|migrate-deploy)
+    release_id=${2:-}
+    [[ $# -eq 2 && "$release_id" =~ ^[0-9a-f]{40}$ ]] || {
+      echo "Invalid migration release identifier." >&2
+      exit 2
+    }
+    require_deployer
+    release="/opt/lakshmi-hyundai/releases/$release_id"
+    release_realpath=$(/usr/bin/realpath -e -- "$release") || exit 1
+    releases_realpath=$(/usr/bin/realpath -e -- /opt/lakshmi-hyundai/releases) || exit 1
+    [[ -d "$release" && ! -L "$release" &&
+       "$(dirname "$release_realpath")" == "$releases_realpath" &&
+       "$(/usr/bin/stat -c %u -- "$release")" == 0 &&
+       "$((8#$(/usr/bin/stat -c %a -- "$release") & 0022))" -eq 0 &&
+       -d "$release/server" &&
+       -f "$release/server/deploy/check-prisma-migrations.mjs" &&
+       -f "$release/server/prisma/schema.prisma" &&
+       -f "$release/server/node_modules/prisma/build/index.js" ]] || {
+      echo "Migration release does not exist." >&2
+      exit 1
+    }
+    if [[ "$1" == migrate-deploy ]]; then
+      authorization="/opt/lakshmi-hyundai/incoming/${release_id}.migration-auth.json"
+      [[ -f "$authorization" && ! -L "$authorization" ]] || {
+        echo "A signed, release-specific migration authorization is required." >&2
+        exit 1
+      }
+      /usr/bin/flock -n /run/lock/lhcrm-migration.lock \
+        /usr/bin/node /usr/local/lib/lakshmi-hyundai-deploy/migration-authorization.mjs authorize "$release_id" || exit 1
+      if ! /usr/bin/systemctl start "lakshmi-hyundai-migrate@${release_id}.service"; then
+        /usr/bin/node /usr/local/lib/lakshmi-hyundai-deploy/migration-authorization.mjs cleanup "$release_id" || {
+          echo "Unable to clean migration authorization runtime files." >&2
+          exit 1
+        }
+        /usr/bin/rm -f -- "$authorization"
+        exit 1
+      fi
+      /usr/bin/node /usr/local/lib/lakshmi-hyundai-deploy/migration-authorization.mjs cleanup "$release_id" || {
+        echo "Migration completed but authorization cleanup failed." >&2
+        exit 1
+      }
+      /usr/bin/rm -f -- "$authorization"
+      exit 0
+    fi
+    if [[ "$1" == migrate-preflight ]]; then
+      exec /usr/bin/systemctl start "lakshmi-hyundai-migrate-preflight@${release_id}.service"
+    fi
+    exec /usr/bin/systemctl start "lakshmi-hyundai-migrate-status@${release_id}.service"
+    ;;
+  cleanup-migration)
+    release_id=${2:-}
+    [[ $# -eq 2 && -z "${SUDO_USER:-}" &&
+       "$release_id" =~ ^[0-9a-f]{40}$ ]] || {
+      echo "Invalid migration release identifier." >&2
+      exit 2
+    }
+    exec /usr/bin/node /usr/local/lib/lakshmi-hyundai-deploy/migration-authorization.mjs cleanup "$release_id"
+    ;;
+  preflight)
+    require_deployer
+    backend_env=/opt/lakshmi-hyundai/shared/backend.env
+    deployer_home=$(/usr/bin/getent passwd lakshmi-deploy | /usr/bin/cut -d: -f6) || exit 1
+    backend_env_uid=$(/usr/bin/stat -c %u -- "$backend_env") || exit 1
+    backend_env_mode=$(/usr/bin/stat -c %a -- "$backend_env") || exit 1
+    helper_uid=$(/usr/bin/stat -c %u -- /usr/local/sbin/lakshmi-hyundai-deploy-control) || exit 1
+    helper_mode=$(/usr/bin/stat -c %a -- /usr/local/sbin/lakshmi-hyundai-deploy-control) || exit 1
+    helper_dir_uid=$(/usr/bin/stat -c %u -- /usr/local/sbin) || exit 1
+    helper_dir_mode=$(/usr/bin/stat -c %a -- /usr/local/sbin) || exit 1
+    verifier_uid=$(/usr/bin/stat -c %u -- /usr/local/lib/lakshmi-hyundai-deploy/migration-authorization.mjs) || exit 1
+    verifier_mode=$(/usr/bin/stat -c %a -- /usr/local/lib/lakshmi-hyundai-deploy/migration-authorization.mjs) || exit 1
+    verifier_dir_uid=$(/usr/bin/stat -c %u -- /usr/local/lib/lakshmi-hyundai-deploy) || exit 1
+    verifier_dir_mode=$(/usr/bin/stat -c %a -- /usr/local/lib/lakshmi-hyundai-deploy) || exit 1
+    public_key_uid=$(/usr/bin/stat -c %u -- /etc/lakshmi-hyundai/migration-authorization.pub) || exit 1
+    public_key_mode=$(/usr/bin/stat -c %a -- /etc/lakshmi-hyundai/migration-authorization.pub) || exit 1
+    database_identity_uid=$(/usr/bin/stat -c %u -- /etc/lakshmi-hyundai/database-identity.json) || exit 1
+    database_identity_mode=$(/usr/bin/stat -c %a -- /etc/lakshmi-hyundai/database-identity.json) || exit 1
+    config_dir_uid=$(/usr/bin/stat -c %u -- /etc/lakshmi-hyundai) || exit 1
+    config_dir_mode=$(/usr/bin/stat -c %a -- /etc/lakshmi-hyundai) || exit 1
+    backend_exec_start=$(/usr/bin/systemctl show lakshmi-hyundai-backend.service \
+      -p ExecStart --value) || exit 1
+    backend_environment_files=$(/usr/bin/systemctl show lakshmi-hyundai-backend.service \
+      -p EnvironmentFiles --value) || exit 1
+    home_is_protected=false
+    case "$deployer_home" in
+      /home|/home/*|/root|/run/user|/run/user/*) home_is_protected=true ;;
+    esac
+    if [[ "$home_is_protected" != true ]]; then
+      inaccessible_paths=$(/usr/bin/systemctl show lakshmi-hyundai-backend.service \
+        -p InaccessiblePaths --value) || exit 1
+      for inaccessible_path in $inaccessible_paths; do
+        inaccessible_path=${inaccessible_path#-}
+        if [[ "$inaccessible_path" == "$deployer_home" ||
+              "$inaccessible_path" == "$deployer_home/.ssh" ]]; then
+          home_is_protected=true
+          break
+        fi
+      done
+    fi
+    [[ $# -eq 1 &&
+       -n "$deployer_home" &&
+       "$(/usr/bin/node --version)" == v24.22.2 &&
+       -d /opt/lakshmi-hyundai/incoming &&
+       -w /opt/lakshmi-hyundai/incoming &&
+       -d /opt/lakshmi-hyundai/releases &&
+       -w /opt/lakshmi-hyundai/releases &&
+       -L /opt/lakshmi-hyundai/current &&
+       -s /opt/lakshmi-hyundai/current/server/src/server.js &&
+       -s /opt/lakshmi-hyundai/current/client/dist/index.html &&
+       -f "$backend_env" && ! -L "$backend_env" &&
+       "$backend_env_uid" == 0 && "$((8#$backend_env_mode & 0077))" -eq 0 &&
+       "$helper_uid" == 0 && "$((8#$helper_mode & 07022))" -eq 0 &&
+       "$((8#$helper_mode & 0111))" -ne 0 &&
+       "$helper_dir_uid" == 0 && "$((8#$helper_dir_mode & 0022))" -eq 0 &&
+       "$verifier_uid" == 0 && "$((8#$verifier_mode & 07022))" -eq 0 &&
+       "$verifier_dir_uid" == 0 && "$((8#$verifier_dir_mode & 0022))" -eq 0 &&
+       "$public_key_uid" == 0 && "$((8#$public_key_mode & 0022))" -eq 0 &&
+       "$database_identity_uid" == 0 && "$((8#$database_identity_mode & 0022))" -eq 0 &&
+       "$config_dir_uid" == 0 && "$((8#$config_dir_mode & 0022))" -eq 0 &&
+       "$home_is_protected" == true &&
+       "$(/usr/bin/systemctl show lakshmi-hyundai-backend.service -p User --value)" == lakshmi-deploy &&
+       "$(/usr/bin/systemctl show lakshmi-hyundai-backend.service -p Group --value)" == lakshmi-deploy &&
+       "$(/usr/bin/systemctl show lakshmi-hyundai-backend.service -p WorkingDirectory --value)" == /opt/lakshmi-hyundai/current/server &&
+       "$backend_exec_start" == *"/usr/bin/node src/server.js"* &&
+       "$backend_environment_files" == *"/opt/lakshmi-hyundai/shared/backend.env"* &&
+       "$(/usr/bin/systemctl show lakshmi-hyundai-backend.service -p ProtectSystem --value)" == strict &&
+       "$(/usr/bin/systemctl show lakshmi-hyundai-backend.service -p ProtectHome --value)" == yes &&
+       "$(/usr/bin/systemctl show lakshmi-hyundai-backend.service -p NoNewPrivileges --value)" == yes &&
+       -r /etc/lakshmi-hyundai/migration-authorization.pub &&
+       -r /usr/local/lib/lakshmi-hyundai-deploy/migration-authorization.mjs &&
+       -r /etc/lakshmi-hyundai/database-identity.json ]] || {
+      echo "Deployment runtime, account, environment, or directories are not ready." >&2
+      exit 1
+    }
+    exec /usr/local/sbin/lakshmi-hyundai-deploy-control validate-config
+    ;;
+  *)
+    echo "Unsupported deployment control action." >&2
+    exit 2
+    ;;
+esac

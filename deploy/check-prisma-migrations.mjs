@@ -2,20 +2,21 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
+import { assertDatabaseIdentity, loadExpectedDatabaseIdentity } from './database-identity.mjs';
 
-const expectedDatabase = 'lakshmi_hyundai_crm';
 const mode = process.argv[2];
-if (mode !== 'status' && mode !== 'apply') {
-  throw new Error('Usage: check-prisma-migrations.mjs status|apply');
+if (mode !== 'status' && mode !== 'preflight' && mode !== 'apply') {
+  throw new Error('Usage: check-prisma-migrations.mjs status|preflight|apply');
 }
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error('DATABASE_URL is not available in the systemd environment.');
 const connection = new URL(connectionString);
+const expectedIdentity = loadExpectedDatabaseIdentity();
 const database = decodeURIComponent(connection.pathname.slice(1));
 const schema = connection.searchParams.get('schema') || 'public';
-if (database !== expectedDatabase) {
-  throw new Error(`Refusing migrations: connected database is not ${expectedDatabase}.`);
+if (database !== expectedIdentity.database) {
+  throw new Error(`Refusing migrations: connected database is not ${expectedIdentity.database}.`);
 }
 if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
   throw new Error('Refusing migrations: database schema name is invalid.');
@@ -33,7 +34,8 @@ try {
     [`${quotedSchema}."_prisma_migrations"`],
   );
   const databaseIdentity = identity.rows[0];
-  if (databaseIdentity.database !== expectedDatabase || !databaseIdentity.migration_table) {
+  assertDatabaseIdentity(connection, databaseIdentity, expectedIdentity);
+  if (!databaseIdentity.migration_table) {
     throw new Error('Refusing migrations: expected database or Prisma migration history table is missing.');
   }
   console.log(`Verified migration database: ${JSON.stringify(databaseIdentity)}`);
@@ -76,7 +78,7 @@ try {
   else if (mode === 'status') {
     throw new Error('Pending migrations exist; deployment is blocked unless explicitly approved.');
   } else {
-    const activeMigrationRoot = '/opt/lakshmi-hyundai/releases/current/backend/prisma/migrations';
+    const activeMigrationRoot = '/opt/lakshmi-hyundai/current/server/prisma/migrations';
     let activeNames;
     try {
       activeNames = new Set(

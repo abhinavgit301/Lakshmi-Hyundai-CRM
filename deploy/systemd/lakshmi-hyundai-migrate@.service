@@ -5,15 +5,20 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=lhcrm-app
-Group=lhcrm-app
+User=lakshmi-deploy
+Group=lakshmi-deploy
 EnvironmentFile=/opt/lakshmi-hyundai/shared/backend.env
-WorkingDirectory=/opt/lakshmi-hyundai/releases/%i/backend
-ExecStartPre=/usr/bin/node /opt/lakshmi-hyundai/releases/%i/backend/deploy/check-prisma-migrations.mjs apply
-ExecStart=/usr/bin/node /opt/lakshmi-hyundai/releases/%i/backend/node_modules/prisma/build/index.js migrate deploy
+WorkingDirectory=/opt/lakshmi-hyundai/releases/%i/server
+ExecStartPre=+/usr/bin/node /usr/local/lib/lakshmi-hyundai-deploy/migration-authorization.mjs consume %i
+ExecStartPre=/usr/bin/node /opt/lakshmi-hyundai/releases/%i/server/deploy/check-prisma-migrations.mjs apply
+ExecStart=/usr/bin/node /opt/lakshmi-hyundai/releases/%i/server/node_modules/prisma/build/index.js migrate deploy
+ExecStopPost=+/usr/local/sbin/lakshmi-hyundai-deploy-control cleanup-migration %i
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadOnlyPaths=/opt/lakshmi-hyundai/releases/%i
 ReadOnlyPaths=/opt/lakshmi-hyundai/shared/backend.env
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=true

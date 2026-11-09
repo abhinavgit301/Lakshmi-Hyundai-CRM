@@ -1,0 +1,21 @@
+[Unit]
+Description=Validate Lakshmi Hyundai CRM migration prerequisites for release %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=lakshmi-deploy
+Group=lakshmi-deploy
+EnvironmentFile=/opt/lakshmi-hyundai/shared/backend.env
+WorkingDirectory=/opt/lakshmi-hyundai/releases/%i/server
+ExecStart=/usr/bin/node /opt/lakshmi-hyundai/releases/%i/server/deploy/check-prisma-migrations.mjs preflight
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/lakshmi-hyundai/releases/%i
+ReadOnlyPaths=/opt/lakshmi-hyundai/shared/backend.env
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=true

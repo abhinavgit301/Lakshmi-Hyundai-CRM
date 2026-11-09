@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
-import { assertDatabaseIdentity, loadExpectedDatabaseIdentity } from './database-identity.mjs';
+import { assertDatabaseIdentity, loadExpectedDatabaseIdentity, migrationChecksumMatches } from './database-identity.mjs';
 
 const mode = process.argv[2];
 if (mode !== 'status' && mode !== 'preflight' && mode !== 'apply') {
@@ -50,10 +49,7 @@ try {
         .filter((entry) => entry.isDirectory())
         .map((entry) => {
           const migrationPath = path.resolve('prisma/migrations', entry.name, 'migration.sql');
-          return {
-            name: entry.name,
-            checksum: createHash('sha256').update(readFileSync(migrationPath)).digest('hex'),
-          };
+          return { name: entry.name, bytes: readFileSync(migrationPath) };
         }),
     ),
   ]);
@@ -66,7 +62,7 @@ try {
     if (!row.finished_at || row.rolled_back_at) continue;
     const committed = committedByName.get(row.migration_name);
     if (!committed) throw new Error(`Applied migration ${row.migration_name} is absent from this release.`);
-    if (committed.checksum !== row.checksum) {
+    if (!migrationChecksumMatches(committed.bytes, row.checksum)) {
       throw new Error(`Applied migration ${row.migration_name} differs from its committed checksum.`);
     }
     applied.add(row.migration_name);

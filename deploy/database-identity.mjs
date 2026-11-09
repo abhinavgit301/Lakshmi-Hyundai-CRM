@@ -1,6 +1,26 @@
+import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 
 const IDENTITY_FILE = '/etc/lakshmi-hyundai/database-identity.json';
+
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const toLf = (bytes) => Buffer.from(Buffer.from(bytes).toString('latin1').replace(/\r\n/g, '\n'), 'latin1');
+
+// Canonical checksum: SHA-256 of the migration with CRLF sequences converted to LF.
+// Only CRLF is rewritten; every other byte (including a lone CR) is preserved.
+export function canonicalMigrationChecksum(migrationBytes) {
+  return sha256(toLf(migrationBytes));
+}
+
+// Prisma records the checksum of the file bytes at resolve time, so identical SQL can be
+// recorded with LF or CRLF endings. Only CRLF/LF differences are tolerated.
+export function migrationChecksumMatches(migrationBytes, recordedChecksum) {
+  if (typeof recordedChecksum !== 'string') return false;
+  const bytes = Buffer.from(migrationBytes);
+  const lf = toLf(bytes);
+  const crlf = Buffer.from(lf.toString('latin1').replace(/\n/g, '\r\n'), 'latin1');
+  return [bytes, lf, crlf].some((candidate) => sha256(candidate) === recordedChecksum);
+}
 
 export function validateExpectedDatabaseIdentity(value) {
   const identity = typeof value === 'string' ? JSON.parse(value) : value;

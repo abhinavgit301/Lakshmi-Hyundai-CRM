@@ -78,7 +78,25 @@ test('extracts the complete expected release tree using fixed safe modes', async
   });
 });
 
+test('accepts a rollback.sql inside a migration directory', async () => {
+  await withScratch(async (root) => {
+    const archive = path.join(root, 'release.tar.gz');
+    const stage = path.join(root, 'stage');
+    mkdirSync(stage);
+    const rollback = 'server/prisma/migrations/20261106000000_test/rollback.sql';
+    writeFileSync(archive, makeArchive([...requiredFiles, [rollback, 'SELECT 2;\n']]));
+
+    await extractReleaseArchive(archive, stage);
+
+    assert.equal(readFileSync(path.join(stage, rollback), 'utf8'), 'SELECT 2;\n');
+  });
+});
+
 for (const [label, malicious] of [
+  ['rollback.sql outside a migration directory', [['server/prisma/rollback.sql', 'x']]],
+  ['rollback.sql nested below a migration directory', [['server/prisma/migrations/20261106000000_test/sub/rollback.sql', 'x']]],
+  ['rollback.sql directly in the migrations directory', [['server/prisma/migrations/rollback.sql', 'x']]],
+  ['rollback.sql as a symlink', [['server/prisma/migrations/20261106000000_test/rollback.sql', '', '2', '../../../../../shared/backend.env']]],
   ['parent traversal', [['../shared/backend.env', 'overwrite']]],
   ['malformed NUL-terminated path', [['server/src/valid.js\0../../shared/backend.env', 'overwrite']]],
   ['absolute path', [['/opt/lakshmi-hyundai/shared/backend.env', 'overwrite']]],

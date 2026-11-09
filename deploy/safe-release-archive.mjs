@@ -120,7 +120,7 @@ function allowedMember(name, kind) {
   if (name === 'server/deploy' || name === 'server/prisma' ||
       name === 'server/prisma/migrations') return kind === 'directory';
   if (/^server\/prisma\/migrations\/[^/]+$/.test(name)) return kind === 'directory';
-  if (/^server\/prisma\/migrations\/[^/]+\/migration\.sql$/.test(name)) return kind === 'file';
+  if (/^server\/prisma\/migrations\/[^/]+\/(?:migration|rollback)\.sql$/.test(name)) return kind === 'file';
   return false;
 }
 

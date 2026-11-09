@@ -116,6 +116,14 @@ jobs:
         working-directory: server
         run: npm exec -- prisma validate
 
+      - name: Generate Prisma Client
+        working-directory: server
+        run: npm exec -- prisma generate
+
+      - name: Verify generated Prisma Client
+        working-directory: server
+        run: node --input-type=module -e "const { PrismaClient } = await import('@prisma/client'); if (typeof PrismaClient !== 'function') process.exit(1)"
+
       - name: Prepare disposable CI schema
         working-directory: server
         run: npm exec -- prisma db push

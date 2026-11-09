@@ -21,6 +21,23 @@ test('validates the pinned production database identity', () => {
   assert.doesNotThrow(() => assertDatabaseIdentity(connection, actual, expected));
 });
 
+test('accepts PostgreSQL IPv4 inet addresses with a /32 host prefix', () => {
+  const ipExpected = {
+    database: 'lakshmi_hyundai_crm',
+    host: '172.18.0.2',
+    port: 5432,
+    username: 'lakshmi_db_admin',
+  };
+  const ipConnection = new URL('postgresql://lakshmi_db_admin:irrelevant@172.18.0.2:5432/lakshmi_hyundai_crm');
+  const ipActual = {
+    database: 'lakshmi_hyundai_crm',
+    username: 'lakshmi_db_admin',
+    server_address: '172.18.0.2/32',
+    server_port: 5432,
+  };
+
+  assert.doesNotThrow(() => assertDatabaseIdentity(ipConnection, ipActual, ipExpected));
+});
 test('rejects a different endpoint, database, user, or port', () => {
   assert.throws(() => assertDatabaseIdentity(
     new URL('postgresql://lhcrm_app@other.example:5432/lakshmi_hyundai_crm'),

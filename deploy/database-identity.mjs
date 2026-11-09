@@ -29,6 +29,9 @@ export function assertDatabaseIdentity(connection, actual, expected) {
   const actualDatabase = decodeURIComponent(connection.pathname.slice(1));
   const actualPort = Number(connection.port || 5432);
   const actualUsername = decodeURIComponent(connection.username);
+  const actualServerAddress = typeof actual.server_address === 'string'
+    ? actual.server_address.split('/')[0].toLowerCase()
+    : '';
   if (actualDatabase !== expected.database ||
       actualHost !== expected.host.toLowerCase() ||
       actualPort !== expected.port ||
@@ -37,7 +40,7 @@ export function assertDatabaseIdentity(connection, actual, expected) {
       actual.username !== expected.username ||
       typeof actual.server_address !== 'string' ||
       !actual.server_address.trim() ||
-      actual.server_address.toLowerCase() !== expected.host.toLowerCase() ||
+      actualServerAddress !== expected.host.toLowerCase() ||
       Number(actual.server_port) !== expected.port) {
     throw new Error('Refusing migrations: configured database endpoint identity does not match the live connection.');
   }

@@ -118,7 +118,7 @@ jobs:
 
       - name: Prepare disposable CI schema
         working-directory: server
-        run: npm exec -- prisma db push --skip-generate
+        run: npm exec -- prisma db push
 
       - name: Check backend JavaScript syntax
         working-directory: server

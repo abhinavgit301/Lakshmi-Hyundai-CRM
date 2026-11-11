@@ -290,6 +290,56 @@ test('only one refresh can claim a snapshot at a time', async () => {
   assert.equal((await first).refreshed, true);
 });
 
+test('snapshot timing identifies a pending computation and subsequent persistence without logging metric values', async (t) => {
+  const log = t.mock.method(console, 'log', () => {});
+  const db = fakeDb({ users: [USER], rows: [{ ...KEY, status: 'pending' }] });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const pending = refreshSnapshot(KEY, { now: NOW, db, compute: async () => { await gate; return METRICS; } });
+  await new Promise((resolve) => setImmediate(resolve));
+  const events = () => log.mock.calls.map((call) => JSON.parse(call.arguments[0]));
+  const before = events();
+  assert.ok(before.some((event) => event.event === 'phase_start' && event.phase === 'compute'));
+  assert.ok(!before.some((event) => event.event === 'phase_end' && event.phase === 'compute'));
+  release();
+  assert.equal((await pending).refreshed, true);
+  const after = events();
+  assert.equal(new Set(after.map((event) => event.attemptId)).size, 1);
+  assert.ok(after.some((event) => event.event === 'phase_end' && event.phase === 'compute' && event.outcome === 'ok'));
+  assert.ok(after.some((event) => event.event === 'phase_end' && event.phase === 'persist_clean'));
+  assert.ok(after.some((event) => event.event === 'attempt_result' && event.outcome === 'ok'));
+  assert.ok(after.every((event) => Number.isFinite(event.elapsedMs)));
+  assert.ok(!JSON.stringify(after).includes('lifetimeCalls'));
+});
+
+test('snapshot timing records failures without logging the error message', async (t) => {
+  const log = t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'error', () => {});
+  const db = fakeDb({ users: [USER], rows: [{ ...KEY, status: 'pending' }] });
+  const result = await refreshSnapshot(KEY, {
+    now: NOW, db, compute: async () => { throw new Error('sensitive-error-detail'); },
+  });
+  assert.equal(result.refreshed, false);
+  const events = log.mock.calls.map((call) => JSON.parse(call.arguments[0]));
+  assert.ok(events.some((event) => event.phase === 'compute' && event.outcome === 'error'));
+  assert.ok(events.some((event) => event.phase === 'persist_failure' && event.outcome === 'ok'));
+  assert.ok(!JSON.stringify(events).includes('sensitive-error-detail'));
+});
+
+test('snapshot timing reports a failure-handler rejection without hiding it', async (t) => {
+  const log = t.mock.method(console, 'log', () => {});
+  const db = fakeDb({ users: [USER], rows: [{ ...KEY, status: 'pending' }] });
+  db.crePerformanceSnapshot.findUnique = async () => { throw new Error('failure-storage-unavailable'); };
+  await assert.rejects(refreshSnapshot(KEY, {
+    now: NOW, db, compute: async () => { throw new Error('computation-failed'); },
+  }), /failure-storage-unavailable/);
+  const events = log.mock.calls.map((call) => JSON.parse(call.arguments[0]));
+  assert.ok(events.some((event) => event.phase === 'failure_lookup' && event.outcome === 'error'));
+  assert.ok(events.some((event) => event.phase === 'attempt' && event.outcome === 'error'));
+  assert.ok(!JSON.stringify(events).includes('failure-storage-unavailable'));
+  assert.equal(db.table[0].status, 'refreshing');
+});
+
 test('batch refresh runs at most two workers and continues after an unexpected rejection', async (t) => {
   const log = t.mock.method(console, 'error', () => {});
   const rows = Array.from({ length: 5 }, (_, i) => ({ ...KEY, creId: `cre-${i}`, status: 'pending' }));

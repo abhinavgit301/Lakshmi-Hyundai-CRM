@@ -736,6 +736,7 @@ export async function loadCallListRecords(
     page: pageOptions = null,
     filters = null,
     allocationQueueRecords = [],
+    snapshotTrace = null,
   } = {},
 ) {
   const role = normalizeRole(user?.role);
@@ -847,6 +848,8 @@ export async function loadCallListRecords(
   let processedVisits = 0;
   let loggedFirstChunk = false;
   let cursor = null;
+  let snapshotPages = 0;
+  let snapshotRows = 0;
   while (true) {
     const pageWhere = cursor
       ? {
@@ -867,6 +870,13 @@ export async function loadCallListRecords(
       take: CALL_LIST_QUERY_CHUNK_SIZE,
       select,
     });
+    if (snapshotTrace) {
+      snapshotPages += 1;
+      snapshotRows += page.length;
+      if (snapshotPages === 1 || snapshotPages % 10 === 0 || page.length < CALL_LIST_QUERY_CHUNK_SIZE) {
+        snapshotTrace.emit('call_list_progress', { pages: snapshotPages, rows: snapshotRows });
+      }
+    }
     if (!page.length) break;
     if (memoryTracker) {
       const sample = callListMemorySnapshot();

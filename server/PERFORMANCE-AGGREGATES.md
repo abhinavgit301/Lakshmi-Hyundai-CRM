@@ -71,6 +71,7 @@ For an explicitly approved non-bench target, aggregate scripts additionally requ
 - `backfill-performance-aggregates.mjs` is read-only unless `--apply` is passed. Apply re-derives counters and is idempotent.
 - None of these scripts applies the migration, starts automatically, or changes feature flags.
 - Scheduler refresh runs every minute and targets current snapshots after ten minutes, leaving room under the 15-minute freshness limit. Refresh failures retain last-good metric values and expose failure status; retry uses backoff.
+- Refresh diagnostics are JSON log lines with `component: "performance_snapshot"`. Correlate by `attemptId`; `phase_start` without `phase_end` identifies the pending phase. Call-list progress reports aggregate page and row counts at the first page, every ten pages, and the final page. Durations include pool waits and do not by themselves distinguish them from query execution or JavaScript processing. These diagnostics do not cancel stalled work or change refresh behavior.
 
 ## Rollback
 

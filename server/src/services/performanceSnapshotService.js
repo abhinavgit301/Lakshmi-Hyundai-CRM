@@ -6,6 +6,7 @@ import {
 import { workshopMonthOf } from '../utils/workshopTime.js';
 import { invalidateCallListCache } from '../utils/callListCache.js';
 import { setSnapshotRefreshHandler } from '../utils/performanceRefreshSignal.js';
+import { createSnapshotTrace, traceSnapshotPhase } from '../utils/performanceSnapshotTrace.js';
 import {
   HISTORICAL_SNAPSHOT_MAX_AGE_MS,
   isPerformanceAggregateMaintenanceEnabled,
@@ -50,11 +51,18 @@ export async function refreshSnapshot(key, {
   compute = computeCrePerformanceMetrics,
   computeFreeService = computeFreeServiceCrePerformanceMetrics,
 } = {}) {
+  const trace = createSnapshotTrace(key);
+  return traceSnapshotPhase(trace, 'attempt', () => refreshSnapshotWithTrace(
+    key, { now, db, compute, computeFreeService, trace },
+  ));
+}
+
+async function refreshSnapshotWithTrace(key, { now, db, compute, computeFreeService, trace }) {
   const where = {
     creId: key.creId, ccmId: key.ccmId, year: key.year, month: key.month, viewer: key.viewer,
   };
-  await db.crePerformanceSnapshot.createMany({ data: [{ ...where }], skipDuplicates: true });
-  const claimed = await db.crePerformanceSnapshot.updateMany({
+  await traceSnapshotPhase(trace, 'ensure_row', () => db.crePerformanceSnapshot.createMany({ data: [{ ...where }], skipDuplicates: true }));
+  const claimed = await traceSnapshotPhase(trace, 'claim', () => db.crePerformanceSnapshot.updateMany({
     where: {
       ...where,
       OR: [
@@ -63,22 +71,26 @@ export async function refreshSnapshot(key, {
       ],
     },
     data: { status: 'refreshing', refreshStartedAt: now, lastAttemptAt: now },
-  });
+  }));
+  trace.emit('claim_result', { outcome: claimed.count ? 'claimed' : 'already_refreshing' });
   if (!claimed.count) return { refreshed: false, reason: 'already-refreshing' };
 
   try {
     const expectedRole = key.viewer === 'FREE_SERVICE_CRE' ? 'FREE_SERVICE_CRE' : 'CRE';
-    const user = await db.user.findFirst({
+    const user = await traceSnapshotPhase(trace, 'user_lookup', () => db.user.findFirst({
       where: { id: key.creId, role: expectedRole },
       select: { id: true, name: true, ccmId: true, freeServiceEnabled: true, warrantyEnabled: true },
-    });
+    }));
     if (!user || user.ccmId !== key.ccmId) {
-      await db.crePerformanceSnapshot.deleteMany({ where });
+      await traceSnapshotPhase(trace, 'delete_missing_user', () => db.crePerformanceSnapshot.deleteMany({ where }));
+      trace.emit('attempt_result', { outcome: 'cre_not_in_ccm' });
       return { refreshed: false, reason: 'cre-not-in-ccm' };
     }
-    const metrics = key.viewer === 'FREE_SERVICE_CRE'
-      ? await computeFreeService({ targetCre: user, year: key.year, month: key.month, now, db })
-      : await compute({ targetCre: user, viewer: key.viewer, year: key.year, month: key.month, now });
+    const metrics = await traceSnapshotPhase(trace, 'compute', () => (
+      key.viewer === 'FREE_SERVICE_CRE'
+        ? computeFreeService({ targetCre: user, year: key.year, month: key.month, now, db, trace })
+        : compute({ targetCre: user, viewer: key.viewer, year: key.year, month: key.month, now, trace })
+    ));
     const data = {
       callsThisMonth: metrics.callsThisMonth,
       assignedCustomerCount: metrics.assignedCustomerCount,
@@ -93,19 +105,21 @@ export async function refreshSnapshot(key, {
       failureCount: 0,
     };
     // A change that landed while this refresh was calculating must stay flagged as dirty.
-    const clean = await db.crePerformanceSnapshot.updateMany({
+    const clean = await traceSnapshotPhase(trace, 'persist_clean', () => db.crePerformanceSnapshot.updateMany({
       where: { ...where, OR: [{ dirtySince: null }, { dirtySince: { lte: now } }] },
       data: { ...data, status: 'ok', dirtySince: null },
-    });
+    }));
     if (!clean.count) {
-      await db.crePerformanceSnapshot.updateMany({ where, data: { ...data, status: 'dirty' } });
+      await traceSnapshotPhase(trace, 'persist_dirty', () => db.crePerformanceSnapshot.updateMany({ where, data: { ...data, status: 'dirty' } }));
     }
     // Cached summaries may still hold the previous snapshot (or a "pending" placeholder).
     invalidateCallListCache({ ccmIds: [key.ccmId], kinds: ['workflow'] });
+    trace.emit('attempt_result', { outcome: clean.count ? 'ok' : 'dirty' });
     return { refreshed: true };
   } catch (error) {
-    const current = await db.crePerformanceSnapshot.findUnique({ where: snapshotWhere(key) });
-    await db.crePerformanceSnapshot.updateMany({
+    trace.emit('attempt_result', { outcome: 'calculation_failed' });
+    const current = await traceSnapshotPhase(trace, 'failure_lookup', () => db.crePerformanceSnapshot.findUnique({ where: snapshotWhere(key) }));
+    await traceSnapshotPhase(trace, 'persist_failure', () => db.crePerformanceSnapshot.updateMany({
       where,
       data: {
         status: 'failed',
@@ -113,7 +127,7 @@ export async function refreshSnapshot(key, {
         failureCount: (current?.failureCount ?? 0) + 1,
         lastAttemptAt: now,
       },
-    });
+    }));
     console.error(`Performance snapshot refresh failed for ${keyOf(key)}:`, error);
     return { refreshed: false, reason: 'failed', error };
   }

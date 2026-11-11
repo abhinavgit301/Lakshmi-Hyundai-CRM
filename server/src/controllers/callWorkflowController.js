@@ -20,6 +20,7 @@ import { appointmentConversionRatePercent } from '../utils/performanceMetrics.js
 import { addCallToAggregates } from '../utils/creCallAggregates.js';
 import { readCreCallCounts, readCreDailyRows } from '../utils/creCallAggregateReaders.js';
 import { describeSnapshot, isPerformanceAggregatesEnabled } from '../utils/performanceSnapshotState.js';
+import { traceSnapshotPhase } from '../utils/performanceSnapshotTrace.js';
 import { getSnapshot, requestSnapshotRefresh } from '../services/performanceSnapshotService.js';
 import { parsePagination } from '../utils/pagination.js';
 import { classifyDueCohorts, countOverdueRecords, creDueWhere, loadCallListRecords } from './recordsController.js';
@@ -323,17 +324,17 @@ export async function getFreeServicePerformanceSummary(req, res) {
   });
 }
 
-export async function computeFreeServiceCrePerformanceMetrics({ targetCre, year, month, now = new Date(), db = prisma }) {
+export async function computeFreeServiceCrePerformanceMetrics({ targetCre, year, month, now = new Date(), db = prisma, trace }) {
   const { start, end } = workshopMonthRange(year, month);
   const ccmId = targetCre.ccmId || 'no-access';
-  const callsThisMonth = await db.callLog.count({
+  const callsThisMonth = await traceSnapshotPhase(trace, 'free_service_call_count', () => db.callLog.count({
     where: {
       ...freeServiceCallScope(ccmId),
       createdById: targetCre.id,
       callSource: 'FREE_SERVICE',
       createdAt: { gte: start, lt: end },
     },
-  });
+  }));
   const current = workshopMonthOf(now);
   const isCurrentMonth = current.year === year && current.month === month;
   return {
@@ -348,7 +349,7 @@ const cachedCrePerformanceSummary = withCachedResponse('performance-cre', loadCr
 // The snapshot refresh job calls this, so a stored snapshot always equals what the live path would return.
 // `viewer` is the role of the person looking at the CRE: a CCM sees every service category enabled, while a
 // CRE viewer is evaluated with the CRE's own (default-off) Free Service and Warranty flags, as the live path does.
-export async function computeCrePerformanceMetrics({ targetCre, viewer, year, month, now = new Date() }) {
+export async function computeCrePerformanceMetrics({ targetCre, viewer, year, month, now = new Date(), trace }) {
   const targetUser = {
     id: targetCre.id,
     role: 'CRE',
@@ -361,7 +362,7 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
   const isCurrentMonth = current.year === year && current.month === month;
   const asOf = isCurrentMonth ? now : new Date(monthEnd.getTime() - 1);
 
-  const latestMonthlyImport = await prisma.monthlyCustomerDataImport.findFirst({
+  const latestMonthlyImport = await traceSnapshotPhase(trace, 'latest_import', () => prisma.monthlyCustomerDataImport.findFirst({
     where: {
       status: 'completed',
       addedRows: { gt: 0 },
@@ -369,7 +370,7 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
     },
     orderBy: { createdAt: 'desc' },
     select: { createdAt: true },
-  });
+  }));
   const cycleStart = latestMonthlyImport && latestMonthlyImport.createdAt > monthStart ? latestMonthlyImport.createdAt : monthStart;
 
   const callVisibility = callLogVisibility(targetUser);
@@ -388,12 +389,12 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
   };
 
   const [callsThisMonth, customersReached, scopedRecords, pendingFollowUps, appointmentsSetThisMonth, missedWarrantyCases, lifetimeCalls, lifetimeAppointments] = await Promise.all([
-    prisma.callLog.count({ where: monthFilter }),
-    prisma.callLog.groupBy({ by: ['customerId'], where: monthFilter }),
-    loadCallListRecords(dueWhere, now, targetUser),
-    prisma.followUp.count({ where: { ...followUpVisibility(targetUser), status: 'pending' } }),
-    prisma.callLog.count({ where: { ...monthFilter, outcome: 'APPOINTMENT_SET' } }),
-    canAccessServiceSource(targetUser, 'WARRANTY')
+    traceSnapshotPhase(trace, 'monthly_calls', () => prisma.callLog.count({ where: monthFilter })),
+    traceSnapshotPhase(trace, 'customers_reached', () => prisma.callLog.groupBy({ by: ['customerId'], where: monthFilter })),
+    traceSnapshotPhase(trace, 'call_list', () => loadCallListRecords(dueWhere, now, targetUser, { snapshotTrace: trace })),
+    traceSnapshotPhase(trace, 'pending_followups', () => prisma.followUp.count({ where: { ...followUpVisibility(targetUser), status: 'pending' } })),
+    traceSnapshotPhase(trace, 'monthly_appointments', () => prisma.callLog.count({ where: { ...monthFilter, outcome: 'APPOINTMENT_SET' } })),
+    traceSnapshotPhase(trace, 'missed_warranty', () => canAccessServiceSource(targetUser, 'WARRANTY')
       ? findMissedWarrantyCases({
         scope: dueWhere,
         vehicleScope: viewer === 'CCM'
@@ -404,26 +405,32 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
         month,
         now,
       })
-      : Promise.resolve([]),
-    prisma.callLog.count({
+      : Promise.resolve([])),
+    traceSnapshotPhase(trace, 'lifetime_calls', () => prisma.callLog.count({
       where: {
         createdById: targetCre.id,
         callSource: { in: allowedServiceSources(targetUser) },
         ...ownedVehicleScope,
       },
-    }),
-    prisma.appointment.count({ where: appointmentVisibilityWhere(targetUser) }),
+    })),
+    traceSnapshotPhase(trace, 'lifetime_appointments', () => prisma.appointment.count({ where: appointmentVisibilityWhere(targetUser) })),
   ]);
 
-  const cohorts = classifyDueCohorts(scopedRecords, asOf);
-  const freeServiceIds = canAccessServiceSource(targetUser, 'FREE_SERVICE')
-    ? freeServiceCustomerIdsForMonth(scopedRecords, year, month, asOf)
-    : new Set();
-  const assignedCustomerCount = new Set([
-    ...cohorts.oneYear.map((record) => record.customerId),
-    ...cohorts.sixMonth.map((record) => record.customerId),
-    ...freeServiceIds,
-  ].filter(Boolean)).size;
+  const { cohorts, freeServiceIds, assignedCustomerCount } = await traceSnapshotPhase(trace, 'classification', () => {
+    const classified = classifyDueCohorts(scopedRecords, asOf);
+    const freeIds = canAccessServiceSource(targetUser, 'FREE_SERVICE')
+      ? freeServiceCustomerIdsForMonth(scopedRecords, year, month, asOf)
+      : new Set();
+    return {
+      cohorts: classified,
+      freeServiceIds: freeIds,
+      assignedCustomerCount: new Set([
+        ...classified.oneYear.map((record) => record.customerId),
+        ...classified.sixMonth.map((record) => record.customerId),
+        ...freeIds,
+      ].filter(Boolean)).size,
+    };
+  });
 
   return {
     asOf,

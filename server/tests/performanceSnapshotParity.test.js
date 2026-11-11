@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { prisma } from '../src/config/prisma.js';
 import { getCrePerformanceSummary, computeCrePerformanceMetrics } from '../src/controllers/callWorkflowController.js';
 import { invalidateCallListCache } from '../src/utils/callListCache.js';
+import { createSnapshotTrace } from '../src/utils/performanceSnapshotTrace.js';
 
 const MONTH = { year: 2026, month: 10, date: '2026-10-15' };
 const CRE = {
@@ -206,6 +207,26 @@ async function getLegacyMetrics(t, scenario, viewerRole) {
   assert.ok(response, 'legacy performance endpoint returned no response');
   return response;
 }
+
+test('CCM snapshot traces each calculation branch and aggregate call-list progress', async (t) => {
+  const log = t.mock.method(console, 'log', () => {});
+  const { targetCre } = installFixture(t);
+  const trace = createSnapshotTrace({ creId: CRE.id, ccmId: CRE.ccmId, year: 2026, month: 10, viewer: 'CCM' });
+  await computeCrePerformanceMetrics({
+    targetCre, viewer: 'CCM', year: 2026, month: 10, now: new Date('2026-11-06T08:30:00Z'), trace,
+  });
+  const events = log.mock.calls.map((call) => JSON.parse(call.arguments[0]));
+  for (const phase of [
+    'latest_import', 'monthly_calls', 'customers_reached', 'call_list', 'pending_followups',
+    'monthly_appointments', 'missed_warranty', 'lifetime_calls', 'lifetime_appointments', 'classification',
+  ]) {
+    assert.ok(events.some((event) => event.event === 'phase_start' && event.phase === phase), phase);
+    assert.ok(events.some((event) => event.event === 'phase_end' && event.phase === phase && event.outcome === 'ok'), phase);
+  }
+  assert.ok(events.some((event) => event.event === 'call_list_progress' && event.pages === 1 && event.rows === 3));
+  assert.ok(!JSON.stringify(events).includes('Customer One'));
+  assert.ok(!JSON.stringify(events).includes('9999999991'));
+});
 
 test('snapshot metrics match the legacy live endpoint across permissions, ownership and historical periods', async (t) => {
   const originalDate = globalThis.Date;

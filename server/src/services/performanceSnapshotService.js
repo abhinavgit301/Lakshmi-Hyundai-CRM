@@ -18,6 +18,7 @@ const REFRESH_LOCK_TIMEOUT_MS = 10 * 60 * 1000;
 const SCHEDULER_INTERVAL_MS = 60 * 1000;
 const KICK_DELAY_MS = 2000;
 const BATCH_SIZE = 20;
+const REFRESH_CONCURRENCY = 2;
 const MAX_ERROR_LENGTH = 500;
 
 const VIEWERS = ['CRE', 'CCM'];
@@ -181,22 +182,31 @@ export async function findSnapshotsDueForRefresh({ now = new Date(), limit = BAT
     .slice(0, limit);
 }
 
-export async function refreshDueSnapshots({ now = new Date() } = {}) {
-  await seedCurrentMonthSnapshots({ now });
-  const due = await findSnapshotsDueForRefresh({ now });
+export async function refreshDueSnapshots({ now = new Date(), db = prisma, refresh = refreshSnapshot } = {}) {
+  await seedCurrentMonthSnapshots({ now, db });
+  const due = await findSnapshotsDueForRefresh({ now, db });
   let refreshed = 0;
-  for (const row of due) {
-    const result = await refreshSnapshot(row, { now: new Date() });
-    if (result.refreshed) refreshed += 1;
-  }
+  let next = 0;
+  const worker = async () => {
+    while (next < due.length) {
+      const row = due[next++];
+      try {
+        const result = await refresh(row, { now: new Date(), db });
+        if (result.refreshed) refreshed += 1;
+      } catch (error) {
+        console.error(`Performance snapshot batch refresh failed for ${keyOf(row)}:`, error);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(REFRESH_CONCURRENCY, due.length) }, worker));
   return { due: due.length, refreshed };
 }
 
-async function tick() {
+export async function tick({ refresh = refreshDueSnapshots } = {}) {
   if (ticking) return;
   ticking = true;
   try {
-    await refreshDueSnapshots();
+    await refresh();
   } catch (error) {
     console.error('Performance snapshot scheduler tick failed:', error);
   } finally {

@@ -10,7 +10,9 @@ import {
 import { markCreSnapshotsDirty } from '../src/utils/performanceSnapshotState.js';
 import {
   findSnapshotsDueForRefresh,
+  refreshDueSnapshots,
   refreshSnapshot,
+  tick,
 } from '../src/services/performanceSnapshotService.js';
 
 after(async () => {
@@ -84,7 +86,10 @@ function fakeDb({ users = [], rows = [] } = {}) {
     table,
     calls,
     crePerformanceSnapshot: snapshots,
-    user: { findFirst: async ({ where }) => users.find((user) => user.id === where.id) ?? null },
+    user: {
+      findFirst: async ({ where }) => users.find((user) => user.id === where.id) ?? null,
+      findMany: async () => [],
+    },
   };
 }
 
@@ -283,6 +288,74 @@ test('only one refresh can claim a snapshot at a time', async () => {
   assert.deepEqual(second, { refreshed: false, reason: 'already-refreshing' });
   release();
   assert.equal((await first).refreshed, true);
+});
+
+test('batch refresh runs at most two workers and continues after an unexpected rejection', async (t) => {
+  const log = t.mock.method(console, 'error', () => {});
+  const rows = Array.from({ length: 5 }, (_, i) => ({ ...KEY, creId: `cre-${i}`, status: 'pending' }));
+  const db = fakeDb({ rows });
+  const started = [];
+  const releases = new Map();
+  let active = 0;
+  let maxActive = 0;
+  const refresh = async (row) => {
+    started.push(row.creId);
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    try {
+      return await new Promise((resolve, reject) => releases.set(row.creId, { resolve, reject }));
+    } finally {
+      active -= 1;
+    }
+  };
+  const batch = refreshDueSnapshots({ now: NOW, db, refresh });
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  await flush();
+  assert.deepEqual(started, ['cre-0', 'cre-1']);
+  releases.get('cre-0').reject(new Error('claim failed'));
+  await flush();
+  assert.deepEqual(started, ['cre-0', 'cre-1', 'cre-2']);
+  releases.get('cre-1').resolve({ refreshed: false });
+  await flush();
+  assert.deepEqual(started, ['cre-0', 'cre-1', 'cre-2', 'cre-3']);
+  releases.get('cre-2').resolve({ refreshed: true });
+  await flush();
+  assert.deepEqual(started, ['cre-0', 'cre-1', 'cre-2', 'cre-3', 'cre-4']);
+  releases.get('cre-3').resolve({ refreshed: true });
+  releases.get('cre-4').resolve({ refreshed: true });
+  assert.deepEqual(await batch, { due: 5, refreshed: 3 });
+  assert.equal(maxActive, 2);
+  assert.equal(active, 0);
+  assert.equal(log.mock.callCount(), 1);
+  assert.match(log.mock.calls[0].arguments[0], /cre-0/);
+  assert.match(log.mock.calls[0].arguments[1].message, /claim failed/);
+});
+
+test('an empty batch has no refreshes', async () => {
+  const db = fakeDb();
+  const result = await refreshDueSnapshots({
+    now: NOW,
+    db,
+    refresh: () => { throw new Error('unexpected refresh'); },
+  });
+  assert.deepEqual(result, { due: 0, refreshed: 0 });
+});
+
+test('scheduler ticks do not overlap while a previous tick is running', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const refresh = async () => {
+    calls += 1;
+    await gate;
+  };
+  const first = tick({ refresh });
+  await tick({ refresh });
+  assert.equal(calls, 1);
+  release();
+  await first;
+  await tick({ refresh });
+  assert.equal(calls, 2);
 });
 
 test('the scheduler query picks up dirty, pending, aged and stuck rows but not fresh ones', async () => {

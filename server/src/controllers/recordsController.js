@@ -4,7 +4,7 @@ import { appointmentVisibilityWhere } from '../utils/appointmentAccess.js';
 import { evaluateRepairOrderRow } from '../utils/businessRules.js';
 import { creCustomerWhere, creVehicleWhere, workshopVisitVisibilityWhere } from '../utils/creAccess.js';
 import { normalizeVin } from '../utils/roleAccess.js';
-import { addMonths, classifyServiceDue, getYearlyDueDate, parseStoredDate } from '../utils/serviceDue.js';
+import { addMonths, classifyServiceDue, dueCohortServiceDateRanges, getYearlyDueDate, parseStoredDate } from '../utils/serviceDue.js';
 import {
   normalizeSaleDate,
   countRemainingFreeServiceMilestones,
@@ -1264,10 +1264,46 @@ export async function loadDueRecords(where, dueWindow, asOf = new Date(), user =
   return dueWindow === '1y' ? cohorts.oneYear : cohorts.sixMonth;
 }
 
-// The stored latest visit is service-type agnostic, so it cannot safely narrow candidates once
-// paid/free service phases use different reference visits.
+export function dueCohortCandidateWhere(asOf) {
+  const { oneYear, sixMonth } = dueCohortServiceDateRanges(asOf);
+  return {
+    vehicle: {
+      is: {
+        physicalVehicle: {
+          is: {
+            workshopVisits: {
+              some: { OR: [{ visitDate: oneYear }, { visitDate: sixMonth }] },
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+// Any lifecycle reference in a due cohort must be a visit in one of these ranges. Include
+// all scoped rows for each candidate VIN so canonical selection remains unchanged.
 export async function loadDueCohorts(where, asOf = new Date(), user = null) {
-  return classifyDueCohorts(await loadCallListRecords(where, asOf, user), asOf);
+  const vins = new Set();
+  let afterId = null;
+  while (true) {
+    const page = await prisma.masterCallList.findMany({
+      where: {
+        AND: [where, dueCohortCandidateWhere(asOf), ...(afterId ? [{ id: { gt: afterId } }] : [])],
+      },
+      orderBy: { id: 'asc' },
+      take: RELATED_ID_QUERY_CHUNK_SIZE,
+      select: { id: true, vin: true },
+    });
+    for (const row of page) vins.add(row.vin);
+    if (page.length < RELATED_ID_QUERY_CHUNK_SIZE) break;
+    afterId = page.at(-1).id;
+  }
+  const records = [];
+  for (const chunk of splitIntoChunks([...vins], RELATED_ID_QUERY_CHUNK_SIZE)) {
+    records.push(...await loadCallListRecords({ AND: [where, { vin: { in: chunk } }] }, asOf, user));
+  }
+  return classifyDueCohorts(records, asOf);
 }
 
 export function classifyDueCohorts(records, asOf = new Date()) {

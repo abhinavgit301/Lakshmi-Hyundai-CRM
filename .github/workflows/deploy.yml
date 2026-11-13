@@ -36,16 +36,16 @@ jobs:
         env:
           POSTGRES_USER: ci
           POSTGRES_PASSWORD: ci
-          POSTGRES_DB: ci
+          POSTGRES_DB: status_test_ci
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ci -d ci"
+          --health-cmd "pg_isready -U ci -d status_test_ci"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci?schema=public
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/status_test_ci?schema=public
       JWT_SECRET: ci-only-not-a-production-secret
       NODE_ENV: test
       RUN_STARTUP_REPAIRS: "false"
@@ -136,6 +136,12 @@ jobs:
       - name: Run backend test suite
         working-directory: server
         run: npm test
+
+      - name: Verify service status migration and workflows
+        working-directory: server
+        env:
+          STATUS_INTEGRATION_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/status_test_ci?schema=public
+        run: node --test tests/serviceContactMigration.integration.test.js tests/serviceContactStatus.integration.test.js
 
       - name: Test deployment archive, authorization, and recovery
         run: node --test deploy/tests/*.test.mjs

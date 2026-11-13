@@ -25,15 +25,17 @@ import { allowedServiceSources, canAccessServiceSource } from '../utils/creServi
 import { classifyMasterRepairType } from '../utils/repairTypes.js';
 import { filterMasterCallListRecords, validateMasterCallListFilters } from '../utils/masterCallListFilters.js';
 import { isMasterCallListSqlEnabled, runMasterCallListPagePrisma } from '../utils/masterCallListSql.js';
-import { compareByDueDateThenId, decodeDueCursor, encodeDueCursor, filterServiceListRecords, paginateByCursor, paginateRecords, parsePagination } from '../utils/pagination.js';
+import { compareByDueDateThenId, compareByServiceStatusThenDueDate, decodeDueCursor, encodeDueCursor, filterServiceListRecords, paginateByCursor, paginateRecords, parsePagination } from '../utils/pagination.js';
 import { buildRepairOrderKey, normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
 import { latestWorkshopVisitOrderBy } from '../utils/workshopVisitOrdering.js';
 import { addOriginatingDealerCodes, getOriginatingDealerCodeMap } from '../utils/serviceHistoryDealerCodes.js';
 import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
 import { cachedCallList, cacheScopeCcm, scopeCacheInvalidation, withCachedResponse } from '../utils/callListCache.js';
+import { isServiceContactStatusEnabled, resolveServiceContactStatus } from '../utils/serviceContactStatus.js';
 
 const CALL_LIST_QUERY_CHUNK_SIZE = 100;
 const RELATED_ID_QUERY_CHUNK_SIZE = 500;
+const CALL_LIST_SELECTION_CHUNK_SIZE = 500;
 // Keeps each nested Prisma relation load far below PostgreSQL's 32,767 bind-parameter limit.
 const CUSTOMER_QUERY_BATCH_SIZE = Math.min(
   Math.max(Number.parseInt(process.env.CUSTOMER_QUERY_BATCH_SIZE, 10) || 500, 1),
@@ -743,6 +745,7 @@ export async function loadCallListRecords(
     filters = null,
     allocationQueueRecords = [],
     snapshotTrace = null,
+    selectionOnly = false,
   } = {},
 ) {
   const role = normalizeRole(user?.role);
@@ -761,6 +764,7 @@ export async function loadCallListRecords(
       : { id: 'no-access' };
   const visitWhere = workshopVisitVisibilityWhere(user);
   const appointmentWhere = appointmentVisibilityWhere(user || {});
+  const serviceStatusEnabled = isServiceContactStatusEnabled();
   const upcomingAppointmentWhere = {
     scheduledAt: { gte: now },
     status: { in: ['PENDING', 'CONFIRMED', 'RESCHEDULED'] },
@@ -781,6 +785,7 @@ export async function loadCallListRecords(
         customerId: true,
         model: true,
         saleDate: true,
+        ...(serviceStatusEnabled ? { serviceContactStatus: true, serviceStatusCohort: true } : {}),
         registrationNumber: true,
         physicalVehicleId: true,
         physicalVehicle: {
@@ -821,22 +826,24 @@ export async function loadCallListRecords(
           take: 1,
           select: { serviceType: true, nextServiceDueDate: true },
         },
-        appointments: {
-          where: { ...upcomingAppointmentWhere, ...appointmentWhere },
-          orderBy: { scheduledAt: 'asc' },
-          take: 1,
-          select: { id: true, scheduledAt: true, status: true },
-        },
-        customer: {
-          select: {
-            appointments: {
-              where: { ...upcomingAppointmentWhere, ...appointmentWhere, vehicleId: null },
-              orderBy: { scheduledAt: 'asc' },
-              take: 1,
-              select: { id: true, scheduledAt: true, status: true },
+        ...(!selectionOnly ? {
+          appointments: {
+            where: { ...upcomingAppointmentWhere, ...appointmentWhere },
+            orderBy: { scheduledAt: 'asc' },
+            take: 1,
+            select: { id: true, scheduledAt: true, status: true },
+          },
+          customer: {
+            select: {
+              appointments: {
+                where: { ...upcomingAppointmentWhere, ...appointmentWhere, vehicleId: null },
+                orderBy: { scheduledAt: 'asc' },
+                take: 1,
+                select: { id: true, scheduledAt: true, status: true },
+              },
             },
           },
-        },
+        } : {}),
       },
     },
   };
@@ -856,6 +863,7 @@ export async function loadCallListRecords(
   let cursor = null;
   let snapshotPages = 0;
   let snapshotRows = 0;
+  const queryChunkSize = selectionOnly ? CALL_LIST_SELECTION_CHUNK_SIZE : CALL_LIST_QUERY_CHUNK_SIZE;
   while (true) {
     const pageWhere = cursor
       ? {
@@ -873,13 +881,13 @@ export async function loadCallListRecords(
     const page = await prisma.masterCallList.findMany({
       where: pageWhere,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      take: CALL_LIST_QUERY_CHUNK_SIZE,
+      take: queryChunkSize,
       select,
     });
     if (snapshotTrace) {
       snapshotPages += 1;
       snapshotRows += page.length;
-      if (snapshotPages === 1 || snapshotPages % 10 === 0 || page.length < CALL_LIST_QUERY_CHUNK_SIZE) {
+      if (snapshotPages === 1 || snapshotPages % 10 === 0 || page.length < queryChunkSize) {
         snapshotTrace.emit('call_list_progress', { pages: snapshotPages, rows: snapshotRows });
       }
     }
@@ -890,7 +898,7 @@ export async function loadCallListRecords(
       memoryTracker.metrics.memory = sample;
     }
     const lastRow = page.at(-1);
-    const hasMoreRows = page.length === CALL_LIST_QUERY_CHUNK_SIZE;
+    const hasMoreRows = page.length === queryChunkSize;
     if (hasMoreRows) cursor = { createdAt: lastRow.createdAt, id: lastRow.id };
 
     const visitCcmIds = new Set();
@@ -947,7 +955,9 @@ export async function loadCallListRecords(
           ...(row.vehicle?.customer?.appointments || []),
         ].sort((left, right) => left.scheduledAt - right.scheduledAt)[0] || null,
         ccm: row.ccmId || 'Unassigned',
-        status: row.status,
+        status: serviceStatusEnabled && row.vehicle
+          ? resolveServiceContactStatus(row.vehicle, classifyServiceDue(serviceLifecycle.referenceDate, now), now)
+          : row.status,
         assigneeId: row.ownerUserId,
         assigneeName: null,
         ccmId: row.ccmId,
@@ -1034,7 +1044,7 @@ export async function loadCallListRecords(
       if (record.assigneeId) ownerPageIds.add(record.assigneeId);
     }
     const pageOwnerNames = new Map();
-    for (const chunk of splitIntoChunks([...ownerPageIds], RELATED_ID_QUERY_CHUNK_SIZE)) {
+    for (const chunk of splitIntoChunks(selectionOnly ? [] : [...ownerPageIds], RELATED_ID_QUERY_CHUNK_SIZE)) {
       const owners = await prisma.user.findMany({
         where: { id: { in: chunk } },
         select: { id: true, name: true },
@@ -1124,6 +1134,7 @@ export async function getCallList(req, res) {
     scope,
     pagination: paginationResult,
     filters: validated.filters,
+    narrowDueCandidates: lifecycleDueFilter && isMasterCallListDueCandidateEnabled(),
   }), { kind: 'master', ccmId: cacheScopeCcm(req.user) });
   return res.json(response);
 }
@@ -1200,7 +1211,8 @@ export async function loadCallListPageTwoPhase({
   };
 }
 
-async function loadCallListPageResponse({ user, scope, pagination, filters }) {
+async function loadCallListPageResponse({ user, scope, pagination, filters, narrowDueCandidates = false }) {
+  const startedAt = Date.now();
   const memoryTracker = createCallListMemoryTracker();
   let allocationQueueRecords = [];
   if (normalizeRole(user?.role) === 'CCM') {
@@ -1225,24 +1237,141 @@ async function loadCallListPageResponse({ user, scope, pagination, filters }) {
     });
     allocationQueueRecords = buildAllocationQueueRecords([], unassignedAllocations, ccmId);
   }
-  const response = await loadCallListRecords(
-    scope.where,
-    new Date(),
-    user,
-    {
-      memoryTracker,
-      page: pagination,
-      filters,
-      allocationQueueRecords,
-    },
-  );
-  memoryTracker.metrics.matchingRecords = response.total;
-  let sample = callListMemorySnapshot();
-  updateCallListMemoryPeak(memoryTracker.peak, sample);
-  memoryTracker.metrics.memory = sample;
-  logCallListMemory('filtered', memoryTracker.metrics, memoryTracker.peak);
-  logCallListMemory('response-ready', memoryTracker.metrics, memoryTracker.peak);
+  const now = new Date();
+  const response = narrowDueCandidates
+    ? await loadMasterDueCandidatePage({ where: scope.where, now, user, pagination, filters, allocationQueueRecords })
+    : await loadCallListRecords(
+      scope.where,
+      now,
+      user,
+      {
+        memoryTracker,
+        page: pagination,
+        filters,
+        allocationQueueRecords,
+      },
+    );
+  if (!narrowDueCandidates) {
+    memoryTracker.metrics.matchingRecords = response.total;
+    const sample = callListMemorySnapshot();
+    updateCallListMemoryPeak(memoryTracker.peak, sample);
+    memoryTracker.metrics.memory = sample;
+    logCallListMemory('filtered', memoryTracker.metrics, memoryTracker.peak);
+    logCallListMemory('response-ready', memoryTracker.metrics, memoryTracker.peak);
+  }
+  if (filters.dueCategory && process.env.MASTER_CALL_LIST_DUE_TIMING_LOG === 'true') {
+    console.info('[call-list-due-response]', JSON.stringify({
+      category: filters.dueCategory,
+      path: narrowDueCandidates ? 'candidates' : 'fallback',
+      matchingRecords: response.total,
+      elapsedMs: Date.now() - startedAt,
+    }));
+  }
   return response;
+}
+
+export function isMasterCallListDueCandidateEnabled(env = process.env) {
+  const value = String(env.MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED ?? '').trim().toLowerCase();
+  return value === 'true' || value === '1';
+}
+
+export function masterDueCandidateWhere(category, now) {
+  const { oneYear, sixMonth } = dueCohortServiceDateRanges(now);
+  let visitDate;
+  if (category === 'pastDue') {
+    // The yearly due date uses calendar-year arithmetic. The margin covers leap days and
+    // the local-day boundary; the lifecycle classifier remains the authoritative filter.
+    visitDate = { lt: new Date(now.getFullYear() - 1, now.getMonth(), now.getDate() + 3) };
+  } else if (category === '1y') {
+    visitDate = oneYear;
+  } else if (category === '6m') {
+    visitDate = sixMonth;
+  } else if (category === 'allDue') {
+    return dueCohortCandidateWhere(now);
+  } else {
+    throw new Error(`Unsupported master due category: ${category}`);
+  }
+  return {
+    vehicle: { is: { physicalVehicle: { is: { workshopVisits: { some: { visitDate } } } } } },
+  };
+}
+
+export async function loadMasterDueCandidatePage({
+  where, now, user, pagination, filters, allocationQueueRecords = [],
+}) {
+  const startedAt = Date.now();
+  const vins = new Set();
+  let afterId = null;
+  while (true) {
+    const rows = await prisma.masterCallList.findMany({
+      where: {
+        AND: [where, masterDueCandidateWhere(filters.dueCategory, now), ...(afterId ? [{ id: { gt: afterId } }] : [])],
+      },
+      orderBy: { id: 'asc' },
+      take: RELATED_ID_QUERY_CHUNK_SIZE,
+      select: { id: true, vin: true },
+    });
+    for (const row of rows) vins.add(row.vin);
+    if (rows.length < RELATED_ID_QUERY_CHUNK_SIZE) break;
+    afterId = rows.at(-1).id;
+  }
+  const candidatesMs = Date.now() - startedAt;
+  const matching = [];
+  for (const chunk of splitIntoChunks([...vins], RELATED_ID_QUERY_CHUNK_SIZE)) {
+    const page = await loadCallListRecords(
+      { AND: [where, { vin: { in: chunk } }] },
+      now,
+      user,
+      {
+        page: { limit: Number.MAX_SAFE_INTEGER, offset: 0 },
+        filters,
+        allocationQueueRecords,
+        selectionOnly: true,
+      },
+    );
+    for (const record of page.records) matching.push(record);
+  }
+  matching.sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)
+    || String(left.id).localeCompare(String(right.id)));
+  const total = matching.length;
+  const ids = matching.slice(pagination.offset, pagination.offset + pagination.limit).map(({ id }) => id);
+  const selectionMs = Date.now() - startedAt - candidatesMs;
+  const detail = ids.length
+    ? await loadCallListRecords(
+      { AND: [where, { id: { in: ids } }] },
+      now,
+      user,
+      {
+        page: { limit: Number.MAX_SAFE_INTEGER, offset: 0 },
+        filters: { creId: '', dueCategory: '', repairType: '', search: '' },
+        allocationQueueRecords,
+      },
+    )
+    : { records: [] };
+  const byId = new Map(detail.records.map((record) => [record.id, record]));
+  if (ids.some((id) => !byId.has(id))) {
+    throw Object.assign(new Error('Master Call List due page could not be assembled after selection.'), {
+      code: 'MASTER_CALL_LIST_PAGE_INCOMPLETE',
+    });
+  }
+  if (process.env.MASTER_CALL_LIST_DUE_TIMING_LOG === 'true') {
+    console.info('[call-list-due-timing]', JSON.stringify({
+      category: filters.dueCategory,
+      candidateVins: vins.size,
+      matchingRecords: total,
+      candidatesMs,
+      selectionMs,
+      detailMs: Date.now() - startedAt - candidatesMs - selectionMs,
+      elapsedMs: Date.now() - startedAt,
+    }));
+  }
+  return {
+    records: ids.map((id) => byId.get(id)),
+    total,
+    limit: pagination.limit,
+    offset: pagination.offset,
+    hasMore: pagination.offset + ids.length < total,
+  };
 }
 
 // The MasterCallList scope for one CRE's own due-list and performance figures: vehicles they
@@ -1358,10 +1487,13 @@ async function loadDueCallListResponse(req, res) {
   const due = dueWindow === '1y' ? cohorts.oneYear : cohorts.sixMonth;
   const filtered = filterServiceListRecords(due, req.query);
   if (filtered.error) return res.status(400).json({ message: filtered.error });
+  if (isServiceContactStatusEnabled()) filtered.records.sort(compareByServiceStatusThenDueDate);
   if (!paginationResult.hasPagination) return res.json({ records: filtered.records });
-  if (cursor) return res.json(paginateByCursor(filtered.records, { limit: paginationResult.limit, cursor }));
+  const statusOrdering = isServiceContactStatusEnabled();
+  if (cursor && statusOrdering && cursor.status == null) return res.status(400).json({ message: 'Due-list cursor is outdated. Reload the list.' });
+  if (cursor) return res.json(paginateByCursor(filtered.records, { limit: paginationResult.limit, cursor, statusOrdering }));
   const page = paginateRecords(filtered.records, paginationResult);
-  return res.json({ ...page, nextCursor: page.hasMore ? encodeDueCursor(page.records.at(-1)) : null });
+  return res.json({ ...page, nextCursor: page.hasMore ? encodeDueCursor(page.records.at(-1), { statusOrdering }) : null });
 }
 
 export async function updateCallListAssignee(req, res) {

@@ -143,6 +143,8 @@ model Vehicle {
   year               Int?
   // Original sale date; the single source for free-service milestones and warranty expiry.
   saleDate           DateTime?
+  serviceContactStatus String?
+  serviceStatusCohort String?
   status             VehicleStatus @default(ACTIVE)
   customerId         String
   ccmId              String
@@ -370,6 +372,7 @@ model Appointment {
   createdByNameSnapshot     String?
   createdByUsernameSnapshot String?
   confirmationCall          Boolean           @default(false)
+  serviceRequestId          String?           @unique
   createdAt                 DateTime          @default(now())
   updatedAt                 DateTime          @updatedAt
 

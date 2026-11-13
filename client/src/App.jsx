@@ -1446,6 +1446,33 @@ function App() {
       });
       callSaved = true;
       setCallLogs((current) => [response.data.callLog, ...current]);
+      if (callForm.nextAction === 'appointment') {
+        const appointmentPayload = {
+          customerId: callForm.customerId,
+          vehicleId: callForm.vehicleId || undefined,
+          scheduledAt,
+          ...(callForm.callSource === 'SERVICE' && callForm.vehicleId
+            ? { serviceCallId: response.data.callLog.id } : {}),
+        };
+        let appointmentResponse;
+        try {
+          appointmentResponse = await api.post('/appointments', appointmentPayload);
+        } catch (error) {
+          if ((error.response && error.response.status < 500) || !appointmentPayload.serviceCallId) throw error;
+          appointmentResponse = await api.post('/appointments', appointmentPayload);
+        }
+        const created = appointmentResponse.data.appointment;
+        insertAppointmentIfVisible({
+          id: created.id,
+          customer: created.customer?.fullName || created.customerName,
+          customerId: created.customerId,
+          vehicle: created.vehicle?.model || created.vehicleName,
+          vehicleId: created.vehicleId,
+          scheduledAt: created.scheduledAt,
+          status: created.status,
+          assigneeName: currentUser?.name,
+        });
+      }
       if (activeView === 'Master list') {
         try {
           const [, summaryResponse] = await Promise.all([
@@ -1462,24 +1489,6 @@ function App() {
           setCallError(`Call saved, but the list or dashboard could not refresh: ${error.response?.data?.message || 'Please reload to see the latest activity.'}`);
         }
       }
-      if (callForm.nextAction === 'appointment') {
-        const appointmentResponse = await api.post('/appointments', {
-          customerId: callForm.customerId,
-          vehicleId: callForm.vehicleId || undefined,
-          scheduledAt,
-        });
-        const created = appointmentResponse.data.appointment;
-        insertAppointmentIfVisible({
-          id: created.id,
-          customer: created.customer?.fullName || created.customerName,
-          customerId: created.customerId,
-          vehicle: created.vehicle?.model || created.vehicleName,
-          vehicleId: created.vehicleId,
-          scheduledAt: created.scheduledAt,
-          status: created.status,
-          assigneeName: currentUser?.name,
-        });
-      }
       setCallMessage(callForm.nextAction === 'followup' ? 'Call saved and follow-up scheduled.' : callForm.nextAction === 'appointment' ? 'Call saved and appointment booked.' : 'Call saved.');
       setCustomerPanel({ customerId: null, mode: 'options' });
       if (activeView in followUpViews) loadFollowUps(followUpViews[activeView].source);
@@ -1488,7 +1497,9 @@ function App() {
       const reason = error.response?.data?.message || 'Check the details and try again.';
       setCallError(callSaved
         ? callForm.nextAction === 'appointment'
-          ? `Call saved, but the appointment could not be booked: ${reason}`
+          ? error.response && error.response.status < 500
+            ? `Call saved, but the appointment could not be booked: ${reason}`
+            : 'Call saved, but the appointment result is unknown. Check the appointment list before trying again.'
           : `Call saved, but the interface could not refresh: ${reason}`
         : `Could not save the call. ${reason}`);
       if (callSaved) setCustomerPanel({ customerId: null, mode: 'options' });

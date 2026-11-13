@@ -3,6 +3,7 @@ import { appointmentVisibilityWhere, normalizeAppointmentRole } from '../utils/a
 import { scopeCacheInvalidation } from '../utils/callListCache.js';
 import { validateAppointmentPayload, validateAppointmentUpdate } from '../utils/appointmentRules.js';
 import { isVehicleAssignedToCre } from '../utils/creAccess.js';
+import { isServiceContactStatusEnabled, saveServiceContactStatus } from '../utils/serviceContactStatus.js';
 
 async function findBookableCustomer(customerId, user, vehicleId = null) {
   const customer = await prisma.customer.findUnique({
@@ -55,7 +56,7 @@ export async function createAppointment(req, res) {
   const validation = validateAppointmentPayload(req.body, { allowCustomerless: role === 'FREE_SERVICE_CRE' });
   if (validation.error) return res.status(400).json({ message: validation.error });
 
-  const { customerId, customerName, vehicleName, vehicleId, assigneeId, scheduledAt, confirmationCall } = validation.value;
+  const { customerId, customerName, vehicleName, vehicleId, assigneeId, scheduledAt, confirmationCall, serviceCallId } = validation.value;
   const customerlessAppointment = role === 'FREE_SERVICE_CRE';
   const customer = customerlessAppointment ? null : await findBookableCustomer(customerId, req.user, vehicleId);
   if (!customerlessAppointment && !customer) return res.status(404).json({ message: 'Customer not found.' });
@@ -85,29 +86,76 @@ export async function createAppointment(req, res) {
     assignedToId = validatedAssignee;
   }
 
-  const result = await prisma.$transaction(async (transaction) => {
-    const appointment = await transaction.appointment.create({
-      data: {
-        customerId: customer?.id || null,
-        vehicleId: vehicle?.id || null,
-        customerName: customer?.fullName || customerName,
-        vehicleName: vehicle ? [vehicle.model, vehicle.registrationNumber].filter(Boolean).join(' / ') || vehicle.vin : vehicleName || 'Vehicle to be confirmed',
-        scheduledAt,
-        ccmId,
-        assigneeId: assignedToId,
-        createdById: req.user.id,
-        confirmationCall,
-      },
+  const linkServiceCall = Boolean(serviceCallId);
+  const trackService = isServiceContactStatusEnabled() && linkServiceCall;
+  if (linkServiceCall) {
+    if (!vehicleId) return res.status(400).json({ message: 'A vehicle is required for a service appointment.' });
+    const call = await prisma.callLog.findFirst({
+      where: { id: serviceCallId, customerId, vehicleId, ccmId, createdById: req.user.id, callSource: 'SERVICE', outcome: 'APPOINTMENT_SET' },
+      select: { id: true },
+    });
+    if (!call) return res.status(400).json({ message: 'The service call does not match this appointment.' });
+  }
+  const matchingAppointment = async () => {
+    const existing = await prisma.appointment.findUnique({
+      where: { serviceRequestId: serviceCallId },
       include: {
         customer: { select: { id: true, fullName: true, mobileNumber: true } },
         vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
       },
     });
-    await transaction.appointmentEvent.create({
-      data: { appointmentId: appointment.id, eventType: 'CREATED', notes: `Created by ${req.user.name}` },
+    if (!existing) return null;
+    if (existing.createdById !== req.user.id || existing.customerId !== customerId
+      || existing.vehicleId !== vehicleId || existing.scheduledAt.getTime() !== scheduledAt.getTime()
+      || existing.assigneeId !== assignedToId || existing.confirmationCall !== confirmationCall) {
+      throw Object.assign(new Error('This service call already has a different appointment.'), { code: 'SERVICE_APPOINTMENT_CONFLICT' });
+    }
+    return existing;
+  };
+  let result;
+  try {
+    result = await prisma.$transaction(async (transaction) => {
+      const appointment = await transaction.appointment.create({
+        data: {
+          customerId: customer?.id || null,
+          vehicleId: vehicle?.id || null,
+          customerName: customer?.fullName || customerName,
+          vehicleName: vehicle ? [vehicle.model, vehicle.registrationNumber].filter(Boolean).join(' / ') || vehicle.vin : vehicleName || 'Vehicle to be confirmed',
+          scheduledAt,
+          ccmId,
+          assigneeId: assignedToId,
+          createdById: req.user.id,
+          confirmationCall,
+          ...(linkServiceCall ? { serviceRequestId: serviceCallId } : {}),
+        },
+        include: {
+          customer: { select: { id: true, fullName: true, mobileNumber: true } },
+          vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
+        },
+      });
+      await transaction.appointmentEvent.create({
+        data: { appointmentId: appointment.id, eventType: 'CREATED', notes: `Created by ${req.user.name}` },
+      });
+      if (trackService) {
+        await saveServiceContactStatus(transaction, { vehicleId, ccmId, user: req.user, status: 'appointment' });
+      }
+      return appointment;
     });
-    return appointment;
-  });
+  } catch (error) {
+    const target = error?.meta?.target;
+    const index = error?.meta?.driverAdapterError?.cause?.constraint?.index;
+    const serviceRequestConflict = index === 'appointments_serviceRequestId_key'
+      || target === 'appointments_serviceRequestId_key'
+      || (Array.isArray(target) && target.length === 1 && target[0] === 'serviceRequestId');
+    if (!linkServiceCall || error?.code !== 'P2002' || !serviceRequestConflict) throw error;
+    try {
+      result = await matchingAppointment();
+    } catch (conflict) {
+      if (conflict?.code !== 'SERVICE_APPOINTMENT_CONFLICT') throw conflict;
+      return res.status(409).json({ message: conflict.message });
+    }
+    if (!result) throw error;
+  }
 
   scopeCacheInvalidation(res, { ccmIds: [ccmId] });
   return res.status(201).json({ appointment: result });

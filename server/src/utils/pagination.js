@@ -30,30 +30,40 @@ export function compareByDueDateThenId(left, right) {
   return left.dueDate - right.dueDate || String(left.id).localeCompare(String(right.id));
 }
 
-export function encodeDueCursor(record) {
-  return Buffer.from(JSON.stringify([new Date(record.dueDate).toISOString(), String(record.id)])).toString('base64url');
+const STATUS_ORDER = { pending: 0, contacted: 1, 'follow-up': 2, appointment: 3 };
+
+export function compareByServiceStatusThenDueDate(left, right) {
+  return (STATUS_ORDER[left.status] ?? 0) - (STATUS_ORDER[right.status] ?? 0)
+    || compareByDueDateThenId(left, right);
+}
+
+export function encodeDueCursor(record, { statusOrdering = false } = {}) {
+  const parts = [new Date(record.dueDate).toISOString(), String(record.id)];
+  if (statusOrdering) parts.push(record.status);
+  return Buffer.from(JSON.stringify(parts)).toString('base64url');
 }
 
 export function decodeDueCursor(value) {
   try {
-    const [dueDate, id] = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'));
+    const [dueDate, id, status] = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'));
     const date = new Date(dueDate);
-    if (typeof id !== 'string' || !id || Number.isNaN(date.getTime())) return null;
-    return { dueDate: date, id };
+    if (typeof id !== 'string' || !id || Number.isNaN(date.getTime())
+      || (status !== undefined && !Object.hasOwn(STATUS_ORDER, status))) return null;
+    return { dueDate: date, id, ...(status !== undefined ? { status } : {}) };
   } catch {
     return null;
   }
 }
 
-// Keyset pagination over records already sorted by compareByDueDateThenId: returns the records strictly
-// after the cursor, so a page never repeats or skips rows even if earlier rows change between requests.
-// `offset` is still reported (the position of the first returned row) for clients that page by offset.
-export function paginateByCursor(records, { limit, cursor }) {
+// Keyset pagination over records sorted by the selected comparator. Records whose sort keys change
+// between requests can move across the cursor; clients should restart pagination after a status update.
+// `offset` is reported for clients that page by offset.
+export function paginateByCursor(records, { limit, cursor, statusOrdering = false }) {
   let start = 0;
   let high = records.length;
   while (start < high) {
     const middle = (start + high) >> 1;
-    if (compareByDueDateThenId(records[middle], cursor) > 0) high = middle;
+    if ((statusOrdering ? compareByServiceStatusThenDueDate : compareByDueDateThenId)(records[middle], cursor) > 0) high = middle;
     else start = middle + 1;
   }
   const page = records.slice(start, start + limit);
@@ -63,7 +73,7 @@ export function paginateByCursor(records, { limit, cursor }) {
     limit,
     offset: start,
     hasMore: start + page.length < records.length,
-    nextCursor: start + page.length < records.length ? encodeDueCursor(page.at(-1)) : null,
+    nextCursor: start + page.length < records.length ? encodeDueCursor(page.at(-1), { statusOrdering }) : null,
   };
 }
 

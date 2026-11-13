@@ -61,7 +61,7 @@ Workshop Service Performance provides:
 - **Load Trend** — inspect monthly service volumes and category trends.
 - **MTD Load** — compare a selected month against the same month in a selectable comparison year. The default month is the previous completed month.
 
-Service categories include Free Service, PMS, Accidental Repair, Running Repair, and Others. Reports and server-generated PDF exports provide analytics and operational summaries.
+Service categories include Free Service, Paid Service, Accidental Repair, Running Repair, and Others (including PMS). Reports and server-generated PDF exports provide analytics and operational summaries.
 
 ## User roles
 
@@ -159,6 +159,7 @@ Optional performance configuration:
 | `REPORT_CACHE_TTL_SECONDS` | `60` | Short-lived workshop report cache duration; `0` disables the cache. |
 | `DB_POOL_MAX` | Driver default | Optional PostgreSQL pool maximum. Check the database connection limit before increasing it. |
 | `CUSTOMERS_MEMORY_LOG` | Off | Enables memory/count diagnostics without logging customer personal data. |
+| `SERVICE_CONTACT_STATUS_ENABLED` | `false` | Enables cohort-specific statuses and ordering for regular-service due lists. Apply the service contact status migration before deploying this schema, even when disabled; see the deployment guide. |
 
 The client variable `VITE_API_BASE_URL` is used at build time. After changing hosting environment variables, restart or redeploy the relevant service.
 

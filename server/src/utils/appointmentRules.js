@@ -28,6 +28,10 @@ export function validateAppointmentPayload(payload = {}, { allowCustomerless = f
   if (payload.confirmationCall != null && typeof payload.confirmationCall !== 'boolean') {
     return { error: 'Confirmation call must be true or false.' };
   }
+  if (payload.serviceCallId != null && (typeof payload.serviceCallId !== 'string'
+    || !payload.serviceCallId.trim() || payload.serviceCallId.length > 200)) {
+    return { error: 'Service call ID is invalid.' };
+  }
 
   return {
     value: {
@@ -38,6 +42,7 @@ export function validateAppointmentPayload(payload = {}, { allowCustomerless = f
       assigneeId: payload.assigneeId ? payload.assigneeId.trim() : null,
       scheduledAt,
       confirmationCall: payload.confirmationCall === true,
+      serviceCallId: payload.serviceCallId?.trim() || null,
     },
   };
 }

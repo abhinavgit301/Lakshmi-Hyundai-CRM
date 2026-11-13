@@ -26,6 +26,7 @@ import { traceSnapshotPhase } from '../utils/performanceSnapshotTrace.js';
 import { getSnapshot, requestSnapshotRefresh } from '../services/performanceSnapshotService.js';
 import { parsePagination } from '../utils/pagination.js';
 import { classifyDueCohorts, countOverdueRecords, creDueWhere, loadCallListRecords } from './recordsController.js';
+import { isServiceContactStatusEnabled, saveServiceContactStatus, statusForServiceCall } from '../utils/serviceContactStatus.js';
 
 function normalizeRole(role) {
   const value = String(role || '').toUpperCase();
@@ -865,11 +866,18 @@ export async function createCallLog(req, res) {
       await transaction.followUp.updateMany({ where: { id: { in: open.map((entry) => entry.id) } }, data: { status: 'completed' } });
     }
 
+    const serviceStatus = statusForServiceCall(outcome, followUpAt);
+    if (isServiceContactStatusEnabled() && callSource === 'SERVICE' && vehicleId && serviceStatus) {
+      await saveServiceContactStatus(transaction, { vehicleId, ccmId, user: req.user, status: serviceStatus });
+    }
     return { callLog, followUp };
   });
 
-  // Call logs and follow-ups feed only the workflow-kind caches; the Master Call List never reads them.
-  scopeCacheInvalidation(res, { ccmIds: [ccmId], kinds: ['workflow'] });
+  scopeCacheInvalidation(res, {
+    ccmIds: [ccmId],
+    ...(isServiceContactStatusEnabled() && callSource === 'SERVICE' && vehicleId
+      ? {} : { kinds: ['workflow'] }),
+  });
   return res.status(201).json(result);
 }
 
@@ -1198,7 +1206,7 @@ export async function createFollowUp(req, res) {
     return res.status(409).json({ message: 'Vehicle is no longer eligible for Free Service.' });
   }
 
-  const followUp = await prisma.followUp.create({
+  const createData = {
     data: {
       customerId,
       ccmId,
@@ -1211,9 +1219,17 @@ export async function createFollowUp(req, res) {
       creId: normalizeRole(req.user.role) === 'CRE' ? req.user.id : null,
     },
     include: FOLLOW_UP_INCLUDE,
-  });
+  };
+  const trackService = isServiceContactStatusEnabled() && source === 'SERVICE' && vehicleId;
+  const followUp = trackService
+    ? await prisma.$transaction(async (transaction) => {
+      const created = await transaction.followUp.create(createData);
+      await saveServiceContactStatus(transaction, { vehicleId, ccmId, user: req.user, status: 'follow-up' });
+      return created;
+    })
+    : await prisma.followUp.create(createData);
 
-  scopeCacheInvalidation(res, { ccmIds: [ccmId], kinds: ['workflow'] });
+  scopeCacheInvalidation(res, { ccmIds: [ccmId], ...(trackService ? {} : { kinds: ['workflow'] }) });
   return res.status(201).json({ followUp });
 }
 

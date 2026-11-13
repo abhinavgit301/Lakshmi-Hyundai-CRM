@@ -175,12 +175,7 @@ export async function exportWorkshopPerformancePdf(req, res) {
   responses.forEach((response) => {
     response.months.forEach((month) => mergedMonths.set(month.month, month));
     response.daily.forEach((entry) => {
-      const existing = mergedDaily.get(entry.date);
-      if (!existing) mergedDaily.set(entry.date, { ...entry, categories: { ...entry.categories } });
-      else {
-        existing.total += entry.total;
-        SERVICE_CATEGORIES.forEach((category) => { existing.categories[category] += entry.categories[category] || 0; });
-      }
+      mergedDaily.set(entry.date, entry);
     });
   });
   const serviceData = { ...responses[0], serviceType, months: [...mergedMonths.values()].sort((a, b) => a.month.localeCompare(b.month)), daily: [...mergedDaily.values()].sort((a, b) => a.date.localeCompare(b.date)) };
@@ -326,7 +321,11 @@ export async function exportWorkshopPerformancePdf(req, res) {
   });
 
   // Take the last 12 months for trend
-  const trendMonths = (serviceData.months || []).slice(-12);
+  const serviceCount = (entry) => (serviceType === 'All' ? entry.total : entry.categories[serviceType] || 0);
+  const trendMonths = (serviceData.months || []).slice(-12).map((month) => ({
+    ...month,
+    total: serviceCount(month),
+  }));
 
   doc.fontSize(11).fillColor(TEXT_DARK).font('Helvetica-Bold')
     .text('Chart 2: Monthly Load Trend (12 Months)', 40, 135);
@@ -375,7 +374,7 @@ export async function exportWorkshopPerformancePdf(req, res) {
     { text: 'Month', align: 'left' },
     { text: 'Total Volume', align: 'right' },
     { text: 'Free Service', align: 'right' },
-    { text: 'PMS', align: 'right' },
+    { text: 'Paid Service', align: 'right' },
     { text: 'Accidental', align: 'right' },
     { text: 'Running Rep.', align: 'right' },
     { text: 'MoM Change %', align: 'right' },
@@ -389,7 +388,7 @@ export async function exportWorkshopPerformancePdf(req, res) {
       { text: monthFormatted, bold: true },
       { text: formatNumber(m.total), bold: true },
       { text: formatNumber(m.categories['Free Service'] || 0) },
-      { text: formatNumber(m.categories['PMS'] || 0) },
+      { text: formatNumber(m.categories['Paid Service'] || 0) },
       { text: formatNumber(m.categories['Accidental Repair'] || 0) },
       { text: formatNumber(m.categories['Running Repair'] || 0) },
       { text: formatPercent(pct), color: pct >= 0 ? '#16a34a' : ACCENT_COLOR },
@@ -418,27 +417,29 @@ export async function exportWorkshopPerformancePdf(req, res) {
   const mtdYear = safeMtdYear;
   const mtdMonthNum = safeMtdMonth;
   const mtdMonthKey = `${mtdYear}-${String(mtdMonthNum).padStart(2, '0')}`;
-  const prevYearSameMonthKey = `${mtdYear - 1}-${String(mtdMonthNum).padStart(2, '0')}`;
+  const prevYearSameMonthKey = `${mtdComparisonYear}-${String(mtdMonthNum).padStart(2, '0')}`;
   const daysInMonth = new Date(mtdYear, mtdMonthNum, 0).getDate();
-  const cutoffDay = daysInMonth;
+  const comparisonDays = new Date(mtdComparisonYear, mtdMonthNum, 0).getDate();
+  const cutoffDay = Math.min(daysInMonth, comparisonDays,
+    mtdYear === currentYear && mtdMonthNum === currentMonthNum ? now.getDate() : daysInMonth);
 
   const dailyCurrMap = new Map();
   const dailyPrevMap = new Map();
   (serviceData.daily || []).forEach((d) => {
     const [y, m, dayNum] = d.date.split('-').map(Number);
-    if (y === mtdYear && m === mtdMonthNum) dailyCurrMap.set(dayNum, d.total);
-    if (y === mtdYear - 1 && m === mtdMonthNum) dailyPrevMap.set(dayNum, d.total);
+    if (y === mtdYear && m === mtdMonthNum) dailyCurrMap.set(dayNum, serviceCount(d));
+    if (y === mtdComparisonYear && m === mtdMonthNum) dailyPrevMap.set(dayNum, serviceCount(d));
   });
 
   let cumCurr = 0;
   let cumPrev = 0;
   const mtdDays = [];
-  for (let d = 1; d <= daysInMonth; d += 1) {
-    if (d <= cutoffDay) cumCurr += dailyCurrMap.get(d) || 0;
+  for (let d = 1; d <= cutoffDay; d += 1) {
+    cumCurr += dailyCurrMap.get(d) || 0;
     cumPrev += dailyPrevMap.get(d) || 0;
     mtdDays.push({
       day: d,
-      curr: d <= cutoffDay ? cumCurr : null,
+      curr: cumCurr,
       prev: cumPrev,
     });
   }
@@ -470,7 +471,7 @@ export async function exportWorkshopPerformancePdf(req, res) {
     .text(`Chart 3: Cumulative Daily MTD Trajectory (Through Day ${cutoffDay})`, 40, 202);
 
   doc.rect(370, 204, 10, 8).fill(SECONDARY_COLOR);
-  doc.fontSize(8).fillColor(TEXT_MUTED).font('Helvetica').text(String(mtdYear - 1), 385, 204);
+  doc.fontSize(8).fillColor(TEXT_MUTED).font('Helvetica').text(String(mtdComparisonYear), 385, 204);
   doc.rect(450, 204, 10, 8).fill(PRIMARY_COLOR);
   doc.fontSize(8).fillColor(TEXT_MUTED).font('Helvetica').text(String(mtdYear), 465, 204);
 
@@ -478,7 +479,7 @@ export async function exportWorkshopPerformancePdf(req, res) {
   const mChartY = 220;
   const mChartW = 515;
   const mChartH = 150;
-  const maxMtd = Math.max(1, mtdCurrTotal, mtdDays[daysInMonth - 1]?.prev || 0);
+  const maxMtd = Math.max(1, mtdCurrTotal, mtdDays[cutoffDay - 1]?.prev || 0);
 
   // Grid
   for (let s = 0; s <= 4; s += 1) {
@@ -488,7 +489,7 @@ export async function exportWorkshopPerformancePdf(req, res) {
     doc.fontSize(7).fillColor(TEXT_MUTED).text(String(v), mChartX - 25, yL - 4, { width: 20, align: 'right' });
   }
 
-  const mStepX = mChartW / (daysInMonth - 1);
+  const mStepX = cutoffDay > 1 ? mChartW / (cutoffDay - 1) : 0;
 
   // Prev year curve
   doc.moveTo(mChartX, mChartY + mChartH - (mtdDays[0].prev / maxMtd) * mChartH);
@@ -505,7 +506,7 @@ export async function exportWorkshopPerformancePdf(req, res) {
   doc.strokeColor(PRIMARY_COLOR).lineWidth(2.5).stroke();
 
   // Day markers on X axis (every 5 days)
-  for (let d = 1; d <= daysInMonth; d += 5) {
+  for (let d = 1; d <= cutoffDay; d += 5) {
     const xPos = mChartX + (d - 1) * mStepX;
     doc.fontSize(7).fillColor(TEXT_MUTED).text(`D${d}`, xPos - 8, mChartY + mChartH + 6, { width: 16, align: 'center' });
   }
@@ -513,13 +514,13 @@ export async function exportWorkshopPerformancePdf(req, res) {
   // MTD Table
   const mtdTableHeaders = [
     { text: 'Day of Month', align: 'left' },
-    { text: `${mtdYear - 1} Cumulative`, align: 'right' },
+    { text: `${mtdComparisonYear} Cumulative`, align: 'right' },
     { text: `${mtdYear} Cumulative`, align: 'right' },
     { text: 'Variance', align: 'right' },
     { text: 'Status', align: 'center' },
   ];
   // Sample key checkpoint days for readability (e.g. Day 5, 10, 15, 20, 25, cutoffDay)
-  const sampleDays = [5, 10, 15, 20, 25, cutoffDay].filter((d, i, arr) => d <= daysInMonth && arr.indexOf(d) === i).sort((a, b) => a - b);
+  const sampleDays = [5, 10, 15, 20, 25, cutoffDay].filter((d, i, arr) => d <= cutoffDay && arr.indexOf(d) === i).sort((a, b) => a - b);
   const mtdTableRows = sampleDays.map((d) => {
     const item = mtdDays[d - 1];
     const prevVal = item?.prev || 0;

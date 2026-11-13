@@ -13,7 +13,7 @@ import {
 } from 'recharts';
 import api from '../lib/api.js';
 
-const CATEGORIES = ['Free Service', 'PMS', 'Accidental Repair', 'Running Repair', 'Others'];
+const CATEGORIES = ['Free Service', 'Paid Service', 'Accidental Repair', 'Running Repair', 'Others'];
 const COLORS = ['#145a62', '#398b80', '#d28a39', '#7b6ba8', '#8a969b'];
 const TABS = ['Load Analysis', 'Load Trend', 'MTD Load'];
 const FIRST_DATA_YEAR = 2015;
@@ -76,7 +76,7 @@ function DataNotice({ data, selectedRange }) {
   if (data.historyCount === 0) {
     message = 'No workshop service history exists in the database yet. Analytics will appear after repair-order service records are imported.';
   } else if (data.rangeCount > 0 && data.serviceType !== 'All') {
-    message = `No ${data.serviceType} service records were found for this selected period.`;
+    message = `No ${data.serviceType} records were found for this selected period.`;
   } else if (data.undatedHistoryCount > 0) {
     message = `No dated workshop service records were found for ${selectedRange}. ${data.undatedHistoryCount} historical record${data.undatedHistoryCount === 1 ? ' has' : 's have'} no visit date and cannot be included.`;
   }

@@ -189,3 +189,16 @@ ssh -F "$RUNNER_TEMP/lhcrm-ssh/config" production-vps \
 ```
 
 Rollback changes the application only; it does not reverse database migrations. Keep both active and previous application versions compatible with any expanded schema.
+
+## Service contact status rollout
+
+The `20261114000000_service_contact_status` migration adds nullable vehicle status columns and a nullable unique appointment request key. It does not backfill historical calls; existing rows remain intact. The new Prisma client can select these columns even when `SERVICE_CONTACT_STATUS_ENABLED=false`, so **the migration must be applied before this release is activated**. Older application code can use the expanded schema; rollback does not remove it.
+
+1. Review all changes included in the exact release commit, including the unrelated performance and workshop-graph changes, and verify CI for that commit. CI exercises this migration against existing test rows and runs the service status workflow integration test on disposable PostgreSQL. These checks do not substitute for testing against a production-like restored copy.
+2. Before approval, verify a recent, restorable database backup and rehearse the migration and rollback-release compatibility on a representative isolated restore. Review the existing service-classification audit and any other pending migrations; the workflow applies **all** pending committed migrations, not only this one. Stop if an unexpected migration is pending or the prior release is incompatible.
+3. Keep `SERVICE_CONTACT_STATUS_ENABLED` unset or `false`. Pushes to `main` start an approval-gated deployment with migrations disabled; an unapplied migration blocks activation. After the commit is on `main`, use the approved manual workflow with `apply_migrations=true` for that exact SHA. The existing preflight and signed authorization must succeed before migration and activation. Do not edit the database or bypass the workflow to force activation.
+4. With the feature still off, verify startup and health checks, login, Master Call List, due lists, follow-ups and appointment creation using authorized test records. Confirm migration status using the existing controlled workflow; do not expose credentials or customer data in logs.
+5. In a separately approved change, set `SERVICE_CONTACT_STATUS_ENABLED=true` in the protected shared backend environment without printing or replacing unrelated values, then restart the backend through the existing operational procedure. Verify a new contacted call, a follow-up, and a successfully booked service-call appointment appear consistently in Master and the active due list, in Pending → Contacted → Follow-up → Appointment order across pages. Confirm a failed booking does not set Appointment and that other teams cannot access the test records.
+6. If verification fails, set the flag back to `false` and restart; use the documented application recovery procedure if needed. Do not drop the new columns or reverse the migration during application rollback. Actions taken while the flag is off are not backfilled and status changes made while it was on remain stored; document and review any resulting gaps before re-enabling.
+
+No production backup, migration, environment change, deployment, or smoke test is performed by preparing this repository.

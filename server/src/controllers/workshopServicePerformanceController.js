@@ -1,14 +1,13 @@
 import { prisma } from '../config/prisma.js';
+import { classifyMasterRepairType } from '../utils/repairTypes.js';
 
-const SERVICE_CATEGORIES = ['Free Service', 'PMS', 'Accidental Repair', 'Running Repair', 'Others'];
+const SERVICE_CATEGORIES = ['Free Service', 'Paid Service', 'Accidental Repair', 'Running Repair', 'Others'];
 
 function getServiceCategory(workType) {
-  const value = String(workType || '').trim().toLowerCase();
-  if (/\b(free|foc)\b/.test(value)) return 'Free Service';
-  if (/\b(accident|accidental|collision|body shop)\b/.test(value)) return 'Accidental Repair';
-  if (/\b(running repair|running repairs|rr)\b/.test(value)) return 'Running Repair';
-  if (/\b(pms|periodic)\b/.test(value)) return 'PMS';
-  return 'Others';
+  const type = classifyMasterRepairType(workType);
+  if (type === 'Free') return 'Free Service';
+  if (type === 'Paid') return 'Paid Service';
+  return type === 'PMS' ? 'Others' : type;
 }
 
 function parseMonth(value) {

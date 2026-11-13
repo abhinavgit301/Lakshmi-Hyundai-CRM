@@ -1,17 +1,19 @@
 import { prisma } from '../config/prisma.js';
-import { creCustomerWhere, creVehicleWhere, isVehicleAssignedToCre } from '../utils/creAccess.js';
+import { creCustomerWhere, creVehicleWhere, isVehicleAssignedToCre, workshopVisitVisibilityWhere } from '../utils/creAccess.js';
 import { validateCallLogPayload, validateFollowUpPayload } from '../utils/workflowRules.js';
 import { getCreCallCounts } from '../utils/callMetrics.js';
 import {
   classifyWarrantyCase,
   classifyFreeServiceStatus,
   DAILY_TARGETS,
+  findCompletingVisit,
   freeServiceCustomerIdsForMonth,
   freeServiceExpiryDate,
+  getServiceLifecycle,
   isAnsweredOutcome,
   warrantyExpiryDate,
 } from '../utils/serviceCalendar.js';
-import { findMissedWarrantyCases } from '../utils/serviceLists.js';
+import { excludeIneligibleFreeServiceFollowUps, findMissedWarrantyCases } from '../utils/serviceLists.js';
 import { getWorkshopTimezone, parseDateKey, workshopDayRange, workshopMonthOf, workshopMonthRange, workshopToday, zonedDateKey } from '../utils/workshopTime.js';
 import { allowedServiceSources, canAccessServiceSource } from '../utils/creServicePermissions.js';
 import { appointmentVisibilityWhere } from '../utils/appointmentAccess.js';
@@ -138,6 +140,30 @@ function followUpVisibility(user) {
       ],
     }],
   };
+}
+
+async function loadVisibleVehicleHistory(vehicle, user) {
+  if (!vehicle?.physicalVehicleId) return [];
+  return prisma.workshopVisit.findMany({
+    where: {
+      physicalVehicleId: vehicle.physicalVehicleId,
+      ...workshopVisitVisibilityWhere(user),
+    },
+    select: { visitDate: true, importedDetails: true },
+  });
+}
+
+async function isFreeServiceVehicleEligible(vehicle, user, milestone = null) {
+  if (!vehicle?.physicalVehicleId) return false;
+  const visits = await loadVisibleVehicleHistory(vehicle, user);
+  const lifecycle = getServiceLifecycle({ saleDate: vehicle.saleDate, workshopVisits: visits });
+  if (lifecycle.phase !== 'free') return false;
+  if (milestone && (milestone.status === 'completed'
+    || lifecycle.completedMilestones.includes(milestone.milestone)
+    || findCompletingVisit(milestone.dueDate, visits, new Date()))) {
+    return false;
+  }
+  return true;
 }
 
 export async function listCallLogs(req, res) {
@@ -387,12 +413,16 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
     customer: { is: creCustomerWhere(targetUser) },
     AND: [{ OR: [{ vehicleId: null }, { vehicle: { is: { ccmId: ccmScope, ...creVehicleWhere(targetUser) } } }] }],
   };
+  const pendingFollowUpWhere = await excludeIneligibleFreeServiceFollowUps({
+    ...followUpVisibility(targetUser),
+    status: 'pending',
+  }, targetUser);
 
   const [callsThisMonth, customersReached, scopedRecords, pendingFollowUps, appointmentsSetThisMonth, missedWarrantyCases, lifetimeCalls, lifetimeAppointments] = await Promise.all([
     traceSnapshotPhase(trace, 'monthly_calls', () => prisma.callLog.count({ where: monthFilter })),
     traceSnapshotPhase(trace, 'customers_reached', () => prisma.callLog.groupBy({ by: ['customerId'], where: monthFilter })),
     traceSnapshotPhase(trace, 'call_list', () => loadCallListRecords(dueWhere, now, targetUser, { snapshotTrace: trace })),
-    traceSnapshotPhase(trace, 'pending_followups', () => prisma.followUp.count({ where: { ...followUpVisibility(targetUser), status: 'pending' } })),
+    traceSnapshotPhase(trace, 'pending_followups', () => prisma.followUp.count({ where: pendingFollowUpWhere })),
     traceSnapshotPhase(trace, 'monthly_appointments', () => prisma.callLog.count({ where: { ...monthFilter, outcome: 'APPOINTMENT_SET' } })),
     traceSnapshotPhase(trace, 'missed_warranty', () => canAccessServiceSource(targetUser, 'WARRANTY')
       ? findMissedWarrantyCases({
@@ -620,12 +650,16 @@ async function loadCrePerformanceSummary(req, res) {
     createdAt: { gte: cycleStart, lt: monthEnd },
   };
   const dueWhere = creDueWhere(targetCre.id, targetCre.ccmId);
+  const pendingFollowUpWhere = await excludeIneligibleFreeServiceFollowUps({
+    ...followUpVisibilityFilter,
+    status: 'pending',
+  }, targetUser);
 
   const [callsThisMonth, customersReachedThisMonth, scopedRecords, pendingFollowUps, appointmentsSetThisMonth, recentCalls, selectedCounts, missedWarrantyCases, lifetimeCalls, lifetimeAppointments] = await Promise.all([
     prisma.callLog.count({ where: monthFilter }),
     prisma.callLog.groupBy({ by: ['customerId'], where: monthFilter }),
     loadCallListRecords(dueWhere, now, targetUser),
-    prisma.followUp.count({ where: { ...followUpVisibilityFilter, status: 'pending' } }),
+    prisma.followUp.count({ where: pendingFollowUpWhere }),
     prisma.callLog.count({ where: { ...monthFilter, outcome: 'APPOINTMENT_SET' } }),
     prisma.callLog.findMany({
       where: {
@@ -768,9 +802,15 @@ export async function createCallLog(req, res) {
   }
 
   if (milestoneId) {
-    const milestone = await prisma.freeServiceMilestone.findUnique({ where: { id: milestoneId }, select: { vehicleId: true } });
+    const milestone = await prisma.freeServiceMilestone.findUnique({
+      where: { id: milestoneId },
+      select: { vehicleId: true, milestone: true, dueDate: true, status: true },
+    });
     if (!milestone || milestone.vehicleId !== vehicleId) {
       return res.status(400).json({ message: 'Free-service milestone does not belong to this vehicle.' });
+    }
+    if (callSource === 'FREE_SERVICE' && !await isFreeServiceVehicleEligible(vehicle, req.user, milestone)) {
+      return res.status(409).json({ message: 'Vehicle is no longer eligible for Free Service.' });
     }
   }
 
@@ -1054,7 +1094,7 @@ export async function listFollowUps(req, res) {
   }
   const followUpRange = makeDateRange(dateFilters.followUpFrom, dateFilters.followUpTo);
   if (followUpRange) extraConditions.push({ followUpAt: followUpRange });
-  const where = {
+  let where = {
     ...visibility,
     status: 'pending',
     ...(source ? { source } : {}),
@@ -1063,6 +1103,9 @@ export async function listFollowUps(req, res) {
       AND: [...(visibility.AND || []), ...extraConditions],
     } : {}),
   };
+  if ((!source || source === 'FREE_SERVICE') && canAccessServiceSource(req.user, 'FREE_SERVICE')) {
+    where = await excludeIneligibleFreeServiceFollowUps(where, req.user);
+  }
   if (source === 'WARRANTY' && contactStatus) {
     const result = await listWarrantyFollowUpsByContactStatus(where, req.user, contactStatus, pagination);
     if (!result.hasPagination) return res.json({ followUps: result.records });
@@ -1117,6 +1160,9 @@ export async function createFollowUp(req, res) {
   if (!canAccessServiceSource(req.user, source)) {
     return res.status(403).json({ message: 'You do not have permission to create follow-ups for this service category.' });
   }
+  if (source === 'FREE_SERVICE' && !vehicleId) {
+    return res.status(400).json({ message: 'A vehicle is required for free-service follow-ups.' });
+  }
   const customer = await findAccessibleCustomer(customerId, req.user, vehicleId);
   if (!customer) return res.status(404).json({ message: 'Customer not found.' });
   let vehicle = null;
@@ -1140,11 +1186,16 @@ export async function createFollowUp(req, res) {
   if (milestoneId) {
     const milestone = await prisma.freeServiceMilestone.findUnique({
       where: { id: milestoneId },
-      select: { vehicleId: true },
+      select: { vehicleId: true, milestone: true, dueDate: true, status: true },
     });
     if (!milestone || milestone.vehicleId !== vehicleId) {
       return res.status(400).json({ message: 'Free-service milestone does not belong to this vehicle.' });
     }
+    if (source === 'FREE_SERVICE' && !await isFreeServiceVehicleEligible(vehicle, req.user, milestone)) {
+      return res.status(409).json({ message: 'Vehicle is no longer eligible for Free Service.' });
+    }
+  } else if (source === 'FREE_SERVICE' && !await isFreeServiceVehicleEligible(vehicle, req.user)) {
+    return res.status(409).json({ message: 'Vehicle is no longer eligible for Free Service.' });
   }
 
   const followUp = await prisma.followUp.create({

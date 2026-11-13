@@ -5,6 +5,7 @@ import {
   freeServiceCallStart,
   freeServiceExpiryDate,
   freeServiceSaleDateRanges,
+  getServiceLifecycle,
   isFreeServiceListVisible,
   isWarrantyCallable,
   resolveSaleDate,
@@ -111,9 +112,10 @@ async function loadFreeServiceList(req, res) {
   };
   const records = await loadCallListRecords(freeServiceScope, now, req.user);
   const { dated, dataIssues } = splitBySaleDate(records, now);
+  const freePhaseVehicles = dated.filter(({ record }) => getServiceLifecycle(record, now).phase === 'free');
   const workflowWhere = workflowVisibilityWhere(req.user);
 
-  const syncedMilestones = await syncFreeServiceMilestones(dated.map(({ record, saleDate }) => ({
+  const syncedMilestones = await syncFreeServiceMilestones(freePhaseVehicles.map(({ record, saleDate }) => ({
     id: record.vehicleId,
     physicalVehicleId: record.physicalVehicleId,
     saleDate,
@@ -121,7 +123,7 @@ async function loadFreeServiceList(req, res) {
   })));
   const milestones = filterMilestoneCompletionByVisits(
     syncedMilestones,
-    dated.map(({ record }) => record),
+    freePhaseVehicles.map(({ record }) => record),
   );
   const visibleMilestones = milestones.filter((milestone) => milestone.status === 'pending'
     && isFreeServiceListVisible(milestone.dueDate, today));
@@ -133,7 +135,7 @@ async function loadFreeServiceList(req, res) {
     })
     : [];
   const openFollowUpByMilestone = latestBy(allOpenFollowUps, 'milestoneId');
-  const byVehicle = new Map(dated.map((entry) => [entry.record.vehicleId, entry]));
+  const byVehicle = new Map(freePhaseVehicles.map((entry) => [entry.record.vehicleId, entry]));
 
   const rows = visibleMilestones.map((milestone) => {
     const { record, saleDate } = byVehicle.get(milestone.vehicleId);

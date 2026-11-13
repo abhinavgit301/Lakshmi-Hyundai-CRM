@@ -215,6 +215,62 @@ test('follow-up creation validates the specific CRE vehicle and milestone relati
   });
 });
 
+test('paid-service history rejects new Free Service calls and follow-ups', async () => {
+  const customer = makeCustomer('customer-a', 'ccm-a', [{
+    id: 'vehicle-a',
+    ccmId: 'ccm-a',
+    physicalVehicleId: 'physical-a',
+    saleDate: new Date('2024-01-01'),
+    allocations: [],
+    masterCallListEntries: [],
+  }]);
+  let writeCount = 0;
+  await withPrismaMocks({
+    'customer.findUnique': async () => customer,
+    'freeServiceMilestone.findUnique': async () => ({
+      vehicleId: 'vehicle-a',
+      milestone: 1,
+      dueDate: new Date('2024-03-01'),
+      status: 'pending',
+    }),
+    'workshopVisit.findMany': async () => [{
+      visitDate: new Date('2024-04-01'),
+      importedDetails: { workType: 'Paid Service' },
+    }],
+    '$transaction': async () => { writeCount += 1; },
+    'followUp.create': async () => { writeCount += 1; },
+  }, async () => {
+    const user = { id: 'ccm-user-a', role: 'CCM', ccmId: 'ccm-a' };
+    const callResponse = mockRes();
+    await createCallLog({
+      user,
+      body: {
+        customerId: 'customer-a',
+        vehicleId: 'vehicle-a',
+        milestoneId: 'milestone-a',
+        outcome: 'CONTACTED',
+        callSource: 'FREE_SERVICE',
+      },
+    }, callResponse);
+    assert.equal(callResponse.statusCode, 409);
+
+    const followUpResponse = mockRes();
+    await createFollowUp({
+      user,
+      body: {
+        customerId: 'customer-a',
+        vehicleId: 'vehicle-a',
+        milestoneId: 'milestone-a',
+        source: 'FREE_SERVICE',
+        category: 'callback',
+        followUpAt: '2026-11-20T10:00:00Z',
+      },
+    }, followUpResponse);
+    assert.equal(followUpResponse.statusCode, 409);
+    assert.equal(writeCount, 0);
+  });
+});
+
 test('Master Call List reassignment is an independent valid CRE access grant', () => {
   const vehicle = makeVehicle('vehicle-a', 'ccm-a', [], [{ ownerUserId: 'cre-a2', ccmId: 'ccm-a' }]);
   assert.equal(isVehicleAssignedToCre(vehicle, { id: 'cre-a2', ccmId: 'ccm-a' }), true);

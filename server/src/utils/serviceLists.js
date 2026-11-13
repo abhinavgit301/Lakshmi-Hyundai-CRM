@@ -5,11 +5,62 @@ import {
   findCompletingVisit,
   findMissedCases,
   freeServiceDueDate,
+  getServiceLifecycle,
   normalizeSaleDate,
   warrantyExpiryDate,
 } from './serviceCalendar.js';
 import { getWorkshopTimezone } from './workshopTime.js';
 import { normalizeRepairOrderNo } from './repairOrderIdentity.js';
+import { workshopVisitVisibilityWhere } from './creAccess.js';
+
+export async function excludeIneligibleFreeServiceFollowUps(where, user, db = prisma) {
+  const sourceFilter = where.source;
+  if (sourceFilter && sourceFilter !== 'FREE_SERVICE'
+    && !sourceFilter.in?.includes('FREE_SERVICE')) return where;
+
+  const candidates = await db.followUp.findMany({
+    where: { ...where, source: 'FREE_SERVICE' },
+    select: {
+      id: true,
+      vehicle: { select: { physicalVehicleId: true, saleDate: true } },
+      milestone: { select: { milestone: true, dueDate: true, status: true } },
+    },
+  });
+  if (!candidates.length) return where;
+
+  const physicalVehicleIds = [...new Set(candidates.map(({ vehicle }) => vehicle?.physicalVehicleId).filter(Boolean))];
+  const visits = physicalVehicleIds.length
+    ? await db.workshopVisit.findMany({
+      where: {
+        physicalVehicleId: { in: physicalVehicleIds },
+        ...workshopVisitVisibilityWhere(user),
+      },
+      select: { physicalVehicleId: true, visitDate: true, importedDetails: true },
+    })
+    : [];
+  const visitsByPhysicalVehicle = new Map();
+  for (const visit of visits) {
+    const records = visitsByPhysicalVehicle.get(visit.physicalVehicleId) || [];
+    records.push(visit);
+    visitsByPhysicalVehicle.set(visit.physicalVehicleId, records);
+  }
+
+  const ineligibleIds = candidates.filter(({ vehicle, milestone }) => {
+    if (!vehicle?.physicalVehicleId) return true;
+    const vehicleVisits = visitsByPhysicalVehicle.get(vehicle.physicalVehicleId) || [];
+    const lifecycle = getServiceLifecycle({ saleDate: vehicle.saleDate, workshopVisits: vehicleVisits });
+    if (lifecycle.phase !== 'free') return true;
+    return Boolean(milestone && (milestone.status === 'completed'
+      || lifecycle.completedMilestones.includes(milestone.milestone)
+      || findCompletingVisit(milestone.dueDate, vehicleVisits, new Date())));
+  }).map(({ id }) => id);
+  if (!ineligibleIds.length) return where;
+
+  const eligibilityCondition = where.source === 'FREE_SERVICE'
+    ? { id: { notIn: ineligibleIds } }
+    : { OR: [{ source: { not: 'FREE_SERVICE' } }, { id: { notIn: ineligibleIds } }] };
+  return { ...where, AND: [...(where.AND || []), eligibilityCondition] };
+}
 
 export function filterMilestoneCompletionByVisits(milestones, records) {
   const visitsByVehicle = new Map(records.map((record) => [record.vehicleId, record.workshopVisits || []]));
@@ -37,6 +88,7 @@ export function filterMilestoneCompletionByVisits(milestones, records) {
 export async function syncFreeServiceMilestones(vehicles, db = prisma) {
   const usable = vehicles.filter((vehicle) => vehicle.saleDate);
   if (!usable.length) return [];
+  const asOf = new Date();
 
   const existing = await db.freeServiceMilestone.findMany({ where: { vehicleId: { in: usable.map((vehicle) => vehicle.id) } } });
   const byKey = new Map(existing.map((entry) => [`${entry.vehicleId}:${entry.milestone}`, entry]));
@@ -48,7 +100,7 @@ export async function syncFreeServiceMilestones(vehicles, db = prisma) {
       const dueDate = freeServiceDueDate(vehicle.saleDate, milestone);
       const current = byKey.get(`${vehicle.id}:${milestone}`);
       if (!current) {
-        const visit = findCompletingVisit(dueDate, vehicle.workshopVisits);
+        const visit = findCompletingVisit(dueDate, vehicle.workshopVisits, asOf);
         missing.push({
           vehicleId: vehicle.id,
           physicalVehicleId: vehicle.physicalVehicleId,
@@ -65,7 +117,7 @@ export async function syncFreeServiceMilestones(vehicles, db = prisma) {
         continue;
       }
       if (current.status === 'completed') continue;
-      const visit = findCompletingVisit(current.dueDate, vehicle.workshopVisits);
+      const visit = findCompletingVisit(current.dueDate, vehicle.workshopVisits, asOf);
       if (visit) {
         updates.push(db.freeServiceMilestone.update({
           where: { id: current.id },

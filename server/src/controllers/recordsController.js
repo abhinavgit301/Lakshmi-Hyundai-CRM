@@ -4,19 +4,20 @@ import { appointmentVisibilityWhere } from '../utils/appointmentAccess.js';
 import { evaluateRepairOrderRow } from '../utils/businessRules.js';
 import { creCustomerWhere, creVehicleWhere, workshopVisitVisibilityWhere } from '../utils/creAccess.js';
 import { normalizeVin } from '../utils/roleAccess.js';
-import { addMonths, classifyServiceDue, dueCohortServiceDateRanges, getLatestServiceDate, getYearlyDueDate, parseStoredDate } from '../utils/serviceDue.js';
+import { addMonths, classifyServiceDue, getYearlyDueDate, parseStoredDate } from '../utils/serviceDue.js';
 import {
   normalizeSaleDate,
   countRemainingFreeServiceMilestones,
   DAILY_TARGETS,
   freeServiceCustomerIdsForMonth,
+  getServiceLifecycle,
   buildQuotaRows,
   buildQuotaNotifications,
 } from '../utils/serviceCalendar.js';
 import { workshopDayRange, workshopMonthOf } from '../utils/workshopTime.js';
 import { getCreCallCounts } from '../utils/callMetrics.js';
 import { getCreCallCountsForScope } from '../utils/creCallAggregateReaders.js';
-import { findMissedWarrantyCases } from '../utils/serviceLists.js';
+import { excludeIneligibleFreeServiceFollowUps, findMissedWarrantyCases } from '../utils/serviceLists.js';
 import { lockCcmAllocationTeam } from '../utils/customerAllocation.js';
 import { recordCreAssignmentEvent, validateAssignmentReason } from '../utils/creAssignmentHistory.js';
 import { addCanonicalMasterCallListEntry, buildAllocationQueueRecords, findCanonicalMasterCallListEntry } from '../utils/masterCallList.js';
@@ -333,6 +334,10 @@ async function loadDashboardSummary(req, res) {
     });
   }
 
+  const pendingFollowUpWhere = await excludeIneligibleFreeServiceFollowUps({
+    ...scope.followUp,
+    status: 'pending',
+  }, user);
   const [
     totalCustomers,
     activeVehicles,
@@ -365,7 +370,7 @@ async function loadDashboardSummary(req, res) {
         },
       },
     }),
-    prisma.followUp.count({ where: { ...scope.followUp, status: 'pending' } }),
+    prisma.followUp.count({ where: pendingFollowUpWhere }),
     prisma.callLog.count({ where: scope.call }),
     prisma.callLog.count({ where: { ...scope.call, outcome: 'APPOINTMENT_SET' } }),
     prisma.importBatch.aggregate({ where: scope.importBatch, _sum: { totalRows: true, flaggedRows: true } }),
@@ -389,6 +394,11 @@ async function loadDashboardSummary(req, res) {
 
   if (role === 'CRE') {
     const dueWhere = creDueWhere(user.id, user.ccmId);
+    const creFollowUpWhere = await excludeIneligibleFreeServiceFollowUps({
+      status: 'pending',
+      ...scope.followUp,
+      source: { in: allowedServiceSources(user) },
+    }, user);
     const [scopedRecords, creCounts, followUps, todayAppointments, missedWarranty] = await Promise.all([
       loadCallListRecords(dueWhere, now, user),
       getCreCallCountsForScope({
@@ -410,11 +420,7 @@ async function loadDashboardSummary(req, res) {
         },
       }),
       prisma.followUp.findMany({
-        where: {
-          status: 'pending',
-          ...scope.followUp,
-          source: { in: allowedServiceSources(user) },
-        },
+        where: creFollowUpWhere,
         include: {
           customer: { select: { id: true, fullName: true, mobileNumber: true } },
           vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
@@ -535,7 +541,7 @@ async function loadDashboardSummary(req, res) {
         where: { ccmId, ownerUserId: null },
       }),
       prisma.vehicle.count({ where: { ccmId } }),
-      prisma.followUp.count({ where: { ...scope.followUp, status: 'pending' } }),
+      prisma.followUp.count({ where: pendingFollowUpWhere }),
     ]);
 
     const creIds = cres.map((c) => c.id);
@@ -908,6 +914,10 @@ export async function loadCallListRecords(
     const previousRows = processedRows;
     for (const row of page) {
       const visits = row.vehicle?.physicalVehicle?.workshopVisits || [];
+      const serviceLifecycle = getServiceLifecycle({
+        saleDate: row.vehicle?.saleDate,
+        workshopVisits: visits,
+      }, now);
       const record = {
         id: row.id,
         createdAt: row.createdAt,
@@ -928,10 +938,10 @@ export async function loadCallListRecords(
         type: classifyMasterRepairType(visits[0]?.importedDetails?.workType
           || row.vehicle?.monthlyDataEntries[0]?.serviceType
           || row.vehicle?.allocations[0]?.serviceType),
-        dueCategory: classifyServiceDue(getLatestServiceDate(visits, now), now),
-        dueDate: getYearlyDueDate(visits)
-          || row.vehicle?.monthlyDataEntries[0]?.nextServiceDueDate
-          || null,
+        dueCategory: classifyServiceDue(serviceLifecycle.referenceDate, now),
+        dueDate: serviceLifecycle.referenceDate
+          ? getYearlyDueDate([{ visitDate: serviceLifecycle.referenceDate }])
+          : null,
         scheduledAppointment: [
           ...(row.vehicle?.appointments || []),
           ...(row.vehicle?.customer?.appointments || []),
@@ -1079,7 +1089,8 @@ export async function getCallList(req, res) {
   const paginationResult = parsePagination(req.query);
   if (paginationResult.error) return res.status(400).json({ message: paginationResult.error });
   const role = normalizeRole(req.user?.role);
-  if (isMasterCallListSqlEnabled()) {
+  const lifecycleDueFilter = ['6m', '1y', 'allDue', 'pastDue'].includes(validated.filters.dueCategory);
+  if (isMasterCallListSqlEnabled() && !lifecycleDueFilter) {
     const requestedCcmId = ['ADMIN', 'GM'].includes(role) ? String(req.query.ccmId || '').trim() : '';
     const cacheKey = `${req.user?.id}|${role}|${req.user?.ccmId || ''}|${JSON.stringify(req.query)}`;
     let sqlResult;
@@ -1253,36 +1264,15 @@ export async function loadDueRecords(where, dueWindow, asOf = new Date(), user =
   return dueWindow === '1y' ? cohorts.oneYear : cohorts.sixMonth;
 }
 
-// Both cohorts from a single load of the master call list. With `useStoredLastServiceDate`, only vehicles
-// whose stored latest visit can place them in a cohort are loaded (plus any with a future-dated visit,
-// whose true latest past service date needs the full visit list); classifyDueCohorts still decides.
-export async function loadDueCohorts(where, asOf = new Date(), user = null, { useStoredLastServiceDate = false } = {}) {
-  const scopedWhere = useStoredLastServiceDate ? { AND: [where, dueCohortCandidateWhere(asOf)] } : where;
-  return classifyDueCohorts(await loadCallListRecords(scopedWhere, asOf, user), asOf);
-}
-
-export function dueCohortCandidateWhere(asOf) {
-  const { oneYear, sixMonth } = dueCohortServiceDateRanges(asOf);
-  return {
-    vehicle: {
-      is: {
-        physicalVehicle: {
-          is: {
-            OR: [
-              { lastServiceDate: oneYear },
-              { lastServiceDate: sixMonth },
-              { lastServiceDate: { gt: asOf } },
-            ],
-          },
-        },
-      },
-    },
-  };
+// The stored latest visit is service-type agnostic, so it cannot safely narrow candidates once
+// paid/free service phases use different reference visits.
+export async function loadDueCohorts(where, asOf = new Date(), user = null) {
+  return classifyDueCohorts(await loadCallListRecords(where, asOf, user), asOf);
 }
 
 export function classifyDueCohorts(records, asOf = new Date()) {
   const classified = records
-    .map((record) => ({ record, lastServiceDate: getLatestServiceDate(record.workshopVisits, asOf) }))
+    .map((record) => ({ record, lastServiceDate: getServiceLifecycle(record, asOf).referenceDate }))
     .map((entry) => ({ ...entry, window: classifyServiceDue(entry.lastServiceDate, asOf) }));
   const cohort = (window) => classified
     .filter((entry) => entry.window === window)
@@ -1324,10 +1314,9 @@ async function loadDueCallListResponse(req, res) {
     ? { ccmId: req.user?.ccmId || 'no-access' }
     : creDueWhere(req.user?.id, req.user?.ccmId);
   const cohortKey = `due-cohorts|${req.user?.id}|${role}|${req.user?.ccmId || ''}`;
-  const useStoredLastServiceDate = process.env.DUE_LIST_STORED_DATE_FILTER !== 'false';
   const cohorts = await cachedCallList(
     cohortKey,
-    () => loadDueCohorts(where, new Date(), req.user, { useStoredLastServiceDate }),
+    () => loadDueCohorts(where, new Date(), req.user),
     { kind: 'master', ccmId: cacheScopeCcm(req.user) },
   );
   const due = dueWindow === '1y' ? cohorts.oneYear : cohorts.sixMonth;

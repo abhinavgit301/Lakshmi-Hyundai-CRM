@@ -15,8 +15,8 @@ async function capturedWhere(options) {
   return JSON.stringify(wheres);
 }
 
-test('stored last-service-date narrowing is only applied when requested', async () => {
+test('stored last-service-date narrowing is disabled because it is not service-type aware', async () => {
   assert.equal((await capturedWhere({ useStoredLastServiceDate: false })).includes('lastServiceDate'), false);
   assert.equal((await capturedWhere({})).includes('lastServiceDate'), false);
-  assert.equal((await capturedWhere({ useStoredLastServiceDate: true })).includes('lastServiceDate'), true);
+  assert.equal((await capturedWhere({ useStoredLastServiceDate: true })).includes('lastServiceDate'), false);
 });

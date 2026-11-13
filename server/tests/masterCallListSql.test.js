@@ -133,6 +133,21 @@ test('flag ON selects the page through SQL and loads only those ids with the exi
   for (const key of ['id', 'name', 'vin', 'status', 'workshopVisits', 'assigneeName', 'dueCategory']) assert.ok(key in first, key);
 });
 
+test('flag ON uses the lifecycle-aware record builder for due and overdue filters', async () => {
+  for (const dueCategory of ['1y', '6m', 'allDue', 'pastDue']) {
+    const response = await withFlag('true', () => request({
+      user: { role: 'ADMIN' },
+      query: { dueCategory },
+      rows: [row(`m-${dueCategory}`, 'VIN-1')],
+      page: { total: 1, ids: [`m-${dueCategory}`] },
+    }));
+
+    assert.equal(response.calls.sql.length, 0, dueCategory);
+    assert.ok(response.calls.master.length > 0, dueCategory);
+    assert.deepEqual(ids(response), [], dueCategory);
+  }
+});
+
 test('flag ON: pagination arithmetic and empty pages', async () => {
   const rows = [row('m-1', 'VIN-1')];
   const more = await withFlag('true', () => request({ user: { role: 'ADMIN' }, rows, query: { limit: '1' }, page: { total: 5, ids: ['m-1'] } }));

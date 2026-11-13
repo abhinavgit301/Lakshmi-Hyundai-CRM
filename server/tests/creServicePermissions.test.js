@@ -148,6 +148,44 @@ test('Free-Service follow-up filters combine dates, milestone, assignee, and sea
   }
 });
 
+test('paid-service history removes existing Free Service follow-ups before pagination', async () => {
+  const originalFindMany = prisma.followUp.findMany;
+  const originalCount = prisma.followUp.count;
+  const originalVisitFindMany = prisma.workshopVisit.findMany;
+  let listWhere;
+  prisma.followUp.findMany = async (args) => {
+    if (args.select) {
+      return [{
+        id: 'paid-follow-up',
+        vehicle: { physicalVehicleId: 'physical-a', saleDate: new Date('2024-01-01') },
+        milestone: { milestone: 1, dueDate: new Date('2024-03-01'), status: 'pending' },
+      }];
+    }
+    listWhere = args.where;
+    return [];
+  };
+  prisma.followUp.count = async () => 0;
+  prisma.workshopVisit.findMany = async () => [{
+    physicalVehicleId: 'physical-a',
+    visitDate: new Date('2024-04-01'),
+    importedDetails: { workType: 'Paid Service' },
+  }];
+  try {
+    const res = mockRes();
+    await listFollowUps({
+      user: { id: 'ccm-user', role: 'CCM', ccmId: 'ccm-a' },
+      query: { source: 'FREE_SERVICE', limit: '10' },
+    }, res);
+
+    assert.ok(listWhere.AND.some((condition) => condition.id?.notIn?.includes('paid-follow-up')));
+    assert.deepEqual(res.body.followUps, []);
+  } finally {
+    prisma.followUp.findMany = originalFindMany;
+    prisma.followUp.count = originalCount;
+    prisma.workshopVisit.findMany = originalVisitFindMany;
+  }
+});
+
 test('Warranty expiry follow-up date filters invert the calendar-month rule exactly', async () => {
   const originalFindMany = prisma.followUp.findMany;
   const originalCount = prisma.followUp.count;

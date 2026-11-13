@@ -1,7 +1,8 @@
 // Business rules for Free Service milestones, warranty windows, call-quota evaluation and
 // follow-up routing. Everything here is pure so it can be tested without a database.
-import { addMonths, parseStoredDate } from './serviceDue.js';
+import { addMonths, getLatestServiceDate, parseStoredDate } from './serviceDue.js';
 import { zonedStartOfDay } from './workshopTime.js';
+import { classifyMasterRepairType } from './repairTypes.js';
 
 export const DAILY_TARGETS = { callsMade: 120, callsPickedUp: 80 };
 
@@ -62,6 +63,44 @@ export function isFreeServiceWorkType(workType) {
   return /\b(free|foc)\b/i.test(String(workType || ''));
 }
 
+export function isPaidServiceVisit(visit) {
+  return classifyMasterRepairType(visit?.importedDetails?.workType) === 'Paid';
+}
+
+export function getServiceLifecycle(record, asOf = new Date()) {
+  const visits = record.workshopVisits || [];
+  const paidVisits = visits.filter((visit) => {
+    if (!isPaidServiceVisit(visit)) return false;
+    const visitDate = parseStoredDate(visit.visitDate);
+    return !visitDate || visitDate <= asOf;
+  });
+  if (paidVisits.length) {
+    return {
+      phase: 'paid',
+      completedMilestones: [],
+      referenceDate: getLatestServiceDate(paidVisits, asOf),
+    };
+  }
+
+  const saleDate = resolveSaleDate(record, asOf);
+  if (!saleDate) {
+    return { phase: 'unknown', completedMilestones: [], referenceDate: null };
+  }
+
+  const completedMilestones = FREE_SERVICE_MILESTONES
+    .filter(({ milestone }) => findCompletingVisit(freeServiceDueDate(saleDate, milestone), visits, asOf))
+    .map(({ milestone }) => milestone);
+  if (completedMilestones.length === FREE_SERVICE_MILESTONES.length) {
+    return {
+      phase: 'post-free',
+      completedMilestones,
+      referenceDate: getLatestServiceDate(visits.filter((visit) => isFreeServiceWorkType(visit.importedDetails?.workType)), asOf),
+    };
+  }
+
+  return { phase: 'free', completedMilestones, referenceDate: null };
+}
+
 // Visible to the CRE only when the calling window has opened (14 days before due) AND the due date
 // is today or later and no later than one calendar month from today (inclusive).
 export function isFreeServiceCallable(dueDate, today) {
@@ -90,10 +129,13 @@ export function isFreeServiceListVisible(dueDate, today) {
 
 // A free-service repair order completes the milestone from one month before its due date through
 // the expiry date, inclusive. Later visits cannot complete an expired milestone.
-export function findCompletingVisit(dueDate, visits) {
+export function findCompletingVisit(dueDate, visits, asOf = null) {
   const milestoneDate = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
   const windowStart = addMonths(milestoneDate, -1);
   const windowEnd = freeServiceExpiryDate(milestoneDate);
+  const latestEligibleDate = asOf
+    ? new Date(asOf.getFullYear(), asOf.getMonth(), asOf.getDate())
+    : null;
   return (visits || [])
     .filter((visit) => isFreeServiceWorkType(visit.importedDetails?.workType))
     .map((visit) => {
@@ -103,7 +145,8 @@ export function findCompletingVisit(dueDate, visits) {
         date: parsed ? new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()) : null,
       };
     })
-    .filter(({ date }) => date && date >= windowStart && date <= windowEnd)
+    .filter(({ date }) => date && date >= windowStart && date <= windowEnd
+      && (!latestEligibleDate || date <= latestEligibleDate))
     .sort((left, right) => left.date - right.date)[0]?.visit || null;
 }
 
@@ -121,6 +164,7 @@ export function resolveSaleDate(record, now = new Date()) {
 }
 
 export function countRemainingFreeServiceMilestones(record, now = new Date()) {
+  if (getServiceLifecycle(record, now).phase === 'paid') return 0;
   const saleDate = resolveSaleDate(record, now);
   if (!saleDate) return null;
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -128,7 +172,7 @@ export function countRemainingFreeServiceMilestones(record, now = new Date()) {
   return FREE_SERVICE_MILESTONES.filter(({ milestone }) => {
     const dueDate = freeServiceDueDate(saleDate, milestone);
     if (today > freeServiceExpiryDate(dueDate)) return false;
-    return !findCompletingVisit(dueDate, record.workshopVisits);
+    return !findCompletingVisit(dueDate, record.workshopVisits, now);
   }).length;
 }
 
@@ -139,7 +183,13 @@ export function freeServiceCustomerIdsForMonth(records, year, month, now = new D
   for (const record of records) {
     const saleDate = resolveSaleDate(record, now);
     if (!saleDate || !record.customerId) continue;
-    if (FREE_SERVICE_MILESTONES.some(({ milestone }) => freeServiceOverlapsMonth(freeServiceDueDate(saleDate, milestone), year, month))) {
+    const lifecycle = getServiceLifecycle(record, now);
+    if (lifecycle.phase !== 'free') continue;
+    if (FREE_SERVICE_MILESTONES.some(({ milestone }) => {
+      const dueDate = freeServiceDueDate(saleDate, milestone);
+      return freeServiceOverlapsMonth(dueDate, year, month)
+        && !findCompletingVisit(dueDate, record.workshopVisits, now);
+    })) {
       ids.add(record.customerId);
     }
   }

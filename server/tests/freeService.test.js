@@ -134,16 +134,16 @@ test('each milestone matches only its own free-service visit', () => {
   assert.equal(findCompletingVisit(freeServiceDueDate(sale, 3), visits), null);
 });
 
-test('remaining free-service count uses sale-date milestones and only matching free repair orders', () => {
+test('paid-service history permanently ends remaining free-service eligibility', () => {
   const saleDate = d(2024, 1, 15);
   const visits = [
     { visitDate: d(2024, 4, 10), importedDetails: { workType: 'FOC Service' } },
     { visitDate: d(2025, 1, 20), importedDetails: { workType: 'Paid Service' } },
   ];
-  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2024, 5, 1)), 2);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2025, 2, 1)), 0);
 
   visits[1].importedDetails.workType = 'Free Service';
-  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2024, 5, 1)), 1);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: visits }, d(2025, 2, 1)), 1);
   assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, d(2024, 5, 1)), 3);
 });
 
@@ -167,7 +167,7 @@ test('a grace-period free service reduces the available milestone count', () => 
     visitDate: d(firstServiceDue.getFullYear(), firstServiceDue.getMonth() + 2, firstServiceDue.getDate()),
     importedDetails: { workType: 'Free Service' },
   };
-  const now = d(2026, 3, 1);
+  const now = d(2026, 6, 1);
   assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, now), 3);
   assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [visit] }, now), 2);
 });

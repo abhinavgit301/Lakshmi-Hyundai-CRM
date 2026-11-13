@@ -220,10 +220,21 @@ test('page records are enriched from visit history: due category, due date, repa
     gpDate: null,
     importedDetails: details,
   });
+  const saleDate = new Date(now.getFullYear(), now.getMonth() - 36, 15, 12, 0, 0);
   const rows = [
     makeRow('m-1y', 'VIN-1Y', {
       createdAt: new Date('2026-01-03T00:00:00Z'),
-      vehicle: makeVehicle('v-1y', [visit('1y', 12, { workType: 'Free Service', mobileNumber: '9876543210', roNumber: 'IMPORTED-RO-9' })]),
+      vehicle: makeVehicle('v-1y', [
+        {
+          ...visit('first-free', 34, { workType: 'Free Service' }),
+          visitDate: new Date(saleDate.getFullYear(), saleDate.getMonth() + 2, 15, 12, 0, 0),
+        },
+        {
+          ...visit('second-free', 24, { workType: 'Free Service' }),
+          visitDate: new Date(saleDate.getFullYear() + 1, saleDate.getMonth(), 15, 12, 0, 0),
+        },
+        visit('1y', 12, { workType: 'Free Service', mobileNumber: '9876543210', roNumber: 'IMPORTED-RO-9' }),
+      ], { saleDate }),
     }),
     makeRow('m-6m', 'VIN-6M', {
       createdAt: new Date('2026-01-02T00:00:00Z'),

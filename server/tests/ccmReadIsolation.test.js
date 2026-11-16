@@ -7,6 +7,17 @@ import { getCreCallCounts } from '../src/utils/callMetrics.js';
 import { workshopDayRange } from '../src/utils/workshopTime.js';
 import { latestWorkshopVisitOrderBy } from '../src/utils/workshopVisitOrdering.js';
 
+async function getLegacyCallList(req, res) {
+  const previousSqlFlag = process.env.MASTER_CALL_LIST_SQL_ENABLED;
+  process.env.MASTER_CALL_LIST_SQL_ENABLED = 'false';
+  try {
+    return await getCallList(req, res);
+  } finally {
+    if (previousSqlFlag === undefined) delete process.env.MASTER_CALL_LIST_SQL_ENABLED;
+    else process.env.MASTER_CALL_LIST_SQL_ENABLED = previousSqlFlag;
+  }
+}
+
 async function captureCallListQuery(user) {
   const original = prisma.masterCallList.findMany;
   let captured;
@@ -21,6 +32,24 @@ async function captureCallListQuery(user) {
   }
   return captured;
 }
+
+test('legacy page helper restores the SQL flag after success and failure', async () => {
+  const originalFlag = process.env.MASTER_CALL_LIST_SQL_ENABLED;
+  try {
+    for (const flag of [undefined, 'true']) {
+      if (flag === undefined) delete process.env.MASTER_CALL_LIST_SQL_ENABLED;
+      else process.env.MASTER_CALL_LIST_SQL_ENABLED = flag;
+      const res = { status() { return this; }, json() { return this; } };
+      await getLegacyCallList({ user: { role: 'FREE_SERVICE_CRE' } }, res);
+      assert.equal(process.env.MASTER_CALL_LIST_SQL_ENABLED, flag);
+      await assert.rejects(getLegacyCallList(null, res), TypeError);
+      assert.equal(process.env.MASTER_CALL_LIST_SQL_ENABLED, flag);
+    }
+  } finally {
+    if (originalFlag === undefined) delete process.env.MASTER_CALL_LIST_SQL_ENABLED;
+    else process.env.MASTER_CALL_LIST_SQL_ENABLED = originalFlag;
+  }
+});
 
 test('Master Call List loader scopes nested workshop history by role and preserves Admin/GM cross-CCM access', async () => {
   for (const role of ['ADMIN', 'GM']) {
@@ -186,7 +215,7 @@ test('paginated Master Call List response retains exact page metadata and orderi
   };
 
   try {
-    await getCallList({ user: { role: 'ADMIN' }, query: { limit: '1', offset: '1' } }, res);
+    await getLegacyCallList({ user: { role: 'ADMIN' }, query: { limit: '1', offset: '1' } }, res);
 
     assert.equal(res.body.records.length, 1);
     assert.equal(res.body.total, 3);
@@ -236,7 +265,7 @@ test('Master Call List response keeps a 48k-row result set to the requested page
   };
 
   try {
-    await getCallList({ user: { role: 'ADMIN' }, query: {} }, res);
+    await getLegacyCallList({ user: { role: 'ADMIN' }, query: {} }, res);
 
     assert.equal(res.body.records.length, 50);
     assert.equal(res.body.total, 48047);
@@ -294,14 +323,14 @@ test('paginated Master Call List preserves CCM allocation queue rows', async () 
   });
   try {
     const firstPage = createResponse();
-    await getCallList({ user: { role: 'CCM', ccmId: 'ccm-a' }, query: { limit: '1', offset: '0' } }, firstPage);
+    await getLegacyCallList({ user: { role: 'CCM', ccmId: 'ccm-a' }, query: { limit: '1', offset: '0' } }, firstPage);
     assert.equal(firstPage.body.total, 2);
     assert.equal(firstPage.body.records[0].id, masterRow.id);
     assert.equal(firstPage.body.records[0].allocationQueue, true);
     assert.equal(firstPage.body.hasMore, true);
 
     const secondPage = createResponse();
-    await getCallList({ user: { role: 'CCM', ccmId: 'ccm-a' }, query: { limit: '1', offset: '1' } }, secondPage);
+    await getLegacyCallList({ user: { role: 'CCM', ccmId: 'ccm-a' }, query: { limit: '1', offset: '1' } }, secondPage);
     assert.equal(secondPage.body.records[0].id, 'allocation:allocation-only');
     assert.equal(secondPage.body.records[0].allocationOnly, true);
     assert.equal(secondPage.body.hasMore, false);
@@ -353,7 +382,7 @@ test('paginated Master Call List still searches repair-order numbers in visit hi
   };
 
   try {
-    await getCallList({ user: { role: 'ADMIN' }, query: { search: 'RO-SEARCH-42' } }, res);
+    await getLegacyCallList({ user: { role: 'ADMIN' }, query: { search: 'RO-SEARCH-42' } }, res);
 
     assert.equal(res.body.total, 1);
     assert.equal(res.body.records[0].id, row.id);

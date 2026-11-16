@@ -46,7 +46,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/status_test_ci?schema=public
-      JWT_SECRET: ci-only-not-a-production-secret
+      JWT_SECRET: ci-only-not-a-production-secret-at-least-32-characters
       NODE_ENV: test
       RUN_STARTUP_REPAIRS: "false"
       TZ: Asia/Kolkata

@@ -54,6 +54,8 @@ function makeVehicle(id, visits, extra = {}) {
 }
 
 async function requestCallList({ user, query = {}, rows = [], allocations = [], teams = [] }) {
+  const previousSqlFlag = process.env.MASTER_CALL_LIST_SQL_ENABLED;
+  process.env.MASTER_CALL_LIST_SQL_ENABLED = 'false';
   const original = {
     master: prisma.masterCallList.findMany,
     user: prisma.user.findMany,
@@ -76,10 +78,30 @@ async function requestCallList({ user, query = {}, rows = [], allocations = [], 
     prisma.masterCallList.findMany = original.master;
     prisma.user.findMany = original.user;
     prisma.allocation.findMany = original.allocation;
+    if (previousSqlFlag === undefined) delete process.env.MASTER_CALL_LIST_SQL_ENABLED;
+    else process.env.MASTER_CALL_LIST_SQL_ENABLED = previousSqlFlag;
   }
 }
 
 const ids = (response) => response.body.records.map((record) => record.id);
+
+test('legacy contract helper restores the SQL flag after success and failure', async () => {
+  const originalFlag = process.env.MASTER_CALL_LIST_SQL_ENABLED;
+  try {
+    for (const flag of [undefined, 'true']) {
+      if (flag === undefined) delete process.env.MASTER_CALL_LIST_SQL_ENABLED;
+      else process.env.MASTER_CALL_LIST_SQL_ENABLED = flag;
+      await requestCallList({ user: { role: 'FREE_SERVICE_CRE' } });
+      assert.equal(process.env.MASTER_CALL_LIST_SQL_ENABLED, flag);
+      const user = { get role() { throw new Error('test failure'); } };
+      await assert.rejects(requestCallList({ user }), /test failure/);
+      assert.equal(process.env.MASTER_CALL_LIST_SQL_ENABLED, flag);
+    }
+  } finally {
+    if (originalFlag === undefined) delete process.env.MASTER_CALL_LIST_SQL_ENABLED;
+    else process.env.MASTER_CALL_LIST_SQL_ENABLED = originalFlag;
+  }
+});
 
 test('canonical (ccmId, vin) selection prefers an owner, then the earliest createdAt, then the lowest id; shared VINs stay per CCM', async () => {
   const rows = [

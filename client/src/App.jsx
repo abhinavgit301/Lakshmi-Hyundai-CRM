@@ -456,62 +456,67 @@ function App() {
     let isMounted = true;
 
     if (!initialLoadPromiseRef.current) {
-      initialLoadPromiseRef.current = (async () => {
-        const summaryRequest = api.get('/dashboard/summary');
-        summaryRequest.catch(() => {});
-        const userResponse = await api.get('/auth/me');
-        const user = userResponse.data.user;
-        const role = String(user?.role || '').toUpperCase();
-        setCurrentUser(user);
-        const requests = [summaryRequest];
-        if (['CCM', 'CRE'].includes(role)) requests.push(api.get('/call-list?limit=50&offset=0'));
-        if (role === 'CCM') requests.push(api.get('/teams'));
-        const [summaryResponse, masterResponse, teamResponse] = await Promise.all(requests);
-        return { user, role, summaryResponse, masterResponse, teamResponse };
-      })();
+      initialLoadPromiseRef.current = api.get('/auth/me').then((response) => response.data.user);
     }
-    initialLoadPromiseRef.current.then(({
-      user, role, summaryResponse, masterResponse, teamResponse,
-    }) => {
+    initialLoadPromiseRef.current.then((user) => {
       if (!isMounted) return;
       setCurrentUser(user);
-      setDashboardData(summaryResponse.data);
-      if (masterResponse) {
-        setCalls(masterResponse.data.records || []);
-        setMasterListPageInfo({
-          total: masterResponse.data.total || 0,
-          hasMore: masterResponse.data.hasMore === true,
-          offset: masterResponse.data.offset || 0,
-        });
-      }
-      if (teamResponse) {
-        setAllocationCres(teamResponse.data.cres || []);
-        setMasterListCcms(teamResponse.data.ccms || []);
-      }
-      setSummary([
-        { label: 'Total customers', value: summaryResponse.data.totalCustomers, change: 'Current total' },
-        { label: 'Active vehicles', value: summaryResponse.data.activeVehicles, change: 'Current total' },
-        { label: 'Calls today', value: summaryResponse.data.todaysCalls, change: `${summaryResponse.data.pendingFollowUps} follow-ups pending` },
-        { label: 'Appointments', value: summaryResponse.data.appointmentCount, change: 'Today' },
-      ]);
-      if (role === 'CCM') {
-        api.get('/notifications/quota').then((response) => {
-          if (isMounted) setQuotaNotices(response.data);
-        }).catch((error) => console.warn('Could not load CCM quota notices.', error));
-      } else {
-        setQuotaNotices(null);
-      }
+      setAuthChecked(true);
+      setInitialDataLoading(true);
+      const role = String(user?.role || '').toUpperCase();
+      const requests = [api.get('/dashboard/summary')];
+      if (['CCM', 'CRE'].includes(role)) requests.push(api.get('/call-list?limit=50&offset=0'));
+      if (role === 'CCM') requests.push(api.get('/teams'));
+      Promise.all(requests).then(([summaryResponse, masterResponse, teamResponse]) => {
+        if (!isMounted) return;
+        setDashboardData(summaryResponse.data);
+        if (masterResponse) {
+          setCalls(masterResponse.data.records || []);
+          setMasterListPageInfo({
+            total: masterResponse.data.total || 0,
+            hasMore: masterResponse.data.hasMore === true,
+            offset: masterResponse.data.offset || 0,
+          });
+        }
+        if (teamResponse) {
+          setAllocationCres(teamResponse.data.cres || []);
+          setMasterListCcms(teamResponse.data.ccms || []);
+        }
+        setSummary([
+          { label: 'Total customers', value: summaryResponse.data.totalCustomers, change: 'Current total' },
+          { label: 'Active vehicles', value: summaryResponse.data.activeVehicles, change: 'Current total' },
+          { label: 'Calls today', value: summaryResponse.data.todaysCalls, change: `${summaryResponse.data.pendingFollowUps} follow-ups pending` },
+          { label: 'Appointments', value: summaryResponse.data.appointmentCount, change: 'Today' },
+        ]);
+        if (role === 'CCM') {
+          api.get('/notifications/quota').then((response) => {
+            if (isMounted) setQuotaNotices(response.data);
+          }).catch((error) => console.warn('Could not load CCM quota notices.', error));
+        } else {
+          setQuotaNotices(null);
+        }
+      }).catch((error) => {
+        if (!isMounted) return;
+        if (error.response?.status === 401) {
+          setCurrentUser(null);
+          return;
+        }
+        console.error('Dashboard load failed.', error);
+        setInitialDataError(error.response?.data?.message || 'We could not load the data required to open your workspace.');
+      }).finally(() => {
+        if (!isMounted) return;
+        setInitialDataLoading(false);
+        setLoading(false);
+      });
     }).catch((error) => {
       if (!isMounted) return;
       if (error.response?.status !== 401) {
-        console.error('Dashboard load failed.', error);
+        console.error('Authentication check failed.', error);
         setInitialDataError(error.response?.data?.message || 'We could not load the data required to open your workspace.');
       } else {
         setCurrentUser(null);
+        setAuthChecked(true);
       }
-    }).finally(() => {
-      if (!isMounted) return;
-      setAuthChecked(true);
       setInitialDataLoading(false);
       setLoading(false);
     });
@@ -1228,9 +1233,7 @@ function App() {
       if (view.kind === 'due') params.set('window', view.window);
       if (view.kind === 'due' && cursor) params.set('cursor', cursor);
       const endpoint = `${view.kind === 'free' ? '/free-service' : view.kind === 'warranty' ? '/warranty' : '/call-list/due'}?${params}`;
-      const requests = [api.get(endpoint, { signal: controller.signal })];
-      if (!append && currentRole === 'CCM') requests.push(api.get('/teams', { signal: controller.signal }));
-      const [dueResponse, teamResponse] = await Promise.all(requests);
+      const dueResponse = await api.get(endpoint, { signal: controller.signal });
       if (requestId !== dueRequestRef.current[viewName]) return;
       const nextRecords = dueResponse.data.records || [];
       setDueRecordsView(viewName);
@@ -1247,10 +1250,6 @@ function App() {
         },
       }));
       setDueIssues(dueResponse.data.dataIssues || []);
-      if (teamResponse) {
-        setAllocationCres(teamResponse.data.cres || []);
-        setMasterListCcms(teamResponse.data.ccms || []);
-      }
     } catch (error) {
       if (!isCanceled(error) && requestId === dueRequestRef.current[viewName]) {
         setDueError(error.response?.data?.message || 'Could not load this customer list.');
@@ -1262,7 +1261,7 @@ function App() {
       }
       if (append) dueLoadMoreRef.current[viewName] = false;
     }
-  }, [currentRole, dueSearch, accordionDueCategoryFilter, accordionRepairTypeFilter, serviceListFilters]);
+  }, [dueSearch, accordionDueCategoryFilter, accordionRepairTypeFilter, serviceListFilters]);
 
   async function loadMoreDueData() {
     const page = duePageInfo[activeView];

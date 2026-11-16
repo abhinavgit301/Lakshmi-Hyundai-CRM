@@ -9,6 +9,7 @@ import { prisma } from '../config/prisma.js';
 import { allocateUnassignedMasterCallListEntries, lockCcmAllocationTeam } from '../utils/customerAllocation.js';
 import { findCanonicalMasterCallListEntry } from '../utils/masterCallList.js';
 import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
+import { lockPhysicalVehicles, reconcilePhysicalVehicleMilestones } from '../utils/physicalVehicleMilestones.js';
 import { importSnapshot, recordImportChange } from '../utils/importChangeLog.js';
 import { ImportRollbackConflict, rollbackImportBatch } from '../services/importRollbackService.js';
 import { ImportRecoveryConflict, recoverAbandonedImport } from '../services/importRecoveryService.js';
@@ -31,6 +32,9 @@ import {
   importRollbackCompleteness,
 } from '../utils/importBatchStats.js';
 import { completeImportRow } from '../utils/importRowProgress.js';
+import { invalidateSnapshotSourceWrite } from '../utils/performanceSnapshotState.js';
+import { signalSnapshotRefresh } from '../utils/performanceRefreshSignal.js';
+import { noteCreOwnershipChange } from '../utils/creCallAggregates.js';
 
 const IMPORT_FINALIZATION_TRANSACTION_TIMEOUT_MS = 30_000;
 const IMPORT_ROW_TRANSACTION_TIMEOUT_MS = 30_000;
@@ -476,7 +480,9 @@ export async function importRepairOrders(req, res) {
             const rowError = toRowError(row, rowNumber, 'DUPLICATE_RO', result.reason);
             await recordRowError(transaction, batch.id, rowError);
             await completeImportRow(transaction, batch.id, rowNumber, rowProgressId, 'skipped', rowChanges);
+            if (rowChanges.length) await invalidateSnapshotSourceWrite(transaction, { ccmIds: [ccmId] });
           }, { timeout: IMPORT_ROW_TRANSACTION_TIMEOUT_MS });
+          if (rowChanges.length) signalSnapshotRefresh();
           errors.push({ ...toRowError(row, rowNumber, 'DUPLICATE_RO', result.reason), status: 'skipped' });
         } catch (error) {
           if (error?.code !== 'REGISTRATION_CONFLICT' && error?.code !== 'P2002') throw error;
@@ -523,6 +529,7 @@ export async function importRepairOrders(req, res) {
           await assertImportBatchProcessing(transaction, batch.id);
           await lockCcmAllocationTeam(transaction, ccmId);
           const physicalVehicle = await findOrCreatePhysicalVehicle(transaction, vin);
+          await lockPhysicalVehicles(transaction, [physicalVehicle.id]);
           const registrationOwner = registrationNumber
             ? await transaction.vehicle.findFirst({
               where: {
@@ -619,6 +626,7 @@ export async function importRepairOrders(req, res) {
               importedDetails,
             },
           }), rowChanges);
+          await reconcilePhysicalVehicleMilestones(transaction, [physicalVehicle.id]);
 
           if (registrationNumber
             && (vehicle.registrationNumber || '').trim().toUpperCase() !== registrationNumber) {
@@ -651,6 +659,9 @@ export async function importRepairOrders(req, res) {
             };
             const callListEntryChanged = JSON.stringify(importSnapshot(before)) !== JSON.stringify(importSnapshot(after));
             if (callListEntryChanged) {
+              if (before.vehicleId !== after.vehicleId && callListEntry.ownerUserId) {
+                noteCreOwnershipChange(transaction, { ccmId, creIds: [callListEntry.ownerUserId] });
+              }
               await updateTrackedRecord(transaction, rowProgressId, {
                 entityType: 'MasterCallList',
                 entityId: callListEntry.id,
@@ -685,8 +696,10 @@ export async function importRepairOrders(req, res) {
             wasExistingVehicle ? 'appended' : 'created',
             rowChanges,
           );
+          await invalidateSnapshotSourceWrite(transaction);
           return wasExistingVehicle ? 'appended' : 'created';
         }, { timeout: IMPORT_ROW_TRANSACTION_TIMEOUT_MS });
+        signalSnapshotRefresh();
         importedCcmIds.add(ccmId);
         existingKeys.set(repairOrderKey, vin);
       } catch (error) {

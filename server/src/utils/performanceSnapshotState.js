@@ -25,16 +25,70 @@ export async function markCreSnapshotsDirty(db, { creIds, ccmIds, allMonths = fa
     ...(creIds?.length ? { creId: { in: creIds } } : {}),
     ...(ccmIds?.length ? { ccmId: { in: ccmIds } } : {}),
   };
+  // Increment first for every state: a refresh can finish or claim a row between these statements.
+  await db.crePerformanceSnapshot.updateMany({
+    where: scope,
+    data: { dirtySince: now, dirtyVersion: { increment: 1 } },
+  });
   const result = await db.crePerformanceSnapshot.updateMany({
     where: { ...scope, status: { in: ['ok', 'failed'] } },
-    data: { status: 'dirty', dirtySince: now },
-  });
-  // A refresh already in flight may have read the data before this change, so it must not clear the flag.
-  await db.crePerformanceSnapshot.updateMany({
-    where: { ...scope, status: 'refreshing' },
-    data: { dirtySince: now },
+    data: { status: 'dirty' },
   });
   return result.count;
+}
+
+// Managed transactions coalesce invalidations until aggregate work is complete, before committing.
+const invalidatedTransactions = new WeakMap();
+const deferredInvalidations = new WeakMap();
+
+export function beginSnapshotInvalidation(transaction) {
+  deferredInvalidations.set(transaction, { global: false, ccms: new Set() });
+}
+
+export async function flushSnapshotInvalidation(transaction) {
+  const pending = deferredInvalidations.get(transaction);
+  if (!pending) return false;
+  deferredInvalidations.delete(transaction);
+  if (!pending.global && !pending.ccms.size) return false;
+  return invalidateSnapshotSourceWrite(transaction, { ccmIds: pending.global ? [] : [...pending.ccms] });
+}
+
+export async function invalidateSnapshotSourceWrite(transaction, { ccmIds = [] } = {}) {
+  if (!isPerformanceAggregateMaintenanceEnabled()) return false;
+  const ids = [...new Set(ccmIds.filter(Boolean))].sort();
+  const scoped = ids.length > 0 && ccmIds.every(Boolean);
+  const pending = deferredInvalidations.get(transaction);
+  if (pending) {
+    if (!scoped) pending.global = true;
+    else for (const id of ids) pending.ccms.add(id);
+    return true;
+  }
+  const previous = invalidatedTransactions.get(transaction);
+  if (previous?.global || (scoped && ids.every((id) => previous?.ccms.has(id)))) return false;
+  if (scoped) {
+    for (const id of ids.filter((id) => !previous?.ccms.has(id))) {
+      const scope = `ccm:${id}`;
+      await transaction.performanceSnapshotRevision.upsert({
+        where: { scope },
+        create: { scope, revision: 1 },
+        update: { revision: { increment: 1 } },
+      });
+    }
+  } else {
+    await transaction.performanceSnapshotRevision.update({
+      where: { scope: 'global' },
+      data: { revision: { increment: 1 } },
+    });
+  }
+  await markCreSnapshotsDirty(transaction, {
+    ...(scoped ? { ccmIds: ids } : {}),
+    allMonths: true,
+  });
+  invalidatedTransactions.set(transaction, {
+    global: !scoped,
+    ccms: new Set([...(previous?.ccms || []), ...ids]),
+  });
+  return true;
 }
 
 // A snapshot is never reported as current when it is dirty, failed, still being refreshed or too old.

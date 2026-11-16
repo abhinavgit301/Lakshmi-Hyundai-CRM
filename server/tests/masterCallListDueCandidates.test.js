@@ -10,16 +10,20 @@ import {
 } from '../src/controllers/recordsController.js';
 import { classifyServiceDue, getYearlyDueDate } from '../src/utils/serviceDue.js';
 
-test('due candidate flag is separately opt-in', () => {
-  for (const value of [undefined, '', 'false', '0', 'yes']) {
+test('due candidate narrowing defaults on; explicit false/0 or unrecognised values keep it off', () => {
+  for (const value of [undefined, '', ' ']) {
+    assert.equal(isMasterCallListDueCandidateEnabled({ MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED: value }), true);
+  }
+  for (const value of ['false', '0', 'yes']) {
     assert.equal(isMasterCallListDueCandidateEnabled({ MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED: value }), false);
   }
+  assert.equal(isMasterCallListDueCandidateEnabled({}), true);
   for (const value of ['true', ' TRUE ', '1']) {
     assert.equal(isMasterCallListDueCandidateEnabled({ MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED: value }), true);
   }
 });
 
-test('controller uses candidate selection only when the separate flag is enabled', async () => {
+test('controller uses candidate selection by default and supports explicit fallback', async () => {
   const originalMaster = prisma.masterCallList.findMany;
   const originalFlag = process.env.MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED;
   const originalSqlFlag = process.env.MASTER_CALL_LIST_SQL_ENABLED;
@@ -28,7 +32,8 @@ test('controller uses candidate selection only when the separate flag is enabled
   process.env.MASTER_CALL_LIST_SQL_ENABLED = 'true';
   try {
     for (const flag of ['false', 'true']) {
-      process.env.MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED = flag;
+      if (flag === 'true') delete process.env.MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED;
+      else process.env.MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED = flag;
       calls.length = 0;
       const response = { json(body) { this.body = body; return this; } };
       await getCallList({

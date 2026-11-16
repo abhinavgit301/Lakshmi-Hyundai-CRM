@@ -629,6 +629,33 @@ test('Customer endpoint splits a batch and retries when Prisma reports P2029', a
   }
 });
 
+test('customer profile counts an early visible Free Service from its displayed history', async () => {
+  const original = prisma.customer.findMany;
+  const originalUser = prisma.user.findMany;
+  const now = new Date();
+  const saleDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 45);
+  const visitDate = new Date(saleDate.getFullYear(), saleDate.getMonth(), saleDate.getDate() + 21);
+  const visit = {
+    id: 'early-service', vehicleId: 'vehicle-1', repairOrderNo: 'RO-EARLY', ccmId: 'ccm-a',
+    visitDate, createdAt: visitDate, importedDetails: { serviceType: 'Free Service' },
+  };
+  prisma.customer.findMany = async () => [{
+    id: 'customer-early', fullName: 'Customer', ccmId: 'ccm-a',
+    vehicles: [{ id: 'vehicle-1', saleDate, physicalVehicle: { id: 'pv-1', workshopVisits: [visit] }, allocations: [] }],
+    visits: [visit],
+  }];
+  prisma.user.findMany = async () => [];
+  const res = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+  try {
+    await getCustomerById({ user: { role: 'CCM', ccmId: 'ccm-a' }, params: { id: 'customer-early' } }, res);
+    assert.equal(res.body.customer.visits[0].id, 'early-service');
+    assert.equal(res.body.customer.vehicles[0].freeServicesRemaining, 2);
+  } finally {
+    prisma.customer.findMany = original;
+    prisma.user.findMany = originalUser;
+  }
+});
+
 test('Customer list is slim while the single-customer endpoint keeps full repair history', async () => {
   const original = prisma.customer.findMany;
   const originalUser = prisma.user.findMany;

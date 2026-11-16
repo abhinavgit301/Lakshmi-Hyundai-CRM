@@ -203,13 +203,14 @@ async function callEndpoint(req) {
 }
 
 function requestRefreshWithoutRunning(t) {
-  const original = globalThis.setImmediate;
+  const delegate = prisma.crePerformanceSnapshot;
+  const original = delegate.createMany;
   const queued = [];
-  globalThis.setImmediate = (callback, ...args) => {
-    queued.push(() => callback(...args));
-    return { unref() {} };
+  delegate.createMany = (args) => {
+    queued.push(args);
+    return new Promise(() => {});
   };
-  t.after(() => { globalThis.setImmediate = original; });
+  t.after(() => { delegate.createMany = original; });
   return queued;
 }
 
@@ -482,6 +483,7 @@ test('FREE_SERVICE_CRE refresh failures preserve last-good data and report failu
     ...key,
     status: 'dirty',
     dirtySince: new Date(now.getTime() - 1000),
+    dirtyVersion: 0n,
     failureCount: 0,
     callsThisMonth: 4,
     computedAt: new Date(now.getTime() - 1000),
@@ -490,10 +492,18 @@ test('FREE_SERVICE_CRE refresh failures preserve last-good data and report failu
     lastError: null,
   };
   const db = {
+    $executeRaw: async () => 0,
     crePerformanceSnapshot: {
       createMany: async () => ({ count: 0 }),
-      updateMany: async ({ data }) => { Object.assign(row, data); return { count: 1 }; },
+      updateMany: async ({ data }) => {
+        Object.assign(row, { ...data, ...(data.failureCount?.increment ? { failureCount: row.failureCount + data.failureCount.increment } : {}) });
+        return { count: 1 };
+      },
       findUnique: async () => row,
+    },
+    performanceSnapshotRevision: {
+      createMany: async () => {},
+      findMany: async () => [{ scope: 'global', revision: 0n }, { scope: `ccm:${CCM_ID}`, revision: 0n }],
     },
     user: {
       findFirst: async ({ where }) => {
@@ -502,6 +512,7 @@ test('FREE_SERVICE_CRE refresh failures preserve last-good data and report failu
       },
     },
   };
+  db.$transaction = async (work) => work(db);
   const originalError = console.error;
   console.error = () => {};
   try {
@@ -523,14 +534,20 @@ test('FREE_SERVICE_CRE refresh failures preserve last-good data and report failu
 test('FREE_SERVICE_CRE snapshot refresh calculates and persists its role-specific monthly count', async () => {
   const now = new Date();
   const key = { creId: CRE_ID, ccmId: CCM_ID, ...workshopMonthOf(now), viewer: 'FREE_SERVICE_CRE' };
-  const row = { ...key, status: 'pending', dirtySince: null, failureCount: 0 };
+  const row = { ...key, status: 'pending', dirtySince: null, dirtyVersion: 0n, failureCount: 0 };
   let countWhere;
   const db = {
+    $executeRaw: async () => 0,
     crePerformanceSnapshot: {
       createMany: async () => ({ count: 1 }),
       updateMany: async ({ data }) => { Object.assign(row, data); return { count: 1 }; },
       findUnique: async () => row,
     },
+    performanceSnapshotRevision: {
+      createMany: async () => {},
+      findMany: async () => [{ scope: 'global', revision: 0n }, { scope: `ccm:${CCM_ID}`, revision: 0n }],
+    },
+    $queryRaw: async () => [{ scope: 'global', revision: 0n }, { scope: `ccm:${CCM_ID}`, revision: 0n }],
     user: {
       findFirst: async ({ where }) => {
         assert.deepEqual(where, { id: CRE_ID, role: 'FREE_SERVICE_CRE' });
@@ -541,6 +558,7 @@ test('FREE_SERVICE_CRE snapshot refresh calculates and persists its role-specifi
       count: async ({ where }) => { countWhere = where; return 6; },
     },
   };
+  db.$transaction = async (work) => work(db);
   const result = await refreshSnapshot(key, { now, db });
   assert.equal(result.refreshed, true);
   assert.equal(row.status, 'ok');

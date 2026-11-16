@@ -6,7 +6,6 @@ import {
   classifyWarrantyCase,
   classifyFreeServiceStatus,
   DAILY_TARGETS,
-  findCompletingVisit,
   freeServiceCustomerIdsForMonth,
   freeServiceExpiryDate,
   getServiceLifecycle,
@@ -21,12 +20,14 @@ import { scopeCacheInvalidation, withCachedResponse } from '../utils/callListCac
 import { appointmentConversionRatePercent } from '../utils/performanceMetrics.js';
 import { addCallToAggregates } from '../utils/creCallAggregates.js';
 import { readCreCallCounts, readCreDailyRows } from '../utils/creCallAggregateReaders.js';
-import { describeSnapshot, isPerformanceAggregatesEnabled } from '../utils/performanceSnapshotState.js';
+import { describeSnapshot, invalidateSnapshotSourceWrite, isPerformanceAggregatesEnabled } from '../utils/performanceSnapshotState.js';
+import { signalSnapshotRefresh } from '../utils/performanceRefreshSignal.js';
 import { traceSnapshotPhase } from '../utils/performanceSnapshotTrace.js';
 import { getSnapshot, requestSnapshotRefresh } from '../services/performanceSnapshotService.js';
 import { parsePagination } from '../utils/pagination.js';
 import { classifyDueCohorts, countOverdueRecords, creDueWhere, loadCallListRecords } from './recordsController.js';
 import { isServiceContactStatusEnabled, saveServiceContactStatus, statusForServiceCall } from '../utils/serviceContactStatus.js';
+import { createSnapshotLifecycleResolver, isSnapshotSlimCallListEnabled, loadSnapshotCallListRecords } from '../utils/snapshotCallList.js';
 
 function normalizeRole(role) {
   const value = String(role || '').toUpperCase();
@@ -150,7 +151,7 @@ async function loadVisibleVehicleHistory(vehicle, user) {
       physicalVehicleId: vehicle.physicalVehicleId,
       ...workshopVisitVisibilityWhere(user),
     },
-    select: { visitDate: true, importedDetails: true },
+    select: { id: true, visitDate: true, importedDetails: true },
   });
 }
 
@@ -159,9 +160,7 @@ async function isFreeServiceVehicleEligible(vehicle, user, milestone = null) {
   const visits = await loadVisibleVehicleHistory(vehicle, user);
   const lifecycle = getServiceLifecycle({ saleDate: vehicle.saleDate, workshopVisits: visits });
   if (lifecycle.phase !== 'free') return false;
-  if (milestone && (milestone.status === 'completed'
-    || lifecycle.completedMilestones.includes(milestone.milestone)
-    || findCompletingVisit(milestone.dueDate, visits, new Date()))) {
+  if (milestone && lifecycle.completedMilestones.includes(milestone.milestone)) {
     return false;
   }
   return true;
@@ -376,7 +375,8 @@ const cachedCrePerformanceSummary = withCachedResponse('performance-cre', loadCr
 // The snapshot refresh job calls this, so a stored snapshot always equals what the live path would return.
 // `viewer` is the role of the person looking at the CRE: a CCM sees every service category enabled, while a
 // CRE viewer is evaluated with the CRE's own (default-off) Free Service and Warranty flags, as the live path does.
-export async function computeCrePerformanceMetrics({ targetCre, viewer, year, month, now = new Date(), trace }) {
+export async function computeCrePerformanceMetrics({ targetCre, viewer, year, month, now = new Date(), trace, db = prisma, deferClassification = false }) {
+  const slimCallList = isSnapshotSlimCallListEnabled();
   const targetUser = {
     id: targetCre.id,
     role: 'CRE',
@@ -389,7 +389,7 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
   const isCurrentMonth = current.year === year && current.month === month;
   const asOf = isCurrentMonth ? now : new Date(monthEnd.getTime() - 1);
 
-  const latestMonthlyImport = await traceSnapshotPhase(trace, 'latest_import', () => prisma.monthlyCustomerDataImport.findFirst({
+  const latestMonthlyImport = await traceSnapshotPhase(trace, 'latest_import', () => db.monthlyCustomerDataImport.findFirst({
     where: {
       status: 'completed',
       addedRows: { gt: 0 },
@@ -417,14 +417,18 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
   const pendingFollowUpWhere = await excludeIneligibleFreeServiceFollowUps({
     ...followUpVisibility(targetUser),
     status: 'pending',
-  }, targetUser);
+  }, targetUser, db);
 
   const [callsThisMonth, customersReached, scopedRecords, pendingFollowUps, appointmentsSetThisMonth, missedWarrantyCases, lifetimeCalls, lifetimeAppointments] = await Promise.all([
-    traceSnapshotPhase(trace, 'monthly_calls', () => prisma.callLog.count({ where: monthFilter })),
-    traceSnapshotPhase(trace, 'customers_reached', () => prisma.callLog.groupBy({ by: ['customerId'], where: monthFilter })),
-    traceSnapshotPhase(trace, 'call_list', () => loadCallListRecords(dueWhere, now, targetUser, { snapshotTrace: trace })),
-    traceSnapshotPhase(trace, 'pending_followups', () => prisma.followUp.count({ where: pendingFollowUpWhere })),
-    traceSnapshotPhase(trace, 'monthly_appointments', () => prisma.callLog.count({ where: { ...monthFilter, outcome: 'APPOINTMENT_SET' } })),
+    traceSnapshotPhase(trace, 'monthly_calls', () => db.callLog.count({ where: monthFilter })),
+    traceSnapshotPhase(trace, 'customers_reached', () => db.callLog.groupBy({ by: ['customerId'], where: monthFilter })),
+    traceSnapshotPhase(trace, 'call_list', () => (
+      slimCallList
+        ? loadSnapshotCallListRecords(dueWhere, now, targetUser, { snapshotTrace: trace, db })
+        : loadCallListRecords(dueWhere, now, targetUser, { snapshotTrace: trace, db })
+    )),
+    traceSnapshotPhase(trace, 'pending_followups', () => db.followUp.count({ where: pendingFollowUpWhere })),
+    traceSnapshotPhase(trace, 'monthly_appointments', () => db.callLog.count({ where: { ...monthFilter, outcome: 'APPOINTMENT_SET' } })),
     traceSnapshotPhase(trace, 'missed_warranty', () => canAccessServiceSource(targetUser, 'WARRANTY')
       ? findMissedWarrantyCases({
         scope: dueWhere,
@@ -435,58 +439,63 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
         year,
         month,
         now,
+        db,
       })
       : Promise.resolve([])),
-    traceSnapshotPhase(trace, 'lifetime_calls', () => prisma.callLog.count({
+    traceSnapshotPhase(trace, 'lifetime_calls', () => db.callLog.count({
       where: {
         createdById: targetCre.id,
         callSource: { in: allowedServiceSources(targetUser) },
         ...ownedVehicleScope,
       },
     })),
-    traceSnapshotPhase(trace, 'lifetime_appointments', () => prisma.appointment.count({ where: appointmentVisibilityWhere(targetUser) })),
+    traceSnapshotPhase(trace, 'lifetime_appointments', () => db.appointment.count({ where: appointmentVisibilityWhere(targetUser) })),
   ]);
 
-  const { cohorts, freeServiceIds, assignedCustomerCount } = await traceSnapshotPhase(trace, 'classification', () => {
-    const classified = classifyDueCohorts(scopedRecords, asOf);
-    const freeIds = canAccessServiceSource(targetUser, 'FREE_SERVICE')
-      ? freeServiceCustomerIdsForMonth(scopedRecords, year, month, asOf)
-      : new Set();
-    return {
-      cohorts: classified,
-      freeServiceIds: freeIds,
-      assignedCustomerCount: new Set([
-        ...classified.oneYear.map((record) => record.customerId),
-        ...classified.sixMonth.map((record) => record.customerId),
-        ...freeIds,
-      ].filter(Boolean)).size,
-    };
-  });
+  const finish = async () => {
+    const { cohorts, freeServiceIds, assignedCustomerCount } = await traceSnapshotPhase(trace, 'classification', () => {
+      const resolveLifecycle = slimCallList ? createSnapshotLifecycleResolver() : undefined;
+      const classified = classifyDueCohorts(scopedRecords, asOf, resolveLifecycle);
+      const freeIds = canAccessServiceSource(targetUser, 'FREE_SERVICE')
+        ? freeServiceCustomerIdsForMonth(scopedRecords, year, month, asOf, resolveLifecycle)
+        : new Set();
+      return {
+        cohorts: classified,
+        freeServiceIds: freeIds,
+        assignedCustomerCount: new Set([
+          ...classified.oneYear.map((record) => record.customerId),
+          ...classified.sixMonth.map((record) => record.customerId),
+          ...freeIds,
+        ].filter(Boolean)).size,
+      };
+    });
 
-  return {
-    asOf,
-    cycleStartedAt: cycleStart,
-    callsThisMonth,
-    assignedCustomerCount,
-    pendingFollowUps,
-    dueServicesCount: countOverdueRecords(scopedRecords, now),
-    missedWarrantyCount: canAccessServiceSource(targetUser, 'WARRANTY') ? missedWarrantyCases.length : null,
-    details: {
-      lifetimeCalls,
-      lifetimeAppointments,
-      appointmentConversionRatePercent: appointmentConversionRatePercent(lifetimeAppointments, lifetimeCalls),
-      customersReachedThisMonth: customersReached.length,
-      assignedBreakdown: {
-        oneYear: new Set(cohorts.oneYear.map((record) => record.customerId)).size,
-        sixMonth: new Set(cohorts.sixMonth.map((record) => record.customerId)).size,
-        freeService: canAccessServiceSource(targetUser, 'FREE_SERVICE') ? freeServiceIds.size : null,
+    return {
+      asOf,
+      cycleStartedAt: cycleStart,
+      callsThisMonth,
+      assignedCustomerCount,
+      pendingFollowUps,
+      dueServicesCount: countOverdueRecords(scopedRecords, now),
+      missedWarrantyCount: canAccessServiceSource(targetUser, 'WARRANTY') ? missedWarrantyCases.length : null,
+      details: {
+        lifetimeCalls,
+        lifetimeAppointments,
+        appointmentConversionRatePercent: appointmentConversionRatePercent(lifetimeAppointments, lifetimeCalls),
+        customersReachedThisMonth: customersReached.length,
+        assignedBreakdown: {
+          oneYear: new Set(cohorts.oneYear.map((record) => record.customerId)).size,
+          sixMonth: new Set(cohorts.sixMonth.map((record) => record.customerId)).size,
+          freeService: canAccessServiceSource(targetUser, 'FREE_SERVICE') ? freeServiceIds.size : null,
+        },
+        customerReachPercent: assignedCustomerCount
+          ? Math.min(100, Math.round((customersReached.length / assignedCustomerCount) * 100))
+          : 0,
+        appointmentsSetThisMonth,
       },
-      customerReachPercent: assignedCustomerCount
-        ? Math.min(100, Math.round((customersReached.length / assignedCustomerCount) * 100))
-        : 0,
-      appointmentsSetThisMonth,
-    },
+    };
   };
+  return deferClassification ? finish : finish();
 }
 
 // The key carries user, role, CCM and the full query (including creId for a CCM), so one CRE's view is
@@ -870,9 +879,11 @@ export async function createCallLog(req, res) {
     if (isServiceContactStatusEnabled() && callSource === 'SERVICE' && vehicleId && serviceStatus) {
       await saveServiceContactStatus(transaction, { vehicleId, ccmId, user: req.user, status: serviceStatus });
     }
+    await invalidateSnapshotSourceWrite(transaction, { ccmIds: [ccmId] });
     return { callLog, followUp };
   });
 
+  signalSnapshotRefresh();
   scopeCacheInvalidation(res, {
     ccmIds: [ccmId],
     ...(isServiceContactStatusEnabled() && callSource === 'SERVICE' && vehicleId
@@ -1221,14 +1232,16 @@ export async function createFollowUp(req, res) {
     include: FOLLOW_UP_INCLUDE,
   };
   const trackService = isServiceContactStatusEnabled() && source === 'SERVICE' && vehicleId;
-  const followUp = trackService
-    ? await prisma.$transaction(async (transaction) => {
-      const created = await transaction.followUp.create(createData);
+  const followUp = await prisma.$transaction(async (transaction) => {
+    const created = await transaction.followUp.create(createData);
+    if (trackService) {
       await saveServiceContactStatus(transaction, { vehicleId, ccmId, user: req.user, status: 'follow-up' });
-      return created;
-    })
-    : await prisma.followUp.create(createData);
+    }
+    await invalidateSnapshotSourceWrite(transaction, { ccmIds: [ccmId] });
+    return created;
+  });
 
+  signalSnapshotRefresh();
   scopeCacheInvalidation(res, { ccmIds: [ccmId], ...(trackService ? {} : { kinds: ['workflow'] }) });
   return res.status(201).json({ followUp });
 }
@@ -1244,13 +1257,18 @@ export async function updateFollowUpStatus(req, res) {
   });
   if (!existing) return res.status(404).json({ message: 'Follow-up not found.' });
 
-  const result = await prisma.followUp.updateMany({
-    where: { id: existing.id, ...followUpVisibility(req.user) },
-    data: { status },
+  const result = await prisma.$transaction(async (transaction) => {
+    const updated = await transaction.followUp.updateMany({
+      where: { id: existing.id, ...followUpVisibility(req.user) },
+      data: { status },
+    });
+    if (updated.count === 1) await invalidateSnapshotSourceWrite(transaction, { ccmIds: [existing.ccmId] });
+    return updated;
   });
   if (result.count !== 1) return res.status(404).json({ message: 'Follow-up not found.' });
   const followUp = await prisma.followUp.findUnique({ where: { id: existing.id } });
 
+  signalSnapshotRefresh();
   scopeCacheInvalidation(res, { ccmIds: [existing.ccmId], kinds: ['workflow'] });
   return res.json({ followUp });
 }

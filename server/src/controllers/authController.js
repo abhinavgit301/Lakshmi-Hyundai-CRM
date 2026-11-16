@@ -1,8 +1,7 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/prisma.js';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'local-dev-secret';
+import { getJwtSecret } from '../middleware/securityMiddleware.js';
 
 function normalizeRole(role) {
   const value = String(role || '').toUpperCase();
@@ -24,7 +23,7 @@ export function createToken(user) {
       role: normalizeRole(user.role),
       ccmId: user.ccmId || null,
     },
-    JWT_SECRET,
+    getJwtSecret(),
     {
       expiresIn: '8h',
     },

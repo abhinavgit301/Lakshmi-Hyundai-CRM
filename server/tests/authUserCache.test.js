@@ -6,7 +6,8 @@ import { authMiddleware } from '../src/middleware/authMiddleware.js';
 import { createUser, deleteManagedUser, updateManagedUser, updateUserStatus, assignUserToCcm } from '../src/controllers/userController.js';
 import { evictAllAuthUsers, getAuthCacheStats, loadAuthUser, resetAuthCacheForTests } from '../src/utils/authUserCache.js';
 
-const SECRET = process.env.JWT_SECRET || 'local-dev-secret';
+process.env.JWT_SECRET ||= 'auth-cache-test-secret-with-at-least-32-characters';
+const SECRET = process.env.JWT_SECRET;
 const token = (sub) => jwt.sign({ sub }, SECRET, { expiresIn: '5m' });
 
 function makeRes() {

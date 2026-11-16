@@ -46,8 +46,8 @@ test('CallLog writes remain inside aggregate helpers or approved transactional e
     }
 
     if (relative === 'src/services/legacyImportReconciliationService.js') {
-      assert.match(text, /await removeCallFromAggregates\(transaction, callLog\);/,
-        'legacy CallLog deletion must subtract the old contribution in the same transaction');
+      assert.match(text, /noteCreOwnershipChange\(transaction, \{ creIds: \[callLog\?\.createdById\], ccmId: callLog\?\.ccmId \}\);/,
+        'legacy CallLog deletion must rebuild the creator aggregates in the same transaction');
     }
     if (relative === 'src/services/importRollbackService.js'
       || relative === 'src/services/permanentImportDeletionService.js') {

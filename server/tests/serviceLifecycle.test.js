@@ -4,9 +4,8 @@ import test from 'node:test';
 import { classifyDueCohorts } from '../src/controllers/recordsController.js';
 import {
   countRemainingFreeServiceMilestones,
-  findCompletingVisit,
+  freeServiceVisitsByMilestone,
   freeServiceCustomerIdsForMonth,
-  freeServiceDueDate,
   getServiceLifecycle,
 } from '../src/utils/serviceCalendar.js';
 
@@ -102,9 +101,10 @@ test('a future-dated paid visit does not end free-service eligibility before its
 test('an individual free visit completes only its matching milestone', () => {
   const firstVisit = completedFreeVisits[0];
   const visits = [firstVisit];
-  assert.equal(findCompletingVisit(freeServiceDueDate(saleDate, 1), visits, asOf), firstVisit);
-  assert.equal(findCompletingVisit(freeServiceDueDate(saleDate, 2), visits, asOf), null);
-  assert.equal(findCompletingVisit(freeServiceDueDate(saleDate, 3), visits, asOf), null);
+  const completed = freeServiceVisitsByMilestone(saleDate, visits, asOf);
+  assert.equal(completed.get(1), firstVisit);
+  assert.equal(completed.has(2), false);
+  assert.equal(completed.has(3), false);
 });
 
 test('future free visits do not complete milestones or cause entry into the post-free phase', () => {

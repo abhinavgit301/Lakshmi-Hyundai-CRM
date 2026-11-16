@@ -1,8 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/prisma.js';
 import { loadAuthUser } from '../utils/authUserCache.js';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'local-dev-secret';
+import { getJwtSecret } from './securityMiddleware.js';
 
 function normalizeRole(role) {
   const value = String(role || '').toUpperCase();
@@ -25,8 +24,9 @@ export async function authMiddleware(req, res, next) {
     return res.status(401).json({ message: 'Authentication required.' });
   }
 
+  const secret = getJwtSecret();
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, secret);
     const user = await loadAuthUser(decoded.sub, () => prisma.user.findUnique({
       where: { id: decoded.sub },
     }));

@@ -14,6 +14,9 @@ import { findCanonicalMasterCallListEntry } from '../utils/masterCallList.js';
 import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
 import { importSnapshot, recordImportChange } from '../utils/importChangeLog.js';
 import { collectImportBatchStats, importRollbackCompleteness } from '../utils/importBatchStats.js';
+import { invalidateSnapshotSourceWrite } from '../utils/performanceSnapshotState.js';
+import { signalSnapshotRefresh } from '../utils/performanceRefreshSignal.js';
+import { noteCreOwnershipChange } from '../utils/creCallAggregates.js';
 
 const FILE_SIZE_LIMIT = 7_000_000;
 
@@ -31,28 +34,40 @@ async function resolveCcm(ccmId) {
   return historicalDataset ? { id: null, ccmId, name: 'Deleted CCM', username: '', phone: null, dealerCode: null, gmId: null } : null;
 }
 
-async function getDataset(ccmUserId, year, month, transaction = prisma) {
-  const ccm = await transaction.user.findUnique({ where: { id: ccmUserId }, select: { id: true, ccmId: true } });
+async function attachDatasetToCcm(dataset, ccmId) {
+  const result = await prisma.$transaction(async (transaction) => {
+    const updated = await transaction.monthlyCustomerDataset.updateMany({
+      where: { id: dataset.id, ccmId: null },
+      data: { ccmId },
+    });
+    const attached = await transaction.monthlyCustomerDataset.findUniqueOrThrow({ where: { id: dataset.id } });
+    if (attached.ccmId !== ccmId) throw new Error('Monthly dataset CCM changed during attachment.');
+    if (updated.count) await invalidateSnapshotSourceWrite(transaction, { ccmIds: [ccmId] });
+    return { dataset: attached, changed: updated.count > 0 };
+  });
+  if (result.changed) signalSnapshotRefresh();
+  return result.dataset;
+}
+
+async function getDataset(ccmUserId, year, month) {
+  const ccm = await prisma.user.findUnique({ where: { id: ccmUserId }, select: { id: true, ccmId: true } });
   if (!ccm?.ccmId || !ccm.id) throw new Error('CCM account is no longer available for new monthly data.');
 
-  let dataset = await transaction.monthlyCustomerDataset.findUnique({
+  let dataset = await prisma.monthlyCustomerDataset.findUnique({
     where: { ccmId_year_month: { ccmId: ccm.ccmId, year, month } },
   });
   if (!dataset) {
-    dataset = await transaction.monthlyCustomerDataset.findUnique({
+    dataset = await prisma.monthlyCustomerDataset.findUnique({
       where: { ccmUserId_year_month: { ccmUserId, year, month } },
     });
   }
   if (dataset) {
     if (!dataset.ccmId) {
-      dataset = await transaction.monthlyCustomerDataset.update({
-        where: { id: dataset.id },
-        data: { ccmId: ccm.ccmId },
-      });
+      dataset = await attachDatasetToCcm(dataset, ccm.ccmId);
     }
     return dataset;
   }
-  return transaction.monthlyCustomerDataset.create({ data: { ccmUserId, ccmId: ccm.ccmId, year, month } });
+  return prisma.monthlyCustomerDataset.create({ data: { ccmUserId, ccmId: ccm.ccmId, year, month } });
 }
 
 async function findDataset(ccm, year, month) {
@@ -64,7 +79,7 @@ async function findDataset(ccm, year, month) {
       where: { ccmUserId_year_month: { ccmUserId: ccm.id, year, month } },
     });
     if (dataset && !dataset.ccmId) {
-      dataset = await prisma.monthlyCustomerDataset.update({ where: { id: dataset.id }, data: { ccmId: ccm.ccmId } });
+      dataset = await attachDatasetToCcm(dataset, ccm.ccmId);
     }
   }
   return dataset;
@@ -182,6 +197,9 @@ async function ensureMasterCallListEntry(transaction, ccmId, links, row, trackCr
       data.registrationNumber = vehicle.registrationNumber;
     }
     if (Object.keys(data).length) {
+      if (data.vehicleId && existing.ownerUserId) {
+        noteCreOwnershipChange(transaction, { ccmId, creIds: [existing.ownerUserId] });
+      }
       const before = { updatedAt: existing.updatedAt };
       if (Object.hasOwn(data, 'vehicleId')) before.vehicleId = existing.vehicleId;
       if (Object.hasOwn(data, 'registrationNumber')) before.registrationNumber = existing.registrationNumber;
@@ -296,8 +314,10 @@ export async function createMonthlyCustomerEntry(req, res) {
         },
       });
       await allocateUnassignedMasterCallListEntries(transaction, context.ccm.ccmId, req.user.id);
+      await invalidateSnapshotSourceWrite(transaction, { ccmIds: [context.ccm.ccmId] });
       return createdEntry;
     });
+    signalSnapshotRefresh();
     await prisma.auditLog.create({
       data: {
         userId: req.user.id,
@@ -519,7 +539,9 @@ export async function importMonthlyCustomerData(req, res) {
           }));
           const rowChangeCount = await transaction.importChangeLog.count({ where: { importBatchId, rowProgressId } });
           await completeRow(transaction, rowProgressId, 'monthly_added', rowChangeCount);
+          await invalidateSnapshotSourceWrite(transaction, { ccmIds: [prepared.context.ccm.ccmId] });
         });
+        signalSnapshotRefresh();
         if (key) seenKeys.add(key);
         addedRows += 1;
       } catch (error) {
@@ -596,7 +618,9 @@ export async function importMonthlyCustomerData(req, res) {
           details: JSON.stringify({ ccmId: prepared.context.ccm.ccmId, year: prepared.context.year, month: prepared.context.month, addedRows, skippedRows, rejectedRows }),
         },
       });
+      await invalidateSnapshotSourceWrite(transaction, { ccmIds: [prepared.context.ccm.ccmId] });
     });
+    signalSnapshotRefresh();
     importFinalized = true;
   } catch (error) {
     if (!importFinalized) {

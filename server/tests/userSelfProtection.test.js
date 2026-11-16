@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import jwt from 'jsonwebtoken';
 
-const jwtSecret = process.env.JWT_SECRET || 'user-self-protection-test-secret';
+const jwtSecret = process.env.JWT_SECRET || 'user-self-protection-test-secret-with-at-least-32-characters';
 process.env.JWT_SECRET = jwtSecret;
 process.env.DATABASE_URL ||= 'postgresql://test-only.invalid/test';
 

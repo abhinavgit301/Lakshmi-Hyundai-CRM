@@ -30,8 +30,12 @@ import { buildRepairOrderKey, normalizeRepairOrderNo } from '../utils/repairOrde
 import { latestWorkshopVisitOrderBy } from '../utils/workshopVisitOrdering.js';
 import { addOriginatingDealerCodes, getOriginatingDealerCodeMap } from '../utils/serviceHistoryDealerCodes.js';
 import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
+import { lockPhysicalVehicles, reconcilePhysicalVehicleMilestones } from '../utils/physicalVehicleMilestones.js';
 import { cachedCallList, cacheScopeCcm, scopeCacheInvalidation, withCachedResponse } from '../utils/callListCache.js';
 import { isServiceContactStatusEnabled, resolveServiceContactStatus } from '../utils/serviceContactStatus.js';
+import { invalidateSnapshotSourceWrite } from '../utils/performanceSnapshotState.js';
+import { signalSnapshotRefresh } from '../utils/performanceRefreshSignal.js';
+import { noteCreOwnershipChange } from '../utils/creCallAggregates.js';
 
 const CALL_LIST_QUERY_CHUNK_SIZE = 100;
 const RELATED_ID_QUERY_CHUNK_SIZE = 500;
@@ -746,6 +750,7 @@ export async function loadCallListRecords(
     allocationQueueRecords = [],
     snapshotTrace = null,
     selectionOnly = false,
+    db = prisma,
   } = {},
 ) {
   const role = normalizeRole(user?.role);
@@ -878,7 +883,7 @@ export async function loadCallListRecords(
         ],
       }
       : where;
-    const page = await prisma.masterCallList.findMany({
+    const page = await db.masterCallList.findMany({
       where: pageWhere,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: queryChunkSize,
@@ -915,7 +920,7 @@ export async function loadCallListRecords(
     const uncachedVisitCcmIds = pageOptions
       ? []
       : [...visitCcmIds].filter((visitCcmId) => !dealerCodeByCcmId.has(visitCcmId));
-    const pageDealerCodes = pageOptions ? new Map() : await getOriginatingDealerCodeMap(uncachedVisitCcmIds);
+    const pageDealerCodes = pageOptions ? new Map() : await getOriginatingDealerCodeMap(uncachedVisitCcmIds, db);
     for (const visitCcmId of uncachedVisitCcmIds) {
       dealerCodeByCcmId.set(visitCcmId, pageDealerCodes.get(visitCcmId) || null);
     }
@@ -1007,7 +1012,7 @@ export async function loadCallListRecords(
   }
 
   for (const chunk of splitIntoChunks([...ownerIds], RELATED_ID_QUERY_CHUNK_SIZE)) {
-    const owners = await prisma.user.findMany({
+    const owners = await db.user.findMany({
       where: { id: { in: chunk } },
       select: { id: true, name: true },
     });
@@ -1045,7 +1050,7 @@ export async function loadCallListRecords(
     }
     const pageOwnerNames = new Map();
     for (const chunk of splitIntoChunks(selectionOnly ? [] : [...ownerPageIds], RELATED_ID_QUERY_CHUNK_SIZE)) {
-      const owners = await prisma.user.findMany({
+      const owners = await db.user.findMany({
         where: { id: { in: chunk } },
         select: { id: true, name: true },
       });
@@ -1272,7 +1277,7 @@ async function loadCallListPageResponse({ user, scope, pagination, filters, narr
 
 export function isMasterCallListDueCandidateEnabled(env = process.env) {
   const value = String(env.MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED ?? '').trim().toLowerCase();
-  return value === 'true' || value === '1';
+  return value === '' || value === 'true' || value === '1';
 }
 
 export function masterDueCandidateWhere(category, now) {
@@ -1435,9 +1440,9 @@ export async function loadDueCohorts(where, asOf = new Date(), user = null) {
   return classifyDueCohorts(records, asOf);
 }
 
-export function classifyDueCohorts(records, asOf = new Date()) {
+export function classifyDueCohorts(records, asOf = new Date(), getLifecycle = getServiceLifecycle) {
   const classified = records
-    .map((record) => ({ record, lastServiceDate: getServiceLifecycle(record, asOf).referenceDate }))
+    .map((record) => ({ record, lastServiceDate: getLifecycle(record, asOf).referenceDate }))
     .map((entry) => ({ ...entry, window: classifyServiceDue(entry.lastServiceDate, asOf) }));
   const cohort = (window) => classified
     .filter((entry) => entry.window === window)
@@ -1468,6 +1473,8 @@ async function loadDueCallListResponse(req, res) {
   }
   const paginationResult = parsePagination(req.query);
   if (paginationResult.error) return res.status(400).json({ message: paginationResult.error });
+  const filterValidation = filterServiceListRecords([], req.query);
+  if (filterValidation.error) return res.status(400).json({ message: filterValidation.error });
   let cursor = null;
   if (req.query.cursor) {
     cursor = decodeDueCursor(req.query.cursor);
@@ -1727,6 +1734,7 @@ export async function createManualCallListEntry(req, res) {
     const record = await prisma.$transaction(async (transaction) => {
       await lockCcmAllocationTeam(transaction, ccmId);
       const physicalVehicle = await findOrCreatePhysicalVehicle(transaction, vin);
+      await lockPhysicalVehicles(transaction, [physicalVehicle.id]);
       let vehicle = await transaction.vehicle.findFirst({ where: { vin, ccmId }, include: { customer: true } });
       let customer = vehicle?.customer;
 
@@ -1787,8 +1795,12 @@ export async function createManualCallListEntry(req, res) {
           importedDetails: { ...row, ccmId },
         },
       });
+      await reconcilePhysicalVehicleMilestones(transaction, [physicalVehicle.id]);
 
       const existingEntry = await findCanonicalMasterCallListEntry(transaction, vin, ccmId);
+      if (existingEntry?.ownerUserId && existingEntry.vehicleId !== vehicle.id) {
+        noteCreOwnershipChange(transaction, { ccmId, creIds: [existingEntry.ownerUserId] });
+      }
       const callListEntry = existingEntry
         ? await transaction.masterCallList.update({
           where: { id: existingEntry.id },
@@ -1815,6 +1827,7 @@ export async function createManualCallListEntry(req, res) {
         },
       });
 
+      await invalidateSnapshotSourceWrite(transaction);
       return {
         id: callListEntry.id,
         name: customerName,
@@ -1845,6 +1858,7 @@ export async function createManualCallListEntry(req, res) {
         }],
       };
     });
+    signalSnapshotRefresh();
     return res.status(201).json({ record });
   } catch (error) {
     if (error?.code === 'P2002' || error?.code === 'IDENTITY_CONFLICT') {

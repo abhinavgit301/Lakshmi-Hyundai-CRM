@@ -87,18 +87,21 @@ const buildFor = (user, extra = {}) => buildMasterCallListPageSql({
   ...extra,
 });
 
-test('feature flag: unset, empty, false and unrecognised values stay OFF; only true/1 enable', () => {
-  for (const value of [undefined, '', ' ', 'false', '0', 'no', 'yes', 'on', 'enable', 'truee', 'null', 'undefined']) {
+test('SQL page selection defaults on; explicit false/0 or unrecognised values keep it off', () => {
+  for (const value of [undefined, '', ' ']) {
+    assert.equal(isMasterCallListSqlEnabled({ [FLAG]: value }), true, String(value));
+  }
+  for (const value of ['false', '0', 'no', 'yes', 'on', 'enable', 'truee', 'null', 'undefined']) {
     assert.equal(isMasterCallListSqlEnabled({ [FLAG]: value }), false, String(value));
   }
-  assert.equal(isMasterCallListSqlEnabled({}), false);
+  assert.equal(isMasterCallListSqlEnabled({}), true);
   for (const value of ['true', 'TRUE', ' True ', '1']) {
     assert.equal(isMasterCallListSqlEnabled({ [FLAG]: value }), true, value);
   }
 });
 
-test('flag OFF (unset or invalid) runs the original path and never issues the SQL statement', async () => {
-  for (const value of [undefined, 'false', 'garbage']) {
+test('explicit flag OFF or invalid value runs the original path and never issues SQL', async () => {
+  for (const value of ['false', 'garbage']) {
     const response = await withFlag(value, () => request({
       user: { role: 'ADMIN' },
       rows: [row('m-1', 'VIN-1')],
@@ -110,7 +113,15 @@ test('flag OFF (unset or invalid) runs the original path and never issues the SQ
   }
 });
 
-test('flag ON selects the page through SQL and loads only those ids with the existing record builder', async () => {
+test('default and enabled flag select the page through SQL and load only those ids with the existing record builder', async () => {
+  const defaultResponse = await withFlag(undefined, () => request({
+    user: { role: 'ADMIN' },
+    rows: [row('m-default', 'VIN-default')],
+    page: { total: 1, ids: ['m-default'] },
+  }));
+  assert.equal(defaultResponse.calls.sql.length, 1);
+  assert.deepEqual(ids(defaultResponse), ['m-default']);
+
   const rows = [row('m-1', 'VIN-1'), row('m-2', 'VIN-2'), row('m-3', 'VIN-3')];
   const response = await withFlag('true', () => request({
     user: { role: 'ADMIN' },

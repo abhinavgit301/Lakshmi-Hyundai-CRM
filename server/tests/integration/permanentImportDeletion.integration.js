@@ -1,4 +1,4 @@
-import test, { after, afterEach } from 'node:test';
+import test, { before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { configureTestDatabaseUrl } from './testDatabaseConfig.js';
@@ -18,13 +18,24 @@ const fixture = {
   rowIds: [],
   customerIds: [],
   vehicleIds: [],
+  physicalVehicleIds: [],
   visitIds: [],
   callIds: [],
   errorIds: [],
 };
 
+before(async () => {
+  await prisma.performanceSnapshotRevision.createMany({ data: [{ scope: 'global' }], skipDuplicates: true });
+});
+
 function next(label) {
   return `${prefix}_${label}_${randomUUID().replaceAll('-', '')}`;
+}
+
+async function createPhysicalVehicle(db, vin) {
+  const physical = await db.physicalVehicle.create({ data: { vin } });
+  fixture.physicalVehicleIds.push(physical.id);
+  return physical;
 }
 
 function repairOrderIdentity(repairOrderNo) {
@@ -109,10 +120,13 @@ async function createImportedCustomerVehicleVisit(batch, rowProgressId, ccmId) {
         ccmId,
       },
     });
+    const vin = next('vin');
+    const physical = await createPhysicalVehicle(transaction, vin);
     const vehicle = await transaction.vehicle.create({
       data: {
         id: next('vehicle'),
-        vin: next('vin'),
+        vin,
+        physicalVehicleId: physical.id,
         registrationNumber: next('registration'),
         customerId: customer.id,
         ccmId,
@@ -124,6 +138,7 @@ async function createImportedCustomerVehicleVisit(batch, rowProgressId, ccmId) {
         ...repairOrderIdentity(next('repair-order')),
         customerId: customer.id,
         vehicleId: vehicle.id,
+        physicalVehicleId: physical.id,
         ccmId,
         importedDetails: { source: 'integration-test', tags: ['created', null] },
       },
@@ -170,6 +185,7 @@ async function cleanupFixture() {
   await prisma.vINConflictReview.deleteMany({ where: { vin: { in: fixture.vehicleIds.map((id) => `${id}-vin`) } } });
   await prisma.importBatch.deleteMany({ where: { id: { in: fixture.batchIds } } });
   await prisma.vehicle.deleteMany({ where: { id: { in: fixture.vehicleIds } } });
+  await prisma.physicalVehicle.deleteMany({ where: { id: { in: fixture.physicalVehicleIds } } });
   await prisma.customer.deleteMany({ where: { id: { in: fixture.customerIds } } });
   await prisma.user.deleteMany({ where: { id: { in: fixture.userIds } } });
   for (const key of Object.keys(fixture)) fixture[key].length = 0;
@@ -227,6 +243,7 @@ test('PostgreSQL deletes only target-created business records and retains import
     data: {
       id: next('replacement-vehicle'),
       vin: created.vehicle.vin,
+      physicalVehicleId: created.vehicle.physicalVehicleId,
       customerId: replacementCustomer.id,
       ccmId,
     },
@@ -238,6 +255,7 @@ test('PostgreSQL deletes only target-created business records and retains import
       ...repairOrderIdentity(created.visit.repairOrderNo),
       customerId: replacementCustomer.id,
       vehicleId: replacementVehicle.id,
+      physicalVehicleId: replacementVehicle.physicalVehicleId,
       ccmId,
     },
   });
@@ -253,10 +271,13 @@ test('PostgreSQL preserves pre-existing customer history and unrelated later veh
     data: { id: next('existing-customer'), customerCode: next('existing-code'), fullName: 'Pre-existing', mobileNumber: next('mobile'), ccmId },
   });
   fixture.customerIds.push(customer.id);
+  const vin = next('existing-vin');
+  const physical = await createPhysicalVehicle(prisma, vin);
   const vehicle = await prisma.vehicle.create({
     data: {
       id: next('existing-vehicle'),
-      vin: next('existing-vin'),
+      vin,
+      physicalVehicleId: physical.id,
       customerId: customer.id,
       ccmId,
       saleDate: new Date('2020-01-01T00:00:00.000Z'),
@@ -270,6 +291,7 @@ test('PostgreSQL preserves pre-existing customer history and unrelated later veh
       ...repairOrderIdentity(next('unrelated-ro')),
       customerId: customer.id,
       vehicleId: vehicle.id,
+      physicalVehicleId: vehicle.physicalVehicleId,
       ccmId,
     },
   });
@@ -282,6 +304,7 @@ test('PostgreSQL preserves pre-existing customer history and unrelated later veh
         ...repairOrderIdentity(next('target-ro')),
         customerId: customer.id,
         vehicleId: vehicle.id,
+        physicalVehicleId: vehicle.physicalVehicleId,
         ccmId,
       },
     });
@@ -311,6 +334,7 @@ test('PostgreSQL preserves pre-existing customer history and unrelated later veh
         ...repairOrderIdentity(next('later-ro')),
         customerId: customer.id,
         vehicleId: vehicle.id,
+        physicalVehicleId: vehicle.physicalVehicleId,
         ccmId,
       },
     });
@@ -354,6 +378,81 @@ test('PostgreSQL preserves pre-existing customer history and unrelated later veh
   assert.ok(laterLogs.every(({ rollbackStatus }) => rollbackStatus === 'pending'));
 });
 
+test('PostgreSQL clears exact milestone references before deleting a visit when sale date is unavailable', async () => {
+  const admin = await createAdmin();
+  const ccmId = next('ccm');
+  const customer = await prisma.customer.create({
+    data: {
+      id: next('customer'),
+      customerCode: next('customer-code'),
+      fullName: 'Milestone deletion customer',
+      mobileNumber: next('mobile'),
+      ccmId,
+    },
+  });
+  fixture.customerIds.push(customer.id);
+  const vin = next('milestone-vin');
+  const physical = await createPhysicalVehicle(prisma, vin);
+  const vehicle = await prisma.vehicle.create({
+    data: {
+      id: next('vehicle'),
+      vin,
+      physicalVehicleId: physical.id,
+      customerId: customer.id,
+      ccmId,
+    },
+  });
+  fixture.vehicleIds.push(vehicle.id);
+  const { batch, rowProgressId } = await createBatch(
+    'target-milestone-visit',
+    new Date('2020-04-01T00:00:00.000Z'),
+    1,
+    'appended',
+  );
+  const visit = await prisma.workshopVisit.create({
+    data: {
+      id: next('target-milestone-visit'),
+      ...repairOrderIdentity(next('target-ro')),
+      customerId: customer.id,
+      vehicleId: vehicle.id,
+      physicalVehicleId: physical.id,
+      ccmId,
+      visitDate: new Date('2020-04-01T00:00:00.000Z'),
+    },
+  });
+  fixture.visitIds.push(visit.id);
+  await addChanges(prisma, batch.id, rowProgressId, ccmId, [
+    ['WorkshopVisit', visit, 'CREATE', {}, visit],
+  ]);
+  const milestone = await prisma.freeServiceMilestone.create({
+    data: {
+      id: next('milestone'),
+      vehicleId: vehicle.id,
+      physicalVehicleId: physical.id,
+      milestone: 1,
+      dueDate: new Date('2020-03-01T00:00:00.000Z'),
+      status: 'completed',
+      completedAt: visit.visitDate,
+      completedByRepairOrderNo: visit.repairOrderNo,
+      completedByWorkshopVisitId: visit.id,
+    },
+  });
+
+  const preview = await previewPermanentImportDeletion(batch.id);
+  assert.deepEqual(preview.blockers, []);
+  await permanentlyDeleteImportBatch(batch.id, admin.id, preview.confirmationToken);
+
+  const [deletedVisit, reconciledMilestone] = await Promise.all([
+    prisma.workshopVisit.findUnique({ where: { id: visit.id } }),
+    prisma.freeServiceMilestone.findUnique({ where: { id: milestone.id } }),
+  ]);
+  assert.equal(deletedVisit, null);
+  assert.equal(reconciledMilestone.status, 'pending');
+  assert.equal(reconciledMilestone.completedAt, null);
+  assert.equal(reconciledMilestone.completedByWorkshopVisitId, null);
+  assert.equal(reconciledMilestone.completedByRepairOrderNo, null);
+});
+
 test('PostgreSQL blocks invalidated cross-batch evidence without independent reversal proof', async () => {
   const ccmId = next('ccm');
   const customer = await prisma.customer.create({
@@ -366,10 +465,13 @@ test('PostgreSQL blocks invalidated cross-batch evidence without independent rev
     },
   });
   fixture.customerIds.push(customer.id);
+  const vin = next('existing-vin');
+  const physical = await createPhysicalVehicle(prisma, vin);
   const vehicle = await prisma.vehicle.create({
     data: {
       id: next('existing-vehicle'),
-      vin: next('existing-vin'),
+      vin,
+      physicalVehicleId: physical.id,
       customerId: customer.id,
       ccmId,
       saleDate: new Date('2020-01-01T00:00:00.000Z'),
@@ -386,6 +488,7 @@ test('PostgreSQL blocks invalidated cross-batch evidence without independent rev
         ...repairOrderIdentity(next('target-ro')),
         customerId: customer.id,
         vehicleId: vehicle.id,
+        physicalVehicleId: vehicle.physicalVehicleId,
         ccmId,
       },
     });
@@ -415,6 +518,7 @@ test('PostgreSQL blocks invalidated cross-batch evidence without independent rev
         ...repairOrderIdentity(next('later-ro')),
         customerId: customer.id,
         vehicleId: vehicle.id,
+        physicalVehicleId: vehicle.physicalVehicleId,
         ccmId,
       },
     });

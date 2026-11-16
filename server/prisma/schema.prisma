@@ -436,6 +436,10 @@ model CrePerformanceSnapshot {
   dirtySince       DateTime?
   lastAttemptAt    DateTime?
   refreshStartedAt DateTime?
+  claimToken       String?
+  dirtyVersion     BigInt    @default(0)
+  globalRevision   BigInt?
+  ccmRevision      BigInt?
   lastError        String?
   failureCount     Int       @default(0)
   createdAt        DateTime  @default(now())
@@ -445,6 +449,13 @@ model CrePerformanceSnapshot {
   @@index([status, computedAt])
   @@index([ccmId, year, month])
   @@map("cre_performance_snapshots")
+}
+
+model PerformanceSnapshotRevision {
+  scope    String @id
+  revision BigInt @default(0)
+
+  @@map("performance_snapshot_revisions")
 }
 
 model CRETarget {
@@ -606,6 +617,7 @@ model AuditLog {
 
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
+  @@index([createdAt, id])
   @@map("audit_logs")
 }
 

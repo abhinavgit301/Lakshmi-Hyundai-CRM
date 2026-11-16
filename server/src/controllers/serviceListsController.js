@@ -101,6 +101,8 @@ async function loadFreeServiceList(req, res) {
   }
   const pagination = parsePagination(req.query);
   if (pagination.error) return res.status(400).json({ message: pagination.error });
+  const filterValidation = filterServiceListRecords([], req.query);
+  if (filterValidation.error) return res.status(400).json({ message: filterValidation.error });
   const now = new Date();
   const today = workshopToday(now);
   // Vehicles with no stored sale date are kept so the repair-order fallback and data issues still work.
@@ -123,7 +125,7 @@ async function loadFreeServiceList(req, res) {
   })));
   const milestones = filterMilestoneCompletionByVisits(
     syncedMilestones,
-    freePhaseVehicles.map(({ record }) => record),
+    freePhaseVehicles.map(({ record, saleDate }) => ({ ...record, saleDate })),
   );
   const visibleMilestones = milestones.filter((milestone) => milestone.status === 'pending'
     && isFreeServiceListVisible(milestone.dueDate, today));
@@ -194,6 +196,8 @@ async function loadWarrantyList(req, res) {
   }
   const pagination = parsePagination(req.query);
   if (pagination.error) return res.status(400).json({ message: pagination.error });
+  const filterValidation = filterServiceListRecords([], req.query);
+  if (filterValidation.error) return res.status(400).json({ message: filterValidation.error });
   const now = new Date();
   const today = workshopToday(now);
   const timeZone = getWorkshopTimezone();
@@ -211,39 +215,73 @@ async function loadWarrantyList(req, res) {
   const callable = dated
     .map((entry) => ({ ...entry, expiryDate: warrantyExpiryDate(entry.saleDate) }))
     .filter((entry) => isWarrantyCallable(entry.expiryDate, today));
-  const vehicleIds = callable.map((entry) => entry.record.vehicleId);
-
-  const [calls, followUps] = vehicleIds.length
+  const contactStatusRequested = Boolean(String(req.query.contactStatus || '').trim());
+  const followUpStatusRequested = Boolean(String(req.query.followUpStatus || '').trim());
+  const allVehicleIds = callable.map((entry) => entry.record.vehicleId);
+  const [statusCalls, statusFollowUps] = allVehicleIds.length
     ? await Promise.all([
-      prisma.callLog.findMany({ where: { ...workflowWhere, vehicleId: { in: vehicleIds }, callSource: 'WARRANTY' }, orderBy: { createdAt: 'desc' }, select: { vehicleId: true, outcome: true, createdAt: true, callSource: true } }),
-      prisma.followUp.findMany({ where: { ...workflowWhere, vehicleId: { in: vehicleIds }, source: 'WARRANTY', status: 'pending' }, orderBy: { followUpAt: 'asc' }, select: { id: true, vehicleId: true, followUpAt: true } }),
+      contactStatusRequested
+        ? prisma.callLog.findMany({ where: { ...workflowWhere, vehicleId: { in: allVehicleIds }, callSource: 'WARRANTY' }, orderBy: { createdAt: 'desc' }, select: { vehicleId: true, outcome: true, createdAt: true, callSource: true } })
+        : Promise.resolve([]),
+      followUpStatusRequested
+        ? prisma.followUp.findMany({ where: { ...workflowWhere, vehicleId: { in: allVehicleIds }, source: 'WARRANTY', status: 'pending' }, orderBy: { followUpAt: 'asc' }, select: { id: true, vehicleId: true, followUpAt: true } })
+        : Promise.resolve([]),
     ])
     : [[], []];
   const callsByVehicle = new Map();
-  for (const call of calls) callsByVehicle.set(call.vehicleId, [...(callsByVehicle.get(call.vehicleId) || []), call]);
-  const openFollowUp = latestBy(followUps, 'vehicleId');
+  for (const call of statusCalls) callsByVehicle.set(call.vehicleId, [...(callsByVehicle.get(call.vehicleId) || []), call]);
+  const followUpByVehicle = latestBy(statusFollowUps, 'vehicleId');
 
   const rows = callable.map(({ record, saleDate, expiryDate }) => {
     const vehicleCalls = callsByVehicle.get(record.vehicleId) || [];
-    const lastCall = vehicleCalls[0];
-    const followUp = openFollowUp.get(record.vehicleId);
     const window = warrantyCallingWindow(expiryDate);
     return {
       id: `${record.vehicleId}:warranty`,
       ...baseRow(record, saleDate),
       warrantyExpiryDate: expiryDate,
       callingWindow: { start: window.start, end: window.end },
-      lastCall: lastCall ? { createdAt: lastCall.createdAt, outcome: lastCall.outcome } : null,
-      contactStatus: classifyWarrantyCase({ expiryDate, calls: vehicleCalls, now, timeZone }).contacted ? 'Contacted' : 'Not contacted',
-      followUp: followUp ? { id: followUp.id, followUpAt: followUp.followUpAt } : null,
+      contactStatus: contactStatusRequested
+        ? classifyWarrantyCase({ expiryDate, calls: vehicleCalls, now, timeZone }).contacted ? 'Contacted' : 'Not contacted'
+        : null,
+      followUp: followUpStatusRequested ? followUpByVehicle.get(record.vehicleId) || null : null,
     };
   }).sort((left, right) => new Date(left.warrantyExpiryDate) - new Date(right.warrantyExpiryDate)
     || String(left.id).localeCompare(String(right.id)));
 
   const filtered = filterServiceListRecords(rows, req.query);
   if (filtered.error) return res.status(400).json({ message: filtered.error });
+  const page = pagination.hasPagination ? paginateRecords(filtered.records, pagination) : { records: filtered.records };
+  const pageVehicleIds = page.records.map((record) => record.vehicleId);
+  const [pageCalls, pageFollowUps] = pageVehicleIds.length
+    ? await Promise.all([
+      contactStatusRequested
+        ? Promise.resolve(statusCalls)
+        : prisma.callLog.findMany({ where: { ...workflowWhere, vehicleId: { in: pageVehicleIds }, callSource: 'WARRANTY' }, orderBy: { createdAt: 'desc' }, select: { vehicleId: true, outcome: true, createdAt: true, callSource: true } }),
+      followUpStatusRequested
+        ? Promise.resolve(statusFollowUps)
+        : prisma.followUp.findMany({ where: { ...workflowWhere, vehicleId: { in: pageVehicleIds }, source: 'WARRANTY', status: 'pending' }, orderBy: { followUpAt: 'asc' }, select: { id: true, vehicleId: true, followUpAt: true } }),
+    ])
+    : [[], []];
+  const pageCallsByVehicle = new Map();
+  for (const call of pageCalls) pageCallsByVehicle.set(call.vehicleId, [...(pageCallsByVehicle.get(call.vehicleId) || []), call]);
+  const pageFollowUpByVehicle = latestBy(pageFollowUps, 'vehicleId');
+  page.records = page.records.map((record) => {
+    const vehicleCalls = pageCallsByVehicle.get(record.vehicleId) || [];
+    const followUp = pageFollowUpByVehicle.get(record.vehicleId);
+    return {
+      ...record,
+      lastCall: vehicleCalls[0] ? { createdAt: vehicleCalls[0].createdAt, outcome: vehicleCalls[0].outcome } : null,
+      contactStatus: classifyWarrantyCase({
+        expiryDate: record.warrantyExpiryDate,
+        calls: vehicleCalls,
+        now,
+        timeZone,
+      }).contacted ? 'Contacted' : 'Not contacted',
+      followUp: followUp ? { id: followUp.id, followUpAt: followUp.followUpAt } : null,
+    };
+  });
   return res.json({
-    ...(pagination.hasPagination ? paginateRecords(filtered.records, pagination) : { records: filtered.records }),
+    ...page,
     dataIssues,
     asOf: zonedDateKey(now),
   });

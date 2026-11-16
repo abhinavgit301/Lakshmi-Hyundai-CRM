@@ -14,12 +14,12 @@ test('import request preflight allows the Idempotency-Key header', async (contex
   const response = await fetch(`http://127.0.0.1:${port}/api/v1/imports/repair-orders`, {
     method: 'OPTIONS',
     headers: {
-      Origin: 'https://crm.example',
+      Origin: 'http://localhost:5173',
       'Access-Control-Request-Method': 'POST',
       'Access-Control-Request-Headers': 'content-type,idempotency-key',
     },
   });
 
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 204);
   assert.match(response.headers.get('access-control-allow-headers') || '', /Idempotency-Key/i);
 });

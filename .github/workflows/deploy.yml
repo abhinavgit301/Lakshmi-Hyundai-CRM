@@ -137,11 +137,36 @@ jobs:
         working-directory: server
         run: npm test
 
+      - name: Run backend tests with snapshot maintenance
+        working-directory: server
+        env:
+          PERFORMANCE_AGGREGATES_MAINTAIN: "true"
+          PERFORMANCE_AGGREGATES_ENABLED: "false"
+          PERFORMANCE_SNAPSHOT_SLIM_CALL_LIST_ENABLED: "true"
+          PERFORMANCE_SNAPSHOT_CONSISTENT_READS_ENABLED: "true"
+        run: npm test
+
       - name: Verify service status migration and workflows
         working-directory: server
         env:
           STATUS_INTEGRATION_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/status_test_ci?schema=public
         run: node --test tests/serviceContactMigration.integration.test.js tests/serviceContactStatus.integration.test.js
+
+      - name: Test snapshot consistency and call-list parity
+        working-directory: server
+        env:
+          SNAPSHOT_INTEGRATION_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/status_test_ci?schema=public
+        run: npm run test:snapshot
+
+      - name: Test import rollback and deletion with snapshot maintenance
+        working-directory: server
+        env:
+          TEST_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/lh_import_rollback_test
+          PERFORMANCE_AGGREGATES_MAINTAIN: "true"
+        run: |
+          node --input-type=module -e 'import pg from "pg"; const u = new URL(process.env.DATABASE_URL); u.search = ""; const c = new pg.Client({ connectionString: u.toString() }); await c.connect(); try { await c.query("CREATE DATABASE lh_import_rollback_test"); } finally { await c.end(); }'
+          npm run prisma:push:integration
+          npm run test:integration
 
       - name: Test deployment archive, authorization, and recovery
         run: node --test deploy/tests/*.test.mjs

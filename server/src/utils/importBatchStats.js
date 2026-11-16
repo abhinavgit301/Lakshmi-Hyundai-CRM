@@ -30,7 +30,7 @@ const createSnapshotFields = {
 const createSnapshotOptionalFields = {
   Customer: ['address', 'city', 'pin'],
   MasterCallList: ['assignmentNeedsReview', 'vehicleId'],
-  Vehicle: ['physicalVehicleId'],
+  Vehicle: ['physicalVehicleId', 'serviceContactStatus', 'serviceStatusCohort'],
   WorkshopVisit: ['normalizedRepairOrderNo', 'physicalVehicleId'],
   MonthlyCustomerDataEntry: ['createdByIdSnapshot', 'createdByNameSnapshot', 'createdByUsernameSnapshot'],
 };

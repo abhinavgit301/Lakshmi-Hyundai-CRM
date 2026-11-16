@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ImportRollbackConflict, rollbackImportBatch } from '../src/services/importRollbackService.js';
+import { snapshotInvalidationMock } from '../test-support/snapshotInvalidationMock.js';
+import { isPerformanceAggregateMaintenanceEnabled } from '../src/utils/performanceSnapshotState.js';
 
 const rowId = 'progress-1';
 
@@ -17,7 +19,7 @@ function fullRecord(entityType, id, overrides = {}) {
     },
     WorkshopVisit: {
       repairOrderNo: `RO-${id}`, normalizedRepairOrderNo: String(overrides.repairOrderNo || `RO-${id}`).trim().replace(/\s+/g, ' ').toUpperCase(), customerId: 'customer-1',
-      vehicleId: 'vehicle-1', ccmId: 'ccm-1',
+      vehicleId: 'vehicle-1', physicalVehicleId: 'physical-1', ccmId: 'ccm-1',
       totalLaborCost: null, totalPartsCost: null, totalAmount: null, visitDate: null,
       closingDate: null, gpDate: null, importedDetails: {},
     },
@@ -61,12 +63,14 @@ function createDatabase({
   referenceCounts = {},
   crossBatchChanges = [],
   failAudit = false,
+  failInvalidation = false,
   serializeTransactions = false,
 }) {
-  const state = cloneTestValue({ batch, records, auditLogs: [], assignmentHistory: [], crossBatchChanges });
+  const state = cloneTestValue({ batch, records, auditLogs: [], assignmentHistory: [], crossBatchChanges, invalidation: {} });
   let transactionQueue = Promise.resolve();
   const transactionFor = (draft) => {
     const transaction = {
+      ...snapshotInvalidationMock(draft.invalidation),
       $queryRaw: async () => [],
       $queryRawUnsafe: async () => [],
       importBatch: {
@@ -114,6 +118,9 @@ function createDatabase({
         },
       },
     };
+    if (failInvalidation) {
+      transaction.performanceSnapshotRevision.update = async () => { throw new Error('Injected invalidation failure.'); };
+    }
 
     for (const [entityType, delegateName] of Object.entries({
       Customer: 'customer',
@@ -124,6 +131,9 @@ function createDatabase({
       VINConflictReview: 'vINConflictReview',
     })) {
       transaction[delegateName] = {
+        findMany: async ({ where = {} } = {}) => Object.values(draft.records[entityType] || {}).filter((record) => (
+          !where.id?.in || where.id.in.includes(record.id)
+        )),
         findUnique: async ({ where }) => draft.records[entityType]?.[where.id]
           || (entityType === 'Vehicle' && where.vin
             ? Object.values(draft.records.Vehicle || {}).find((record) => record.vin === where.vin) || null
@@ -169,9 +179,13 @@ function createDatabase({
       if (delegateName === 'freeServiceMilestone') {
         transaction[delegateName].findMany = async ({ where = {} } = {}) => (
           referenceCounts.freeServiceMilestoneRows || []
-        ).filter((milestone) => !where.vehicleId || milestone.vehicleId === where.vehicleId);
+        ).filter((milestone) => (
+          (!where.vehicleId || milestone.vehicleId === where.vehicleId)
+          && (!where.physicalVehicleId || milestone.physicalVehicleId === where.physicalVehicleId)
+        ));
       }
     }
+    transaction.callLog.groupBy = async () => [];
     return transaction;
   };
 
@@ -251,6 +265,26 @@ test('rollback removes a tracked import-created repair order and audits the oper
   assert.equal(state.records.WorkshopVisit[record.id], undefined);
   assert.equal(state.auditLogs[0].userId, 'admin-1');
   assert.equal(state.auditLogs[0].action, 'REPAIR_ORDER_IMPORT_ROLLED_BACK');
+  if (isPerformanceAggregateMaintenanceEnabled()) {
+    assert.equal(state.invalidation.revisions.global, 1);
+    assert.equal(state.invalidation.snapshotUpdates.length, 2);
+    assert.deepEqual(state.invalidation.snapshotUpdates[0].where, {});
+  }
+});
+
+test('snapshot invalidation failure rolls back the import reversal when maintenance is enabled', async (t) => {
+  if (!isPerformanceAggregateMaintenanceEnabled()) return t.skip('requires aggregate maintenance');
+  const { change, record } = visitChange();
+  const { database, state } = createDatabase({
+    batch: makeBatch({ changes: [change] }),
+    records: { WorkshopVisit: { [record.id]: record } },
+    failInvalidation: true,
+  });
+  await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', database), /Injected invalidation failure/);
+  assert.ok(state.records.WorkshopVisit[record.id]);
+  assert.equal(state.batch.status, 'completed');
+  assert.deepEqual(state.auditLogs, []);
+  assert.deepEqual(state.invalidation, {});
 });
 
 test('rollback blocks deleting an exact or unambiguous legacy milestone completion visit', async () => {
@@ -266,6 +300,7 @@ test('rollback blocks deleting an exact or unambiguous legacy milestone completi
         freeServiceMilestoneRows: [{
           id: 'milestone-1',
           vehicleId: record.vehicleId,
+          physicalVehicleId: record.physicalVehicleId,
           ...milestoneReference,
         }],
       },
@@ -274,6 +309,30 @@ test('rollback blocks deleting an exact or unambiguous legacy milestone completi
     await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', database), ImportRollbackConflict);
     assert.ok(state.records.WorkshopVisit[record.id]);
   }
+});
+
+test('rollback checks shared physical vehicle references and refuses missing identity', async () => {
+  const { change, record } = visitChange('visit-cross-ccm');
+  const { database, state } = createDatabase({
+    batch: makeBatch({ changes: [change] }),
+    records: { WorkshopVisit: { [record.id]: record } },
+    referenceCounts: { freeServiceMilestoneRows: [{
+      id: 'other-ccm-milestone',
+      vehicleId: 'other-vehicle',
+      physicalVehicleId: record.physicalVehicleId,
+      completedByWorkshopVisitId: record.id,
+    }] },
+  });
+  await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', database), /referenced by a free-service milestone/);
+  assert.ok(state.records.WorkshopVisit[record.id]);
+
+  const missing = fullRecord('WorkshopVisit', 'missing-physical', { physicalVehicleId: null });
+  const missingDb = createDatabase({
+    batch: makeBatch({ changes: [createChange('WorkshopVisit', missing)] }),
+    records: { WorkshopVisit: { [missing.id]: missing } },
+  });
+  await assert.rejects(rollbackImportBatch('batch-1', 'admin-1', missingDb.database), /physical vehicle identity/);
+  assert.ok(missingDb.state.records.WorkshopVisit[missing.id]);
 });
 
 test('rollback rejects contradictory batch-level rollback metadata', async () => {

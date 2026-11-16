@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { prisma } from '../config/prisma.js';
+import { invalidateSnapshotSourceWrite } from '../utils/performanceSnapshotState.js';
+import { signalSnapshotRefresh } from '../utils/performanceRefreshSignal.js';
 import { importBatchMutationEvidenceIsComplete, importChangeLogIsComplete } from '../utils/importBatchStats.js';
 import { normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
 import {
   noteCreCallEntityScopeChange,
   noteCreOwnershipChange,
-  removeCallFromAggregates,
 } from '../utils/creCallAggregates.js';
 
 const DELETED = 'permanently_deleted';
@@ -142,8 +143,11 @@ async function findDependencies(transaction, type, record) {
     add('MasterCallList VIN reference', callList);
     add('VINConflictReview', reviews);
   } else if (type === 'WorkshopVisit') {
+    if (!record.physicalVehicleId) {
+      throw new LegacyImportReconciliationConflict('Cannot verify free-service dependencies without the physical vehicle identity.');
+    }
     const milestones = await transaction.freeServiceMilestone.findMany({
-      where: { vehicleId: record.vehicleId },
+      where: { physicalVehicleId: record.physicalVehicleId },
       select: { id: true, completedByWorkshopVisitId: true, completedByRepairOrderNo: true },
     });
     add('FreeServiceMilestone repair-order reference', milestones.filter(({
@@ -635,7 +639,7 @@ export async function previewLegacyImportCleanup(batchId, database = prisma) {
 
 export async function cleanupLegacyImport(batchId, adminId, confirmationToken, database = prisma) {
   if (!confirmationToken) throw new LegacyImportReconciliationConflict('A fresh cleanup preview and confirmation token are required.');
-  return database.$transaction(async (transaction) => {
+  const result = await database.$transaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "import_batches" WHERE "id" = ${batchId} FOR UPDATE`;
     let report = await loadReconciliation(transaction);
     let plan = cleanupPlan(report, batchId);
@@ -669,7 +673,7 @@ export async function cleanupLegacyImport(batchId, adminId, confirmationToken, d
       }
       if (candidate.entityType === 'CallLog') {
         const callLog = await transaction.callLog.findUnique({ where: { id: candidate.entityId } });
-        await removeCallFromAggregates(transaction, callLog);
+        noteCreOwnershipChange(transaction, { creIds: [callLog?.createdById], ccmId: callLog?.ccmId });
       }
       const deleted = await transaction[config.delegate].deleteMany({ where: { id: candidate.entityId } });
       if (deleted.count !== 1) {
@@ -688,9 +692,12 @@ export async function cleanupLegacyImport(batchId, adminId, confirmationToken, d
         }),
       },
     });
+    if (plan.candidates.length) await invalidateSnapshotSourceWrite(transaction);
     return {
       status: 'legacy_cleanup_completed',
       deletedRecords: plan.candidates.map(({ entityType, entityId }) => ({ entityType, entityId })),
     };
   }, { isolationLevel: 'Serializable' });
+  if (result.deletedRecords.length) signalSnapshotRefresh();
+  return result;
 }

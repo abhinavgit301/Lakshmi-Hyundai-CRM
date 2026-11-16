@@ -63,6 +63,7 @@ import {
   updateUserStatus,
 } from '../controllers/userController.js';
 import { authMiddleware, requireRole } from '../middleware/authMiddleware.js';
+import { listAuditLogs } from '../controllers/auditLogController.js';
 
 const router = express.Router();
 
@@ -134,13 +135,6 @@ router.get('/imports/:id/permanent-deletion/preview', authMiddleware, requireRol
 router.delete('/imports/:id/permanent-deletion', authMiddleware, requireRole('Admin'), permanentlyDeleteImport);
 router.post('/imports/:id/recover', authMiddleware, requireRole('Admin'), recoverImport);
 
-router.get('/audit-log', authMiddleware, requireRole('Admin', 'GM', 'CCM'), (_req, res) => {
-  return res.json({
-    entries: [
-      { id: 'audit-1', type: 'Repair Order Import', actor: 'Naveen Kumar', createdAt: '2026-10-01T09:17:00Z', summary: 'Imported 240 repair orders for Service Care' },
-      { id: 'audit-2', type: 'Customer Update', actor: 'Priya S.', createdAt: '2026-10-02T11:00:00Z', summary: 'Updated appointment confirmation status' },
-    ],
-  });
-});
+router.get('/audit-log', authMiddleware, requireRole('Admin', 'GM'), listAuditLogs);
 
 export default router;

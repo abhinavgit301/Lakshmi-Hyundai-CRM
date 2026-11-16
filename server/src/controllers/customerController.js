@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { prisma } from '../config/prisma.js';
+import { invalidateSnapshotSourceWrite } from '../utils/performanceSnapshotState.js';
+import { signalSnapshotRefresh } from '../utils/performanceRefreshSignal.js';
 import { validateCustomerPayload } from '../utils/customerRules.js';
 import { creCustomerWhere } from '../utils/creAccess.js';
 import { findOrCreatePhysicalVehicle } from '../utils/physicalVehicle.js';
@@ -149,12 +151,14 @@ export async function createCustomer(req, res) {
           },
         });
       }
+      await invalidateSnapshotSourceWrite(transaction, { ccmIds: [...new Set([ccmId, ...vehicleCcmIds])] });
       return transaction.customer.findUniqueOrThrow({
         where: { id: createdCustomer.id },
         include: { vehicles: true },
       });
     });
 
+    signalSnapshotRefresh();
     return res.status(201).json({ customer });
   } catch (error) {
     if (error?.code === 'P2002') {

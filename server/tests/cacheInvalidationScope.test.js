@@ -6,6 +6,8 @@ import { prisma } from '../src/config/prisma.js';
 import { deleteAppointment } from '../src/controllers/appointmentController.js';
 import { updateFollowUpStatus } from '../src/controllers/callWorkflowController.js';
 import { loadCallListRecords } from '../src/controllers/recordsController.js';
+import { snapshotInvalidationMock } from '../test-support/snapshotInvalidationMock.js';
+import { isPerformanceAggregateMaintenanceEnabled } from '../src/utils/performanceSnapshotState.js';
 import {
   cachedCallList,
   callListCacheMiddleware,
@@ -142,9 +144,12 @@ test('a CCM scoped appointment delete and a follow-up status change declare thei
     assert.deepEqual(appointmentRes.locals.cacheInvalidation.ccmIds, ['A']);
     assert.equal(appointmentRes.locals.cacheInvalidation.kinds, undefined);
 
+    const invalidation = {};
+    prisma.$transaction = async (callback) => callback({ followUp: prisma.followUp, ...snapshotInvalidationMock(invalidation) });
     const followRes = reply();
     await updateFollowUpStatus({ user: { id: 'u', role: 'CCM', ccmId: 'A' }, params: { id: 'f1' }, body: { status: 'completed' } }, followRes);
     assert.deepEqual(followRes.locals.cacheInvalidation, { ccmIds: ['A'], kinds: ['workflow'] });
+    if (isPerformanceAggregateMaintenanceEnabled()) assert.equal(invalidation.revisions['ccm:A'], 1);
   } finally {
     prisma.appointment.findFirst = originals.appointment;
     prisma.$transaction = originals.transaction;

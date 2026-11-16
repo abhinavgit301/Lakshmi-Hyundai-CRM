@@ -89,8 +89,8 @@ function installFixture(t, { freeServiceEnabled = false, warrantyEnabled = false
     { id: 'appointment-other', ccmId: CRE.ccmId, assigneeId: 'other-cre', customerId: 'other-customer', vehicleId: 'other-vehicle' },
   ];
   const followUps = [
-    { id: 'follow-up-1', ccmId: CRE.ccmId, creId: CRE.id, customerId: 'customer-1', vehicleId: 'vehicle-1', status: 'pending', owned: true },
-    { id: 'follow-up-other', ccmId: CRE.ccmId, creId: 'other-cre', customerId: 'other-customer', vehicleId: 'other-vehicle', status: 'pending', owned: false },
+    { id: 'follow-up-1', ccmId: CRE.ccmId, creId: CRE.id, customerId: 'customer-1', vehicleId: 'vehicle-1', status: 'pending', source: 'SERVICE', owned: true },
+    { id: 'follow-up-other', ccmId: CRE.ccmId, creId: 'other-cre', customerId: 'other-customer', vehicleId: 'other-vehicle', status: 'pending', source: 'SERVICE', owned: false },
   ];
   const targetCre = { ...CRE, freeServiceEnabled, warrantyEnabled };
 
@@ -141,6 +141,7 @@ function installFixture(t, { freeServiceEnabled = false, warrantyEnabled = false
       findMany: async ({ where }) => source.filter((call) => matchesCall(call, where)),
     },
     followUp: {
+      findMany: async ({ where }) => followUps.filter((followUp) => followUp.source === where.source),
       count: async ({ where }) => followUps.filter((followUp) => (
         followUp.status === where.status
         && followUp.ccmId === where.ccmId

@@ -1,4 +1,6 @@
 import { prisma } from '../config/prisma.js';
+import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import {
   computeCrePerformanceMetrics,
   computeFreeServiceCrePerformanceMetrics,
@@ -21,9 +23,15 @@ const KICK_DELAY_MS = 2000;
 const BATCH_SIZE = 20;
 const REFRESH_CONCURRENCY = 2;
 const MAX_ERROR_LENGTH = 500;
+const CONSISTENT_READ_TIMEOUT_MS = 60 * 1000;
+const CONSISTENT_READ_MAX_WAIT_MS = 2000;
+
+export function isSnapshotConsistentReadsEnabled(env = process.env) {
+  return ['true', '1'].includes(String(env.PERFORMANCE_SNAPSHOT_CONSISTENT_READS_ENABLED || '').trim().toLowerCase());
+}
 
 const VIEWERS = ['CRE', 'CCM'];
-const requested = new Set();
+const requested = new Map();
 let kickTimer = null;
 let schedulerTimer = null;
 let ticking = false;
@@ -38,10 +46,6 @@ function keyOf(key) {
 
 export async function getSnapshot(key, db = prisma) {
   return db.crePerformanceSnapshot.findUnique({ where: snapshotWhere(key) });
-}
-
-function backoffMs(failureCount) {
-  return Math.min(60 * 1000 * 2 ** Math.max(failureCount - 1, 0), SNAPSHOT_MAX_AGE_MS);
 }
 
 // Recalculates one snapshot. A failure records the error and keeps the last good values.
@@ -62,6 +66,7 @@ async function refreshSnapshotWithTrace(key, { now, db, compute, computeFreeServ
     creId: key.creId, ccmId: key.ccmId, year: key.year, month: key.month, viewer: key.viewer,
   };
   await traceSnapshotPhase(trace, 'ensure_row', () => db.crePerformanceSnapshot.createMany({ data: [{ ...where }], skipDuplicates: true }));
+  const claimToken = randomUUID();
   const claimed = await traceSnapshotPhase(trace, 'claim', () => db.crePerformanceSnapshot.updateMany({
     where: {
       ...where,
@@ -70,27 +75,77 @@ async function refreshSnapshotWithTrace(key, { now, db, compute, computeFreeServ
         { refreshStartedAt: { lt: new Date(now.getTime() - REFRESH_LOCK_TIMEOUT_MS) } },
       ],
     },
-    data: { status: 'refreshing', refreshStartedAt: now, lastAttemptAt: now },
+    data: { status: 'refreshing', refreshStartedAt: now, lastAttemptAt: now, claimToken },
   }));
   trace.emit('claim_result', { outcome: claimed.count ? 'claimed' : 'already_refreshing' });
   if (!claimed.count) return { refreshed: false, reason: 'already-refreshing' };
 
   try {
-    const expectedRole = key.viewer === 'FREE_SERVICE_CRE' ? 'FREE_SERVICE_CRE' : 'CRE';
-    const user = await traceSnapshotPhase(trace, 'user_lookup', () => db.user.findFirst({
-      where: { id: key.creId, role: expectedRole },
-      select: { id: true, name: true, ccmId: true, freeServiceEnabled: true, warrantyEnabled: true },
-    }));
-    if (!user || user.ccmId !== key.ccmId) {
-      await traceSnapshotPhase(trace, 'delete_missing_user', () => db.crePerformanceSnapshot.deleteMany({ where }));
-      trace.emit('attempt_result', { outcome: 'cre_not_in_ccm' });
-      return { refreshed: false, reason: 'cre-not-in-ccm' };
+    const ccmScope = `ccm:${key.ccmId}`;
+    await db.performanceSnapshotRevision.createMany({ data: [{ scope: ccmScope }], skipDuplicates: true });
+    const revisions = await db.performanceSnapshotRevision.findMany({
+      where: { scope: { in: ['global', ccmScope] } },
+    });
+    const globalRevision = revisions.find((row) => row.scope === 'global')?.revision;
+    const ccmRevision = revisions.find((row) => row.scope === ccmScope)?.revision;
+    if (globalRevision == null || ccmRevision == null) throw new Error('Snapshot revision rows are missing.');
+    const claimedRow = await db.crePerformanceSnapshot.findUnique({ where: snapshotWhere(key) });
+    if (!claimedRow || claimedRow.claimToken !== claimToken) {
+      trace.emit('attempt_result', { outcome: 'superseded' });
+      return { refreshed: false, reason: 'superseded' };
     }
-    const metrics = await traceSnapshotPhase(trace, 'compute', () => (
-      key.viewer === 'FREE_SERVICE_CRE'
-        ? computeFreeService({ targetCre: user, year: key.year, month: key.month, now, db, trace })
-        : compute({ targetCre: user, viewer: key.viewer, year: key.year, month: key.month, now, trace })
-    ));
+    const dirtyVersion = claimedRow.dirtyVersion;
+    const expectedRole = key.viewer === 'FREE_SERVICE_CRE' ? 'FREE_SERVICE_CRE' : 'CRE';
+    const consistent = isSnapshotConsistentReadsEnabled();
+    const calculate = async (readDb) => {
+      const user = await traceSnapshotPhase(trace, 'user_lookup', () => readDb.user.findFirst({
+        where: { id: key.creId, role: expectedRole },
+        select: { id: true, name: true, ccmId: true, freeServiceEnabled: true, warrantyEnabled: true },
+      }));
+      if (!user || user.ccmId !== key.ccmId) return null;
+      return traceSnapshotPhase(trace, 'compute', () => (
+        key.viewer === 'FREE_SERVICE_CRE'
+          ? computeFreeService({ targetCre: user, year: key.year, month: key.month, now, db: readDb, trace })
+          : compute({ targetCre: user, viewer: key.viewer, year: key.year, month: key.month, now, db: readDb, trace, deferClassification: consistent })
+      ));
+    };
+    const inputs = consistent
+      ? await traceSnapshotPhase(trace, 'consistent_read', () => db.$transaction(async (tx) => {
+        const started = performance.now();
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        await tx.$executeRaw`SET LOCAL statement_timeout = '60s'`;
+        await tx.$executeRaw`SET LOCAL idle_in_transaction_session_timeout = '60s'`;
+        const result = await calculate(tx);
+        if (performance.now() - started >= CONSISTENT_READ_TIMEOUT_MS) {
+          throw new Error('Snapshot consistent read exceeded its 60 second time limit.');
+        }
+        return result;
+      }, { isolationLevel: 'RepeatableRead', timeout: CONSISTENT_READ_TIMEOUT_MS, maxWait: CONSISTENT_READ_MAX_WAIT_MS }))
+      : await calculate(db);
+    const metrics = typeof inputs === 'function' ? await inputs() : inputs;
+    if (!metrics) {
+      const outcome = await traceSnapshotPhase(trace, 'delete_missing_user', () => db.$transaction(async (tx) => {
+        const locked = await tx.$queryRaw`
+          SELECT "scope", "revision" FROM "performance_snapshot_revisions"
+          WHERE "scope" IN ('global', ${ccmScope}) ORDER BY "scope" FOR UPDATE`;
+        if (locked.length !== 2) throw new Error('Snapshot revision rows are missing during deletion.');
+        const unchanged = locked.find((row) => row.scope === 'global')?.revision === globalRevision
+          && locked.find((row) => row.scope === ccmScope)?.revision === ccmRevision;
+        if (unchanged) {
+          const deleted = await tx.crePerformanceSnapshot.deleteMany({
+            where: { ...where, claimToken, status: 'refreshing', dirtyVersion },
+          });
+          if (deleted.count) return 'cre-not-in-ccm';
+        }
+        const dirty = await tx.crePerformanceSnapshot.updateMany({
+          where: { ...where, claimToken, status: 'refreshing' },
+          data: { status: 'dirty', dirtySince: new Date(), claimToken: null },
+        });
+        return dirty.count ? 'dirty' : 'superseded';
+      }));
+      trace.emit('attempt_result', { outcome });
+      return { refreshed: false, reason: outcome };
+    }
     const data = {
       callsThisMonth: metrics.callsThisMonth,
       assignedCustomerCount: metrics.assignedCustomerCount,
@@ -104,45 +159,69 @@ async function refreshSnapshotWithTrace(key, { now, db, compute, computeFreeServ
       lastError: null,
       failureCount: 0,
     };
-    // A change that landed while this refresh was calculating must stay flagged as dirty.
-    const clean = await traceSnapshotPhase(trace, 'persist_clean', () => db.crePerformanceSnapshot.updateMany({
-      where: { ...where, OR: [{ dirtySince: null }, { dirtySince: { lte: now } }] },
-      data: { ...data, status: 'ok', dirtySince: null },
+    const outcome = await traceSnapshotPhase(trace, 'persist_clean', () => db.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw`
+        SELECT "scope", "revision" FROM "performance_snapshot_revisions"
+        WHERE "scope" IN ('global', ${ccmScope}) ORDER BY "scope" FOR UPDATE`;
+      if (locked.length !== 2) throw new Error('Snapshot revision rows are missing during publication.');
+      const unchanged = locked.find((row) => row.scope === 'global')?.revision === globalRevision
+        && locked.find((row) => row.scope === ccmScope)?.revision === ccmRevision;
+      if (unchanged) {
+        const clean = await tx.crePerformanceSnapshot.updateMany({
+          where: { ...where, claimToken, status: 'refreshing', dirtyVersion },
+          data: { ...data, status: 'ok', dirtySince: null, claimToken: null, globalRevision, ccmRevision },
+        });
+        if (clean.count) return 'ok';
+      }
+      const dirty = await tx.crePerformanceSnapshot.updateMany({
+        where: { ...where, claimToken, status: 'refreshing' },
+        data: { status: 'dirty', dirtySince: new Date(), claimToken: null },
+      });
+      return dirty.count ? 'dirty' : 'superseded';
     }));
-    if (!clean.count) {
-      await traceSnapshotPhase(trace, 'persist_dirty', () => db.crePerformanceSnapshot.updateMany({ where, data: { ...data, status: 'dirty' } }));
+    if (outcome === 'superseded') {
+      trace.emit('attempt_result', { outcome });
+      return { refreshed: false, reason: outcome };
     }
     // Cached summaries may still hold the previous snapshot (or a "pending" placeholder).
     invalidateCallListCache({ ccmIds: [key.ccmId], kinds: ['workflow'] });
-    trace.emit('attempt_result', { outcome: clean.count ? 'ok' : 'dirty' });
-    return { refreshed: true };
+    trace.emit('attempt_result', { outcome });
+    return outcome === 'ok' ? { refreshed: true } : { refreshed: false, reason: 'dirty' };
   } catch (error) {
     trace.emit('attempt_result', { outcome: 'calculation_failed' });
-    const current = await traceSnapshotPhase(trace, 'failure_lookup', () => db.crePerformanceSnapshot.findUnique({ where: snapshotWhere(key) }));
-    await traceSnapshotPhase(trace, 'persist_failure', () => db.crePerformanceSnapshot.updateMany({
-      where,
+    const failed = await traceSnapshotPhase(trace, 'persist_failure', () => db.crePerformanceSnapshot.updateMany({
+      where: { ...where, claimToken, status: 'refreshing' },
       data: {
         status: 'failed',
         lastError: String(error?.message || error).slice(0, MAX_ERROR_LENGTH),
-        failureCount: (current?.failureCount ?? 0) + 1,
+        failureCount: { increment: 1 },
         lastAttemptAt: now,
+        claimToken: null,
       },
     }));
+    if (!failed.count) return { refreshed: false, reason: 'superseded' };
     console.error(`Performance snapshot refresh failed for ${keyOf(key)}:`, error);
     return { refreshed: false, reason: 'failed', error };
   }
 }
 
-// Reads never wait for a recalculation: a missing snapshot is queued and the caller reports "pending".
-export function requestSnapshotRefresh(key) {
+// Persist missing work before waking the bounded scheduler; API reads never wait for recalculation.
+export function requestSnapshotRefresh(key, { db = prisma, signal = kickSnapshotRefresh } = {}) {
   const id = keyOf(key);
-  if (requested.has(id)) return;
-  requested.add(id);
-  setImmediate(() => {
-    refreshSnapshot(key)
-      .catch((error) => console.error('Performance snapshot request failed:', error))
-      .finally(() => requested.delete(id));
-  });
+  if (requested.has(id)) return requested.get(id);
+  const { creId, ccmId, year, month, viewer } = key;
+  const request = Promise.resolve().then(() => db.crePerformanceSnapshot.createMany({
+    data: [{ creId, ccmId, year, month, viewer }], skipDuplicates: true,
+  })).then(() => {
+    signal();
+    return true;
+  }).catch((error) => {
+    console.error(`Performance snapshot request failed for ${id}:`, error);
+    return false;
+  })
+    .finally(() => requested.delete(id));
+  requested.set(id, request);
+  return request;
 }
 
 export async function seedCurrentMonthSnapshots({ now = new Date(), db = prisma } = {}) {
@@ -175,6 +254,11 @@ export async function findSnapshotsDueForRefresh({ now = new Date(), limit = BAT
   const staleCurrent = new Date(now.getTime() - REFRESH_AFTER_MS);
   const staleHistorical = new Date(now.getTime() - HISTORICAL_SNAPSHOT_MAX_AGE_MS);
   const lockExpired = new Date(now.getTime() - REFRESH_LOCK_TIMEOUT_MS);
+  const retryWindows = [
+    { failureCount: { lte: 1 }, delay: 60 * 1000 },
+    ...[2, 3, 4].map((failureCount) => ({ failureCount, delay: 60 * 1000 * 2 ** (failureCount - 1) })),
+    { failureCount: { gte: 5 }, delay: SNAPSHOT_MAX_AGE_MS },
+  ];
   const rows = await db.crePerformanceSnapshot.findMany({
     where: {
       OR: [
@@ -182,18 +266,24 @@ export async function findSnapshotsDueForRefresh({ now = new Date(), limit = BAT
         { status: 'ok', year, month, computedAt: { lt: staleCurrent } },
         { status: 'ok', viewer: 'FREE_SERVICE_CRE', computedAt: { lt: staleCurrent } },
         { status: 'ok', NOT: { AND: [{ year }, { month }] }, computedAt: { lt: staleHistorical } },
-        { status: 'failed' },
+        { status: 'failed', OR: [
+          { lastAttemptAt: null },
+          ...retryWindows.map(({ failureCount, delay }) => ({
+            failureCount,
+            lastAttemptAt: { lte: new Date(now.getTime() - delay) },
+          })),
+        ] },
         { status: 'refreshing', refreshStartedAt: { lt: lockExpired } },
       ],
     },
-    orderBy: [{ status: 'asc' }, { computedAt: 'asc' }],
-    take: limit * 3,
+    orderBy: [
+      { lastAttemptAt: { sort: 'asc', nulls: 'first' } },
+      { computedAt: { sort: 'asc', nulls: 'first' } },
+      { creId: 'asc' }, { ccmId: 'asc' }, { year: 'asc' }, { month: 'asc' }, { viewer: 'asc' },
+    ],
+    take: limit,
   });
-  return rows
-    .filter((row) => row.status !== 'failed'
-      || !row.lastAttemptAt
-      || now.getTime() - row.lastAttemptAt.getTime() >= backoffMs(row.failureCount))
-    .slice(0, limit);
+  return rows;
 }
 
 export async function refreshDueSnapshots({ now = new Date(), db = prisma, refresh = refreshSnapshot } = {}) {

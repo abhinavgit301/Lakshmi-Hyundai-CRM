@@ -1,7 +1,7 @@
 import { creCustomerWhere, creVehicleWhere } from './creAccess.js';
 import { isAnsweredOutcome } from './serviceCalendar.js';
 import { zonedDateKey } from './workshopTime.js';
-import { isPerformanceAggregateMaintenanceEnabled, markCreSnapshotsDirty } from './performanceSnapshotState.js';
+import { flushSnapshotInvalidation, invalidateSnapshotSourceWrite, isPerformanceAggregateMaintenanceEnabled } from './performanceSnapshotState.js';
 
 // Immediate-tier aggregate. cre_call_daily mirrors exactly what the live call-count queries return:
 //   OWNED - calls on customers/vehicles the CRE currently owns (CRE dashboard and performance summary scope)
@@ -133,7 +133,7 @@ const pendingChanges = new WeakMap();
 function pendingEntry(transaction) {
   let entry = pendingChanges.get(transaction);
   if (!entry) {
-    entry = { ownershipCreIds: new Set(), accountCreIds: new Set(), previousCcms: new Map(), deletedCreIds: new Set() };
+    entry = { ownershipCreIds: new Set(), accountCreIds: new Set(), previousCcms: new Map(), deletedCreIds: new Set(), ccmIds: new Set(), global: false };
     pendingChanges.set(transaction, entry);
   }
   return entry;
@@ -141,9 +141,11 @@ function pendingEntry(transaction) {
 
 // Called by every CRE ownership event. The change is applied by flushCreCallAggregates at the end of the
 // transaction, once the ownership rows have their final state.
-export function noteCreOwnershipChange(transaction, { creIds }) {
+export function noteCreOwnershipChange(transaction, { creIds, ccmId = null }) {
   if (!isPerformanceAggregateMaintenanceEnabled()) return;
   const entry = pendingEntry(transaction);
+  if (ccmId) entry.ccmIds.add(ccmId);
+  else entry.global = true;
   for (const id of creIds) if (id) entry.ownershipCreIds.add(id);
 }
 
@@ -177,6 +179,7 @@ export async function noteCreCallEntityScopeChange(transaction, { customerIds = 
     where: { createdById: { not: null }, OR },
   });
   const entry = pendingEntry(transaction);
+  entry.global = true;
   for (const { createdById } of callers) if (createdById) entry.ownershipCreIds.add(createdById);
 }
 
@@ -187,6 +190,9 @@ export function noteCreAccountChange(transaction, { creId, previousCcmId = null,
   if (!isPerformanceAggregateMaintenanceEnabled() || !creId) return;
   const entry = pendingEntry(transaction);
   entry.accountCreIds.add(creId);
+  if (previousCcmId) entry.ccmIds.add(previousCcmId);
+  if (nextCcmId) entry.ccmIds.add(nextCcmId);
+  if (!previousCcmId && !nextCcmId) entry.global = true;
   if (previousCcmId && previousCcmId !== nextCcmId) {
     const ccms = entry.previousCcms.get(creId) || new Set();
     ccms.add(previousCcmId);
@@ -205,9 +211,11 @@ export function noteCreAccountChangeIfAffected(transaction, before, after) {
   noteCreAccountChange(transaction, { creId: after.id, previousCcmId: before.ccmId, nextCcmId: after.ccmId });
 }
 
-export function noteCreDeleted(transaction, { creId }) {
+export function noteCreDeleted(transaction, { creId, ccmId = null }) {
   if (!isPerformanceAggregateMaintenanceEnabled() || !creId) return;
   const entry = pendingEntry(transaction);
+  if (ccmId) entry.ccmIds.add(ccmId);
+  else entry.global = true;
   entry.deletedCreIds.add(creId);
   entry.ownershipCreIds.add(creId);
 }
@@ -225,9 +233,12 @@ export async function flushCreCallAggregates(transaction, { extraCreIds = [] } =
   const deleted = [...(entry?.deletedCreIds || [])];
 
   if (ownership.length) await rebuildCreCallAggregates(transaction, ownership);
-  const liveOwnership = ownership.filter((id) => !deleted.includes(id));
-  if (liveOwnership.length) await markCreSnapshotsDirty(transaction, { creIds: liveOwnership });
-  if (account.length) await markCreSnapshotsDirty(transaction, { creIds: account, allMonths: true });
+  if (entry || extraCreIds.length) {
+    await invalidateSnapshotSourceWrite(transaction, {
+      ccmIds: entry && !entry.global && !extraCreIds.length ? [...entry.ccmIds] : [],
+    });
+  }
+  await flushSnapshotInvalidation(transaction);
   for (const [creId, ccmIds] of entry?.previousCcms || []) {
     if (!deleted.includes(creId)) {
       await transaction.crePerformanceSnapshot.deleteMany({ where: { creId, ccmId: { in: [...ccmIds] } } });
@@ -236,5 +247,5 @@ export async function flushCreCallAggregates(transaction, { extraCreIds = [] } =
   if (deleted.length) await transaction.crePerformanceSnapshot.deleteMany({ where: { creId: { in: deleted } } });
 
   const creIds = [...new Set([...ownership, ...account])];
-  return { creIds, changed: creIds.length > 0 };
+  return { creIds, changed: Boolean(entry) || creIds.length > 0 };
 }

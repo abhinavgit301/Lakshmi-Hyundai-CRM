@@ -6,6 +6,8 @@ import {
   previewPermanentImportDeletion,
 } from '../src/services/permanentImportDeletionService.js';
 import { importSnapshot } from '../src/utils/importChangeLog.js';
+import { snapshotInvalidationMock } from '../test-support/snapshotInvalidationMock.js';
+import { isPerformanceAggregateMaintenanceEnabled } from '../src/utils/performanceSnapshotState.js';
 
 const targetId = 'import-target';
 const laterId = 'import-later';
@@ -223,6 +225,7 @@ function createDatabase({
     rowProgress,
     changeLogs: changes,
     auditLogs: [],
+    invalidation: {},
     deletionOrder: [],
     deleteBatchSizes: [],
     lockQuerySizes: [],
@@ -246,6 +249,7 @@ function createDatabase({
 
   function createTransaction(draft) {
     const tx = {
+      ...snapshotInvalidationMock(draft.invalidation),
       $queryRaw: async () => [],
       $queryRawUnsafe: async (_query, ...ids) => {
         draft.lockQuerySizes.push(ids.length);
@@ -332,6 +336,8 @@ function createDatabase({
         },
       };
     }
+    tx.callLog.groupBy = async () => [...new Set(draft.tables.callLog.map(({ createdById }) => createdById).filter(Boolean))]
+      .map((createdById) => ({ createdById }));
     return tx;
   }
 
@@ -413,6 +419,10 @@ test('deletes only target-created customer, vehicle, and service history while r
   assert.equal(state.changeLogs.length, 3);
   assert.ok(state.changeLogs.every(({ rollbackStatus }) => rollbackStatus === 'pending'));
   assert.equal(state.auditLogs.length, 1);
+  if (isPerformanceAggregateMaintenanceEnabled()) {
+    assert.equal(state.invalidation.revisions.global, 1);
+    assert.deepEqual(state.invalidation.snapshotUpdates[0].where, {});
+  }
   assert.deepEqual(state.deletionOrder, ['workshopVisit', 'vehicle', 'customer']);
   assert.deepEqual(transactionOptions.at(-1), {
     isolationLevel: 'Serializable',
@@ -541,7 +551,7 @@ test('permanent deletion locks and deletes large call-list imports in bounded ba
 
   assert.equal(result.status, 'permanently_deleted');
   assert.deepEqual(state.deleteBatchSizes, [500, 500, 1, 500, 500, 1]);
-  assert.deepEqual(state.lockQuerySizes, [1, 500, 500, 1, 500, 500, 1]);
+  assert.deepEqual(state.lockQuerySizes, [1, 1, 500, 500, 1, 500, 500, 1, 1]);
   assert.deepEqual(state.tables.masterCallList, []);
   assert.deepEqual(state.tables.workshopVisit, []);
 });

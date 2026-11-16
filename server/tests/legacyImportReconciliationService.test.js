@@ -7,6 +7,8 @@ import {
   previewLegacyImportReconciliation,
 } from '../src/services/legacyImportReconciliationService.js';
 import { importSnapshot } from '../src/utils/importChangeLog.js';
+import { snapshotInvalidationMock } from '../test-support/snapshotInvalidationMock.js';
+import { isPerformanceAggregateMaintenanceEnabled } from '../src/utils/performanceSnapshotState.js';
 
 const batchId = 'legacy-batch';
 const recordId = 'legacy-visit';
@@ -30,6 +32,7 @@ function fixture({
     normalizedRepairOrderNo: 'RO-LEGACY-1',
     customerId: 'existing-customer',
     vehicleId: 'existing-vehicle',
+    physicalVehicleId: 'physical-1',
     ccmId: 'ccm-1',
     totalLaborCost: 10,
     totalPartsCost: 20,
@@ -119,6 +122,7 @@ function fixture({
     rowProgress: [rowProgress],
     rowErrors: [],
     auditLogs: [],
+    invalidation: {},
     tables: {
       customer: createParents ? [customer] : [],
       vehicle: createParents ? [vehicle] : [],
@@ -139,7 +143,7 @@ function fixture({
       allocation: [],
       vehicleOwnershipHistory: [],
       monthlyCustomerDataEntry: [],
-      freeServiceMilestone: dependencies,
+      freeServiceMilestone: dependencies.map((dependency) => ({ physicalVehicleId: 'physical-1', ...dependency })),
       masterCallList: [],
       vINConflictReview: [],
     },
@@ -166,6 +170,7 @@ function fixture({
   });
   const createTransaction = (transactionState) => {
     const tx = {
+      ...snapshotInvalidationMock(transactionState.invalidation),
       $queryRaw: async () => [],
       $queryRawUnsafe: async () => [],
       importBatch: {
@@ -207,6 +212,8 @@ function fixture({
         },
       };
     }
+    tx.callLog.groupBy = async () => [...new Set(transactionState.tables.callLog.map(({ createdById }) => createdById).filter(Boolean))]
+      .map((createdById) => ({ createdById }));
     return tx;
   };
   const database = {
@@ -244,6 +251,10 @@ test('reports historical evidence and exactly cleans an eligible retained CREATE
   assert.equal(state.changes[0].rollbackStatus, 'pending');
   assert.equal(state.batches[0].status, 'completed');
   assert.equal(state.auditLogs.length, 1);
+  if (isPerformanceAggregateMaintenanceEnabled()) {
+    assert.equal(state.invalidation.revisions.global, 1);
+    assert.deepEqual(state.invalidation.snapshotUpdates[0].where, {});
+  }
 });
 
 test('invalidated CREATE evidence remains report-only even when its complete snapshot matches', async () => {
@@ -365,6 +376,27 @@ test('blocks incomplete evidence and records with downstream workflow references
   assert.equal(dependentPreview.confirmationToken, null);
   assert.ok(dependentPreview.blockers.some(({ code }) => code === 'unresolved_dependency'));
   assert.equal(dependent.state.tables.workshopVisit.length, 1);
+});
+
+test('legacy cleanup protects a visit referenced by a milestone in another CCM', async () => {
+  const { database, state } = fixture({
+    dependencies: [{
+      id: 'other-ccm-milestone',
+      vehicleId: 'other-ccm-vehicle',
+      completedByWorkshopVisitId: recordId,
+    }],
+  });
+  const preview = await previewLegacyImportCleanup(batchId, database);
+  assert.equal(preview.confirmationToken, null);
+  assert.ok(preview.blockers.some(({ code }) => code === 'unresolved_dependency'));
+  assert.equal(state.tables.workshopVisit.length, 1);
+});
+
+test('legacy cleanup refuses to check dependencies without physical vehicle identity', async () => {
+  const { database, state } = fixture();
+  state.tables.workshopVisit[0].physicalVehicleId = null;
+  await assert.rejects(previewLegacyImportCleanup(batchId, database), /physical vehicle identity/);
+  assert.equal(state.tables.workshopVisit.length, 1);
 });
 
 test('blocks cleanup when another import also references the same entity', async () => {

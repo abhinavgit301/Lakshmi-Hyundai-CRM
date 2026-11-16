@@ -9,6 +9,7 @@ import {
 import { recordCreAssignmentEvent, validateAssignmentReason } from '../utils/creAssignmentHistory.js';
 import { findCanonicalMasterCallListEntry } from '../utils/masterCallList.js';
 import { scopeCacheInvalidation } from '../utils/callListCache.js';
+import { noteCreCallEntityScopeChange, noteCreOwnershipChange } from '../utils/creCallAggregates.js';
 
 function roleName(role) {
   const value = String(role || '').toUpperCase();
@@ -45,6 +46,10 @@ async function syncMasterCallListOwner(transaction, vehicle, ccmId, creId, actor
   const existing = await findCanonicalMasterCallListEntry(transaction, vehicle.vin, ccmId);
   if (existing) {
     const previousCreId = existing.ownerUserId;
+    if (existing.vehicleId !== vehicle.id) {
+      await noteCreCallEntityScopeChange(transaction, { vehicleIds: [existing.vehicleId, vehicle.id] });
+      noteCreOwnershipChange(transaction, { ccmId, creIds: [previousCreId, creId] });
+    }
     await transaction.masterCallList.update({
       where: { id: existing.id },
       data: { vehicleId: vehicle.id, ownerUserId: creId, assignmentNeedsReview: false },
@@ -279,6 +284,9 @@ export async function updateAllocation(req, res) {
           vehicle: { include: { customer: { select: { id: true, fullName: true, mobileNumber: true } } } },
         },
       });
+    if (update.status && update.status !== current.status) {
+      noteCreOwnershipChange(transaction, { ccmId: teamId, creIds: [current.creId, update.creId] });
+    }
     if (update.creId) {
       const allocations = isCcmReassignment
         ? await transaction.allocation.findMany({

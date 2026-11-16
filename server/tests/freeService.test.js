@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   countRemainingFreeServiceMilestones,
   classifyFreeServiceStatus,
-  findCompletingVisit,
+  freeServiceVisitsByMilestone,
   freeServiceCallStart,
   freeServiceCustomerIdsForMonth,
   freeServiceDueDate,
@@ -17,6 +17,59 @@ import {
 import { addMonths } from '../src/utils/serviceDue.js';
 
 const d = (year, month, day) => new Date(year, month - 1, day);
+
+test('early Free Service visit completes the first milestone and leaves two services', () => {
+  const saleDate = d(2026, 10, 10);
+  const visit = { id: 'early', visitDate: d(2026, 10, 31), importedDetails: { serviceType: 'Free Service' } };
+  const now = d(2026, 11, 15);
+  assert.equal(freeServiceVisitsByMilestone(saleDate, [visit], now).get(1), visit);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [visit] }, now), 2);
+  assert.deepEqual([...freeServiceCustomerIdsForMonth([
+    { customerId: 'customer', saleDate, workshopVisits: [visit] },
+  ], 2026, 12, now)], []);
+  assert.deepEqual([...freeServiceCustomerIdsForMonth([
+    { customerId: 'customer', saleDate, workshopVisits: [visit] },
+  ], 2027, 10, d(2027, 10, 1))], ['customer']);
+});
+
+test('free visits are assigned once in date order, including late visits after missed milestones', () => {
+  const sale = d(2026, 1, 1);
+  const first = { id: 'first', visitDate: d(2027, 1, 3), importedDetails: { workType: 'Free Service' } };
+  const second = { id: 'second', visitDate: d(2027, 2, 1), importedDetails: { workType: 'FOC Service' } };
+  const future = { id: 'future', visitDate: d(2027, 4, 1), importedDetails: { workType: 'Free Service' } };
+  const beforeSale = { id: 'before', visitDate: d(2025, 12, 31), importedDetails: { workType: 'Free Service' } };
+  const undated = { id: 'undated', importedDetails: { workType: 'Free Service' } };
+  const assignments = freeServiceVisitsByMilestone(sale, [second, first, future, beforeSale, undated, first], d(2027, 3, 1));
+  assert.deepEqual([...assignments.entries()], [[2, first], [3, second]]);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate: sale, workshopVisits: [second, first, future] }, d(2027, 3, 1)), 0);
+});
+
+test('expiry day remains eligible; the next day skips the expired milestone', () => {
+  const saleDate = d(2026, 1, 10);
+  const visit = (id, date, ccmId = 'a') => ({ id, ccmId, visitDate: date, importedDetails: { workType: 'Free Service' } });
+  const expiry = d(2026, 6, 10);
+  const onExpiry = visit('a', expiry);
+  const afterExpiry = visit('b', d(2026, 6, 11));
+  assert.equal(freeServiceVisitsByMilestone(saleDate, [onExpiry], expiry).get(1), onExpiry);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, expiry), 3);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [] }, afterExpiry.visitDate), 2);
+  assert.equal(freeServiceVisitsByMilestone(saleDate, [afterExpiry], afterExpiry.visitDate).get(2), afterExpiry);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [afterExpiry] }, afterExpiry.visitDate), 1);
+  afterExpiry.repairOrderNo = 'RO-1';
+  const otherCcm = { ...visit('c', d(2026, 6, 11), 'b'), repairOrderNo: 'RO-1' };
+  assert.deepEqual([...freeServiceVisitsByMilestone(saleDate, [afterExpiry, otherCcm], otherCcm.visitDate).keys()], [2, 3]);
+  assert.equal(countRemainingFreeServiceMilestones({ saleDate, workshopVisits: [afterExpiry, otherCcm] }, otherCcm.visitDate), 0);
+  assert.equal(freeServiceVisitsByMilestone(saleDate, [visit('late', d(2029, 1, 1))], d(2029, 1, 1)).size, 0);
+});
+
+test('month-end expiry is inclusive when assigning visits', () => {
+  const saleDate = d(2023, 12, 31);
+  const expiry = d(2024, 5, 29);
+  const first = { id: 'on', visitDate: expiry, importedDetails: { workType: 'Free Service' } };
+  const second = { id: 'after', visitDate: d(2024, 5, 30), importedDetails: { workType: 'Free Service' } };
+  assert.equal(freeServiceVisitsByMilestone(saleDate, [first], expiry).get(1), first);
+  assert.equal(freeServiceVisitsByMilestone(saleDate, [second], second.visitDate).get(2), second);
+});
 
 test('free-service milestones are sale + 2 months, 1 year and 2 years', () => {
   const sale = d(2024, 3, 10);
@@ -88,50 +141,6 @@ test('the due date must fall within the next rolling calendar month, inclusive',
   // Calendar-month arithmetic, not 30 days: 31 Jan + 1 month clamps to 28 Feb.
   assert.equal(isFreeServiceCallable(d(2026, 2, 28), d(2026, 1, 31)), false, 'before 14-day calling start');
   assert.equal(isFreeServiceCallable(d(2026, 2, 10), d(2026, 1, 31)), true);
-});
-
-test('a free-service repair order near the due date completes the milestone', () => {
-  const due = d(2026, 5, 10);
-  const visits = [
-    { repairOrderNo: 'RO-PAID', visitDate: d(2026, 5, 9), importedDetails: { workType: 'Paid Service' } },
-    { repairOrderNo: 'RO-FREE', visitDate: d(2026, 5, 20), importedDetails: { workType: 'Free Service' } },
-  ];
-  assert.equal(findCompletingVisit(due, visits).repairOrderNo, 'RO-FREE');
-});
-
-test('a free service during the grace period completes the milestone through expiry day', () => {
-  const due = d(2026, 5, 10);
-  const expiry = freeServiceExpiryDate(due);
-  for (const visitDate of [
-    d(2026, 5, 10),
-    d(2026, 7, 10),
-    new Date(expiry.getFullYear(), expiry.getMonth(), expiry.getDate(), 16, 45),
-  ]) {
-    const visit = { repairOrderNo: 'RO-GRACE', visitDate, importedDetails: { workType: 'FOC Service' } };
-    assert.equal(findCompletingVisit(due, [visit]), visit);
-  }
-  assert.equal(findCompletingVisit(due, [{
-    repairOrderNo: 'RO-AFTER-GRACE',
-    visitDate: d(expiry.getFullYear(), expiry.getMonth() + 1, expiry.getDate() + 1),
-    importedDetails: { workType: 'Free Service' },
-  }]), null);
-});
-
-test('completion is not assumed when history cannot establish it', () => {
-  const due = d(2026, 5, 10);
-  assert.equal(findCompletingVisit(due, []), null);
-  assert.equal(findCompletingVisit(due, [{ repairOrderNo: 'A', visitDate: d(2026, 5, 10), importedDetails: { workType: 'Paid Service' } }]), null, 'paid service is not a free service');
-  assert.equal(findCompletingVisit(due, [{ repairOrderNo: 'B', visitDate: d(2025, 1, 1), importedDetails: { workType: 'Free Service' } }]), null, 'far from the milestone');
-  assert.equal(findCompletingVisit(due, [{ repairOrderNo: 'C', visitDate: null, importedDetails: { workType: 'Free Service' } }]), null, 'undated');
-  assert.equal(findCompletingVisit(due, [{ repairOrderNo: 'D', visitDate: d(2026, 5, 10), importedDetails: null }]), null);
-});
-
-test('each milestone matches only its own free-service visit', () => {
-  const sale = d(2024, 1, 15);
-  const visits = [{ repairOrderNo: 'FIRST', visitDate: d(2024, 3, 20), importedDetails: { workType: 'Free Service' } }];
-  assert.equal(findCompletingVisit(freeServiceDueDate(sale, 1), visits).repairOrderNo, 'FIRST');
-  assert.equal(findCompletingVisit(freeServiceDueDate(sale, 2), visits), null);
-  assert.equal(findCompletingVisit(freeServiceDueDate(sale, 3), visits), null);
 });
 
 test('paid-service history permanently ends remaining free-service eligibility', () => {

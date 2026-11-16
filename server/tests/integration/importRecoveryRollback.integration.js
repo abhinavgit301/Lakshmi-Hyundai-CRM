@@ -1,4 +1,4 @@
-import test, { after, afterEach } from 'node:test';
+import test, { before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
@@ -30,12 +30,23 @@ const runPrefix = `it_${randomUUID().replaceAll('-', '')}`;
 const ownedBatchIds = new Set();
 const ownedCustomerIds = new Set();
 const ownedVehicleIds = new Set();
+const ownedPhysicalVehicleIds = new Set();
 const ownedVisitIds = new Set();
 const ownedCallListIds = new Set();
 const ownedUserIds = new Set();
 
+before(async () => {
+  await prisma.performanceSnapshotRevision.createMany({ data: [{ scope: 'global' }], skipDuplicates: true });
+});
+
 function nextId(label) {
   return `${runPrefix}_${label}_${randomUUID().replaceAll('-', '')}`;
+}
+
+async function createPhysicalVehicle(db, vin) {
+  const physical = await db.physicalVehicle.create({ data: { vin } });
+  ownedPhysicalVehicleIds.add(physical.id);
+  return physical;
 }
 
 function repairOrderIdentity(repairOrderNo) {
@@ -150,10 +161,13 @@ async function createBusinessFixture({
         ccmId: nextId('ccm'),
       },
     });
+    const vin = nextId('vin');
+    const physical = await createPhysicalVehicle(transaction, vin);
     const vehicle = await transaction.vehicle.create({
       data: {
         id: vehicleId,
-        vin: nextId('vin'),
+        vin,
+        physicalVehicleId: physical.id,
         customerId,
         ccmId: customer.ccmId,
       },
@@ -164,6 +178,7 @@ async function createBusinessFixture({
         ...repairOrderIdentity(nextId('ro')),
         customerId,
         vehicleId,
+        physicalVehicleId: physical.id,
         ccmId: customer.ccmId,
         importedDetails: {},
       },
@@ -198,6 +213,7 @@ async function createBusinessFixture({
           customerName: customer.fullName,
           mobileNumber: customer.mobileNumber,
           vin: vehicle.vin,
+          vehicleId: vehicle.id,
           ccmId: customer.ccmId,
         },
       });
@@ -344,8 +360,10 @@ async function createAllocationFixture() {
       ccmId,
     },
   });
+  const vin = nextId('vin');
+  const physical = await createPhysicalVehicle(prisma, vin);
   const vehicle = await prisma.vehicle.create({
-    data: { id: vehicleId, vin: nextId('vin'), customerId, ccmId },
+    data: { id: vehicleId, vin, physicalVehicleId: physical.id, customerId, ccmId },
   });
   const activeCre = await createActiveCre(ccmId);
   const inactiveCre = await createCre(ccmId, 'inactive');
@@ -367,6 +385,7 @@ async function createAllocationFixture() {
         ...repairOrderIdentity(nextId('ro')),
         customerId,
         vehicleId,
+        physicalVehicleId: vehicle.physicalVehicleId,
         ccmId,
         importedDetails: {},
       },
@@ -377,6 +396,7 @@ async function createAllocationFixture() {
         customerName: customer.fullName,
         mobileNumber: customer.mobileNumber,
         vin: vehicle.vin,
+        vehicleId: vehicle.id,
         ccmId,
       },
     });
@@ -509,9 +529,14 @@ afterEach(async () => {
     ownedVisitIds.clear();
   }
   if (ownedVehicleIds.size) {
+    await prisma.freeServiceMilestone.deleteMany({ where: { vehicleId: { in: [...ownedVehicleIds] } } });
     await prisma.allocation.deleteMany({ where: { vehicleId: { in: [...ownedVehicleIds] } } });
     await prisma.vehicle.deleteMany({ where: { id: { in: [...ownedVehicleIds] } } });
     ownedVehicleIds.clear();
+  }
+  if (ownedPhysicalVehicleIds.size) {
+    await prisma.physicalVehicle.deleteMany({ where: { id: { in: [...ownedPhysicalVehicleIds] } } });
+    ownedPhysicalVehicleIds.clear();
   }
   if (ownedCustomerIds.size) {
     await prisma.customer.deleteMany({ where: { id: { in: [...ownedCustomerIds] } } });
@@ -564,15 +589,18 @@ test('PostgreSQL scopes normalized repair-order uniqueness to CCM and rejects co
         ccmId: ccm.ccmId,
       },
     });
+    const vin = nextId('ro-vin');
+    const physical = await createPhysicalVehicle(prisma, vin);
     const vehicle = await prisma.vehicle.create({
       data: {
         id: vehicleId,
-        vin: nextId('ro-vin'),
+        vin,
+        physicalVehicleId: physical.id,
         customerId: customer.id,
         ccmId: ccm.ccmId,
       },
     });
-    ownedVehicles.push({ ccmId: ccm.ccmId, customerId, vehicleId });
+    ownedVehicles.push({ ccmId: ccm.ccmId, customerId, vehicleId, physicalVehicleId: vehicle.physicalVehicleId });
   }
 
   const sameRo = nextId('shared-ro');
@@ -587,6 +615,7 @@ test('PostgreSQL scopes normalized repair-order uniqueness to CCM and rejects co
         ...repairOrderIdentity(sameRo),
         customerId: owner.customerId,
         vehicleId: owner.vehicleId,
+        physicalVehicleId: owner.physicalVehicleId,
         ccmId: owner.ccmId,
       },
     });
@@ -602,6 +631,7 @@ test('PostgreSQL scopes normalized repair-order uniqueness to CCM and rejects co
       ...repairOrderIdentity(index === 0 ? concurrentRo : ` ${concurrentRo.toLowerCase()} `),
       customerId: owner.customerId,
       vehicleId: owner.vehicleId,
+      physicalVehicleId: owner.physicalVehicleId,
       ccmId: owner.ccmId,
     },
   })));
@@ -671,8 +701,8 @@ test('production import controller commits business mutations with row progress 
 
   const [customer, vehicle, visit, callList] = await Promise.all([
     prisma.customer.findFirst({ where: { mobileNumber: '9000000001', ccmId: actor.ccmId } }),
-    prisma.vehicle.findUnique({ where: { vin } }),
-    prisma.workshopVisit.findUnique({ where: { repairOrderNo } }),
+    prisma.vehicle.findFirst({ where: { vin, ccmId: actor.ccmId } }),
+    prisma.workshopVisit.findFirst({ where: { repairOrderNo, ccmId: actor.ccmId } }),
     prisma.masterCallList.findFirst({ where: { vin, ccmId: actor.ccmId } }),
   ]);
   assert.ok(customer);
@@ -681,6 +711,7 @@ test('production import controller commits business mutations with row progress 
   assert.ok(callList);
   ownedCustomerIds.add(customer.id);
   ownedVehicleIds.add(vehicle.id);
+  ownedPhysicalVehicleIds.add(vehicle.physicalVehicleId);
   ownedVisitIds.add(visit.id);
   ownedCallListIds.add(callList.id);
   assert.deepEqual(new Set(linkedChanges.map(({ entityId }) => entityId)), new Set([
@@ -819,6 +850,43 @@ test('concurrent rollback attempts use separate PostgreSQL transactions and only
   assert.equal(new Set(backendPids).size, 2);
   assert.equal((await prisma.importBatch.findUnique({ where: { id: fixture.batch.id } })).status, 'rolled_back');
   assert.equal(await prisma.workshopVisit.findUnique({ where: { id: fixture.visit.id } }), null);
+});
+
+test('rollback recalculates shared-CCM milestone references before removing a service visit', async () => {
+  const fixture = await createBusinessFixture();
+  const otherCustomerId = nextId('other-customer');
+  const otherVehicleId = nextId('other-vehicle');
+  const otherCcmId = nextId('other-ccm');
+  ownedCustomerIds.add(otherCustomerId);
+  ownedVehicleIds.add(otherVehicleId);
+  await prisma.customer.create({ data: {
+    id: otherCustomerId, customerCode: nextId('other-code'),
+    fullName: 'Other Customer', mobileNumber: '9000000000', ccmId: otherCcmId,
+  } });
+  await prisma.vehicle.create({ data: {
+    id: otherVehicleId, vin: fixture.vehicle.vin, physicalVehicleId: fixture.vehicle.physicalVehicleId,
+    customerId: otherCustomerId, ccmId: otherCcmId, saleDate: new Date('2025-01-01T00:00:00Z'),
+  } });
+  const milestone = await prisma.freeServiceMilestone.create({ data: {
+    vehicleId: otherVehicleId,
+    physicalVehicleId: fixture.vehicle.physicalVehicleId,
+    milestone: 1,
+    dueDate: new Date('2025-03-01T00:00:00Z'),
+    status: 'completed',
+    completedAt: new Date('2025-03-01T00:00:00Z'),
+    completedByWorkshopVisitId: fixture.visit.id,
+    completedByRepairOrderNo: fixture.visit.repairOrderNo,
+  } });
+  try {
+    const result = await rollbackImportBatch(fixture.batch.id, null);
+    assert.equal(result.batch.status, 'rolled_back');
+    assert.equal(await prisma.workshopVisit.findUnique({ where: { id: fixture.visit.id } }), null);
+    const updatedMilestone = await prisma.freeServiceMilestone.findUnique({ where: { id: milestone.id } });
+    assert.equal(updatedMilestone.status, 'pending');
+    assert.equal(updatedMilestone.completedByWorkshopVisitId, null);
+  } finally {
+    await prisma.freeServiceMilestone.deleteMany({ where: { id: milestone.id } });
+  }
 });
 
 test('recovery cannot acquire an active import lock and succeeds after real PostgreSQL lock release', async () => {
@@ -1023,7 +1091,7 @@ test('recovery and rollback reject missing, orphaned, contradictory, and incompl
       (error) => {
         assert.ok(error instanceof ImportRollbackConflict);
         if (kind === 'incomplete-snapshot') {
-          assert.match(error.message, /complete row progress and change snapshots/);
+          assert.match(error.message, /invalidated, inconsistent, or incomplete/);
         }
         return true;
       },

@@ -389,8 +389,8 @@ export async function runMasterCallListPagePrisma(prismaClient, params) {
   return summarisePageRows(rows);
 }
 
-// Only the exact strings 'true' and '1' enable the SQL path; unset or anything else leaves it OFF.
+// The SQL path is the default; set the flag explicitly to false/0 to roll back to the legacy loader.
 export function isMasterCallListSqlEnabled(env = process.env) {
   const value = String(env.MASTER_CALL_LIST_SQL_ENABLED ?? '').trim().toLowerCase();
-  return value === 'true' || value === '1';
+  return value === '' || value === 'true' || value === '1';
 }

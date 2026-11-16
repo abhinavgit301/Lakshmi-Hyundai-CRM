@@ -109,6 +109,10 @@ sudo systemctl show lakshmi-hyundai-backend.service \
 
 Keep `/opt/lakshmi-hyundai/shared/backend.env` and its values intact. It should remain root-owned and inaccessible to the `lakshmi-deploy` login; systemd reads it before starting the service. Never print it, copy it into a release, or place secrets in a unit drop-in.
 
+The shared backend environment must define `JWT_SECRET` with at least 32 characters and `CORS_ALLOWED_ORIGINS` as a comma-separated list of exact HTTPS frontend origins (scheme and host, no path or trailing slash). Include each production hostname that serves the CRM, such as the apex and `www` hostnames when both are used. The backend now refuses to start in production if either setting is missing or invalid. Keep both values only in the protected backend environment; do not add them to GitHub secrets or print them during verification.
+
+The Master Call List SQL paging and due-candidate narrowing paths are enabled by default. Keep `MASTER_CALL_LIST_SQL_ENABLED` and `MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED` unset or set to `true`; set either to `false` only as a rollback. The SQL page path requires PostgreSQL's `und-x-icu` collation and fails explicitly if it is unavailable. Verify that collation on the target database before deploying; do not change PostgreSQL's global locale or timezone to enable it.
+
 ### Nginx configuration
 
 In the existing HTTPS virtual host for `lakshmi-hyundai-crm.tech` and `www.lakshmi-hyundai-crm.tech`, change only the SPA root to the repository-owned fragment:

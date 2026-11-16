@@ -159,6 +159,7 @@ test('import allocation preloads VIN allocations once and reuses their updated s
   const allocationReads = [];
   const allocationUpdates = [];
   const masterUpdates = [];
+  const history = [];
   const transaction = {
     $queryRaw: async () => [],
     user: {
@@ -185,7 +186,7 @@ test('import allocation preloads VIN allocations once and reuses their updated s
       },
     },
     auditLog: { create: async () => ({}) },
-    creAssignmentHistory: { create: async () => ({}) },
+    creAssignmentHistory: { create: async ({ data }) => { history.push(data); return data; } },
   };
 
   const assignedCount = await allocateUnassignedMasterCallListEntries(transaction, 'ccm-1', 'admin-1');
@@ -194,6 +195,9 @@ test('import allocation preloads VIN allocations once and reuses their updated s
   assert.equal(allocationReads.filter(({ vehicle }) => vehicle?.is?.vin?.in).length, 1);
   assert.deepEqual(masterUpdates.map(({ ownerUserId }) => ownerUserId), ['cre-1', 'cre-1']);
   assert.deepEqual(allocationUpdates, [{ id: 'allocation-1', creId: 'cre-1' }]);
+  const reassignment = history.find(({ allocationId }) => allocationId === 'allocation-1');
+  assert.equal(reassignment.previousCreId, 'inactive-cre');
+  assert.equal(reassignment.newCreId, 'cre-1');
 });
 
 test('deactivation moves call-list and allocation assignments to a review queue without redistribution', async () => {

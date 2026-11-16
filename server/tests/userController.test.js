@@ -4,7 +4,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 
 process.env.DATABASE_URL ||= 'postgresql://test-only.invalid/test';
-process.env.JWT_SECRET ||= 'user-controller-test-secret';
+process.env.JWT_SECRET ||= 'user-controller-test-secret-with-at-least-32-characters';
 
 const [
   { prisma },

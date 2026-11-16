@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "test": "node --import dotenv/config --test",
+    "test": "node scripts/run-tests.js",
+    "test:snapshot": "node scripts/run-tests.js --snapshots",
     "test:integration": "node scripts/run-import-integration-tests.js",
     "prisma:push:integration": "node scripts/push-import-integration-schema.js",
     "prisma:push": "npx prisma db push",
@@ -19,8 +20,8 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@prisma/adapter-pg": "^7.10.0",
-    "@prisma/client": "^7.10.0",
+    "@prisma/adapter-pg": "^7.10.1",
+    "@prisma/client": "^7.10.1",
     "bcrypt": "^6.0.0",
     "compression": "^1.8.2",
     "cors": "^2.8.6",
@@ -31,10 +32,12 @@
     "jsonwebtoken": "^9.0.3",
     "pdfkit": "^0.20.2",
     "pg": "^8.23.1",
-    "prisma": "^7.10.0",
+    "prisma": "^7.10.1",
     "zod": "^4.6.6"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.14"
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   }
 }

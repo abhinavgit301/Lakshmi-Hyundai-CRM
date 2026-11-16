@@ -3,7 +3,10 @@ import { lockCcmAllocationTeam } from '../utils/customerAllocation.js';
 import { importChangeLogIsComplete, importRollbackCompleteness } from '../utils/importBatchStats.js';
 import { normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
 import { recordCreAssignmentEvent } from '../utils/creAssignmentHistory.js';
-import { noteCreCallEntityScopeChange } from '../utils/creCallAggregates.js';
+import { noteCreCallEntityScopeChange, noteCreOwnershipChange } from '../utils/creCallAggregates.js';
+import { invalidateSnapshotSourceWrite } from '../utils/performanceSnapshotState.js';
+import { signalSnapshotRefresh } from '../utils/performanceRefreshSignal.js';
+import { lockPhysicalVehicles, reconcilePhysicalVehicleMilestones } from '../utils/physicalVehicleMilestones.js';
 
 const entityDelegates = {
   Customer: 'customer',
@@ -129,8 +132,12 @@ async function ensureNoReferences(transaction, change) {
       where: { id: change.entityId },
       select: { physicalVehicleId: true },
     });
+    const physicalVehicleId = visit?.physicalVehicleId;
+    if (!physicalVehicleId) {
+      throw new ImportRollbackConflict('The repair order physical vehicle identity could not be verified. Its free-service dependencies cannot be checked safely.');
+    }
     const milestones = await transaction.freeServiceMilestone.findMany({
-      where: { physicalVehicleId: visit?.physicalVehicleId || change.after?.physicalVehicleId },
+      where: { physicalVehicleId },
       select: { id: true, completedByWorkshopVisitId: true, completedByRepairOrderNo: true },
     });
     const referenced = milestones.some((milestone) => (
@@ -231,6 +238,11 @@ async function reverseChange(transaction, change, actorUserId) {
   } else if (change.entityType === 'Vehicle'
     && ['ccmId', 'customerId'].some((field) => Object.hasOwn(restoredValues, field))) {
     await noteCreCallEntityScopeChange(transaction, { vehicleIds: [change.entityId] });
+  } else if (change.entityType === 'MasterCallList'
+    && Object.hasOwn(restoredValues, 'vehicleId')
+    && restoredValues.vehicleId !== record.vehicleId
+    && record.ownerUserId) {
+    noteCreOwnershipChange(transaction, { ccmId: record.ccmId, creIds: [record.ownerUserId] });
   }
   await delegate.update({
     where: { id: change.entityId },
@@ -321,7 +333,7 @@ async function validateCurrentRollbackState(transaction, changes) {
 }
 
 export async function rollbackImportBatch(importBatchId, adminId, database = prisma) {
-  return database.$transaction(async (transaction) => {
+  const result = await database.$transaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "import_batches" WHERE "id" = ${importBatchId} FOR UPDATE`;
     let batch = await transaction.importBatch.findUnique({
       where: { id: importBatchId },
@@ -337,6 +349,13 @@ export async function rollbackImportBatch(importBatchId, adminId, database = pri
       throw new ImportRollbackConflict('This import does not have complete row progress and change snapshots. Its rollback eligibility could not be verified.');
     }
 
+    const ccmIds = [...new Set(batch.changes.map(({ ccmId }) => ccmId).filter(Boolean))].sort();
+    for (const ccmId of ccmIds) await lockCcmAllocationTeam(transaction, ccmId);
+    const physicalVehicleIds = [...new Set(batch.changes
+      .filter(({ entityType }) => entityType === 'WorkshopVisit' || entityType === 'Vehicle')
+      .map((change) => change.after?.physicalVehicleId)
+      .filter(Boolean))].sort();
+    await lockPhysicalVehicles(transaction, physicalVehicleIds);
     await lockRollbackRecords(transaction, batch.changes);
     batch = await transaction.importBatch.findUnique({
       where: { id: importBatchId },
@@ -350,8 +369,21 @@ export async function rollbackImportBatch(importBatchId, adminId, database = pri
     await validateNoCrossBatchChanges(transaction, batch);
     await validateCurrentRollbackState(transaction, batch.changes);
 
-    const ccmIds = [...new Set(batch.changes.map(({ ccmId }) => ccmId).filter(Boolean))].sort();
-    for (const ccmId of ccmIds) await lockCcmAllocationTeam(transaction, ccmId);
+    const deletedVisitIds = batch.changes
+      .filter((change) => change.entityType === 'WorkshopVisit' && change.operation === 'CREATE')
+      .map(({ entityId }) => entityId);
+    const saleDateOverrides = new Map(batch.changes
+      .filter((change) => change.entityType === 'Vehicle'
+        && change.operation === 'UPDATE'
+        && Object.hasOwn(change.before || {}, 'saleDate'))
+      .map((change) => [change.entityId, change.before.saleDate == null ? null : new Date(change.before.saleDate)]));
+    if (physicalVehicleIds.length) {
+      await reconcilePhysicalVehicleMilestones(transaction, physicalVehicleIds, {
+        excludeVisitIds: deletedVisitIds,
+        saleDateOverrides,
+        createMissing: false,
+      });
+    }
 
     await transaction.importBatch.update({
       where: { id: batch.id },
@@ -391,6 +423,9 @@ export async function rollbackImportBatch(importBatchId, adminId, database = pri
         details: JSON.stringify({ changeCount: batch.changes.length }),
       },
     });
+    await invalidateSnapshotSourceWrite(transaction);
     return { batch: updatedBatch, reversedChanges };
   }, { isolationLevel: 'Serializable' });
+  signalSnapshotRefresh();
+  return result;
 }

@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { flushCreCallAggregates } from '../utils/creCallAggregates.js';
 import { signalSnapshotRefresh } from '../utils/performanceRefreshSignal.js';
+import { beginSnapshotInvalidation, flushSnapshotInvalidation } from '../utils/performanceSnapshotState.js';
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -19,16 +20,17 @@ export const prisma = new PrismaClient({
   adapter,
 });
 
-// Ownership and account writes note the CREs they affect. Flushing here re-derives their call aggregates and
-// flags their snapshots dirty inside the same transaction, so no such change can commit without them. The
-// refresh is requested only after the commit; the 60-second scheduler remains the recovery path.
+// Flush aggregate rebuilds before revision and snapshot locks, then commit source changes and invalidations
+// together. Ownership-triggered refreshes are requested after commit.
 const runTransaction = prisma.$transaction.bind(prisma);
 prisma.$transaction = async (work, ...options) => {
   if (typeof work !== 'function') return runTransaction(work, ...options);
   let changed = false;
   const result = await runTransaction(async (transaction) => {
+    beginSnapshotInvalidation(transaction);
     const output = await work(transaction);
     ({ changed } = await flushCreCallAggregates(transaction));
+    await flushSnapshotInvalidation(transaction);
     return output;
   }, ...options);
   if (changed) signalSnapshotRefresh();

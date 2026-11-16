@@ -4,6 +4,8 @@ import { createCallLog, createFollowUp } from '../src/controllers/callWorkflowCo
 import { createManualCallListEntry } from '../src/controllers/recordsController.js';
 import { prisma } from '../src/config/prisma.js';
 import { isVehicleAssignedToCre } from '../src/utils/creAccess.js';
+import { snapshotInvalidationMock } from '../test-support/snapshotInvalidationMock.js';
+import { isPerformanceAggregateMaintenanceEnabled } from '../src/utils/performanceSnapshotState.js';
 
 function mockRes() {
   return {
@@ -52,7 +54,7 @@ test('manual repair-order entry normalizes the RO and checks duplicates within t
   let duplicateLookup;
   await withPrismaMocks({
     'user.findFirst': async () => ({ ccmId: 'ccm-a' }),
-    'vehicle.findUnique': async () => ({ ccmId: 'ccm-a', registrationNumber: null }),
+    'vehicle.findFirst': async () => ({ id: 'vehicle-a', registrationNumber: null }),
     'workshopVisit.findMany': async ({ where }) => {
       duplicateLookup = where;
       return [{
@@ -143,7 +145,9 @@ test('inactive allocations do not grant CRE call access', async () => {
 test('CCM vehicle call ownership comes from the vehicle, not customer attribution or the request body', async () => {
   const customerA = makeCustomer('customer-a', 'ccm-b', [makeVehicle('vehicle-a', 'ccm-a')]);
   let createArgs;
+  const invalidation = {};
   const transaction = {
+    ...snapshotInvalidationMock(invalidation),
     callLog: { create: async (args) => { createArgs = args; return { id: 'call-1' }; } },
     followUp: { findMany: async () => [] },
   };
@@ -158,6 +162,7 @@ test('CCM vehicle call ownership comes from the vehicle, not customer attributio
     }, res);
     assert.equal(res.statusCode, 201);
     assert.equal(createArgs.data.ccmId, 'ccm-a');
+    if (isPerformanceAggregateMaintenanceEnabled()) assert.equal(invalidation.revisions['ccm:ccm-a'], 1);
   });
 });
 
@@ -166,9 +171,11 @@ test('CRE follow-up ownership comes from the assigned vehicle despite customer a
     makeVehicle('vehicle-a', 'ccm-a', [], [{ ownerUserId: 'cre-a1', ccmId: 'ccm-a' }]),
   ]);
   let createArgs;
+  const invalidation = {};
   await withPrismaMocks({
     'customer.findUnique': async () => customerA,
     'followUp.create': async (args) => { createArgs = args; return { id: 'follow-up-1' }; },
+    '$transaction': async (callback) => callback({ followUp: prisma.followUp, ...snapshotInvalidationMock(invalidation) }),
   }, async () => {
     const res = mockRes();
     await createFollowUp({
@@ -184,6 +191,7 @@ test('CRE follow-up ownership comes from the assigned vehicle despite customer a
     assert.equal(res.statusCode, 201);
     assert.equal(createArgs.data.ccmId, 'ccm-a');
     assert.equal(createArgs.data.creId, 'cre-a1');
+    if (isPerformanceAggregateMaintenanceEnabled()) assert.equal(invalidation.revisions['ccm:ccm-a'], 1);
   });
 });
 
@@ -268,6 +276,72 @@ test('paid-service history rejects new Free Service calls and follow-ups', async
     }, followUpResponse);
     assert.equal(followUpResponse.statusCode, 409);
     assert.equal(writeCount, 0);
+  });
+});
+
+test('an early Free Service prevents new calls and follow-ups for the first milestone', async () => {
+  const now = new Date();
+  const saleDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 45);
+  const visitDate = new Date(saleDate.getFullYear(), saleDate.getMonth(), saleDate.getDate() + 21);
+  const customer = makeCustomer('customer-a', 'ccm-a', [{
+    id: 'vehicle-a', ccmId: 'ccm-a', physicalVehicleId: 'physical-a', saleDate,
+    allocations: [], masterCallListEntries: [],
+  }]);
+  let writeCount = 0;
+  await withPrismaMocks({
+    'customer.findUnique': async () => customer,
+    'freeServiceMilestone.findUnique': async () => ({
+      vehicleId: 'vehicle-a', milestone: 1, dueDate: new Date(now.getFullYear(), now.getMonth() + 1, now.getDate()), status: 'pending',
+    }),
+    'workshopVisit.findMany': async () => [{ visitDate, importedDetails: { serviceType: 'Free Service' } }],
+    '$transaction': async () => { writeCount += 1; },
+    'followUp.create': async () => { writeCount += 1; },
+  }, async () => {
+    const user = { id: 'ccm-user-a', role: 'CCM', ccmId: 'ccm-a' };
+    const callResponse = mockRes();
+    await createCallLog({
+      user, body: { customerId: 'customer-a', vehicleId: 'vehicle-a', milestoneId: 'milestone-a', outcome: 'CONTACTED', callSource: 'FREE_SERVICE' },
+    }, callResponse);
+    assert.equal(callResponse.statusCode, 409);
+    const followUpResponse = mockRes();
+    await createFollowUp({
+      user, body: { customerId: 'customer-a', vehicleId: 'vehicle-a', milestoneId: 'milestone-a', source: 'FREE_SERVICE', category: 'callback', followUpAt: new Date(now.getTime() + 86400000).toISOString() },
+    }, followUpResponse);
+    assert.equal(followUpResponse.statusCode, 409);
+    assert.equal(writeCount, 0);
+  });
+});
+
+test('duplicate representations of one visit do not block the next free-service follow-up', async () => {
+  const now = new Date();
+  const saleDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 45);
+  const visitDate = new Date(saleDate.getFullYear(), saleDate.getMonth(), saleDate.getDate() + 21);
+  const customer = makeCustomer('customer-a', 'ccm-a', [{
+    id: 'vehicle-a', ccmId: 'ccm-a', physicalVehicleId: 'physical-a', saleDate,
+    allocations: [], masterCallListEntries: [],
+  }]);
+  const visit = { id: 'one-visit', visitDate, importedDetails: { workType: 'Free Service' } };
+  await withPrismaMocks({
+    'customer.findUnique': async () => customer,
+    'freeServiceMilestone.findUnique': async () => ({
+      vehicleId: 'vehicle-a', milestone: 2, dueDate: new Date(now.getFullYear() + 1, now.getMonth(), now.getDate()), status: 'pending',
+    }),
+    'workshopVisit.findMany': async ({ select }) => {
+      assert.equal(select.id, true);
+      return [visit, { ...visit }];
+    },
+    '$transaction': async () => ({ id: 'new-follow-up' }),
+  }, async () => {
+    const response = mockRes();
+    await createFollowUp({
+      user: { id: 'ccm-user-a', role: 'CCM', ccmId: 'ccm-a' },
+      body: {
+        customerId: 'customer-a', vehicleId: 'vehicle-a', milestoneId: 'milestone-b',
+        source: 'FREE_SERVICE', category: 'callback',
+        followUpAt: new Date(now.getTime() + 86400000).toISOString(),
+      },
+    }, response);
+    assert.equal(response.statusCode, 201);
   });
 });
 

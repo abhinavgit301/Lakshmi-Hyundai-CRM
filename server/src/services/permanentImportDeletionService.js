@@ -3,6 +3,10 @@ import { prisma } from '../config/prisma.js';
 import { importBatchMutationEvidenceIsComplete, importChangeLogIsComplete, importRollbackCompleteness } from '../utils/importBatchStats.js';
 import { normalizeRepairOrderNo } from '../utils/repairOrderIdentity.js';
 import { noteCreCallEntityScopeChange, noteCreOwnershipChange } from '../utils/creCallAggregates.js';
+import { invalidateSnapshotSourceWrite } from '../utils/performanceSnapshotState.js';
+import { signalSnapshotRefresh } from '../utils/performanceRefreshSignal.js';
+import { lockCcmAllocationTeams } from '../utils/customerAllocation.js';
+import { lockPhysicalVehicles, reconcilePhysicalVehicleMilestones } from '../utils/physicalVehicleMilestones.js';
 
 const DELETION_MARKER = 'permanently_deleted';
 const PERMANENT_DELETION_TRANSACTION_TIMEOUT_MS = 90_000;
@@ -431,6 +435,12 @@ async function findDependencies(transaction, targetBatch, targetCreatedRecords, 
     dependencyLogsByEntity.set(key, entries);
   }
   for (const finding of findings) {
+    if (finding.childType === 'FreeServiceMilestone'
+      && scheduledDeletes.get('WorkshopVisit')?.has(finding.parentId)) {
+      finding.disposition = 'recalculated_after_service_removal';
+      finding.blocked = false;
+      continue;
+    }
     if (scheduledDeletes.get(finding.childType)?.has(finding.childId)) {
       finding.disposition = 'deleted_with_target_import';
       finding.blocked = false;
@@ -1103,7 +1113,7 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
   if (!confirmationToken) {
     throw new PermanentImportDeletionConflict('Refresh the permanent-deletion preview and confirm again.');
   }
-  return database.$transaction(async (transaction) => {
+  const result = await database.$transaction(async (transaction) => {
     let plan = await loadDeletionPlan(transaction, importBatchId);
     if (plan.alreadyDeleted) return { status: DELETION_MARKER, alreadyDeleted: true, summary: emptySummary() };
     if (plan.blockers.length) {
@@ -1111,6 +1121,18 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
     }
 
     await lockPlanBatches(transaction, plan);
+    const visitIds = plan.deletionRecords
+      .filter(({ entityType }) => entityType === 'WorkshopVisit')
+      .map(({ entityId }) => entityId);
+    const visitIdentities = visitIds.length
+      ? await transaction.workshopVisit.findMany({
+        where: { id: { in: visitIds } },
+        select: { id: true, physicalVehicleId: true, ccmId: true },
+      })
+      : [];
+    await lockCcmAllocationTeams(transaction, visitIdentities.map(({ ccmId }) => ccmId));
+    const physicalVehicleIds = [...new Set(visitIdentities.map(({ physicalVehicleId }) => physicalVehicleId))].sort();
+    await lockPhysicalVehicles(transaction, physicalVehicleIds);
     await lockPlanRecords(transaction, plan);
     plan = await loadDeletionPlan(transaction, importBatchId);
     if (plan.blockers.length) {
@@ -1118,6 +1140,12 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
     }
     if (buildPlanToken(plan) !== confirmationToken) {
       throw new PermanentImportDeletionConflict('The deletion plan changed after preview. Refresh the preview and review it again.');
+    }
+    if (physicalVehicleIds.length) {
+      await reconcilePhysicalVehicleMilestones(transaction, physicalVehicleIds, {
+        excludeVisitIds: visitIds,
+        createMissing: false,
+      });
     }
 
     const restorationSteps = plan.restoreRecords.flatMap((restore) => restore.restorationSteps.map((step) => ({
@@ -1167,7 +1195,7 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
         } else if (entityType === 'Allocation' || entityType === 'MasterCallList') {
           const records = await transaction[delegate].findMany({
             where: { id: { in: chunk } },
-            select: { creId: true, ownerUserId: true },
+            select: entityType === 'Allocation' ? { creId: true } : { ownerUserId: true },
           });
           noteCreOwnershipChange(transaction, {
             creIds: records.map((record) => record.creId || record.ownerUserId),
@@ -1227,6 +1255,7 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
         }),
       },
     });
+    await invalidateSnapshotSourceWrite(transaction);
     return {
       status: updatedBatch.status,
       alreadyDeleted: false,
@@ -1236,4 +1265,6 @@ export async function permanentlyDeleteImportBatch(importBatchId, adminId, confi
     isolationLevel: 'Serializable',
     timeout: PERMANENT_DELETION_TRANSACTION_TIMEOUT_MS,
   });
+  if (!result.alreadyDeleted) signalSnapshotRefresh();
+  return result;
 }

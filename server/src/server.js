@@ -5,6 +5,7 @@ import { repairFreeServiceCreAssignments } from './utils/customerAllocation.js';
 import { prisma } from './config/prisma.js';
 import { assertProcessMatchesWorkshopTimezone } from './utils/workshopTime.js';
 import { startPerformanceSnapshotScheduler } from './services/performanceSnapshotService.js';
+import { assertSecurityConfiguration } from './middleware/securityMiddleware.js';
 
 const port = Number(process.env.PORT || 4000);
 
@@ -21,6 +22,8 @@ function isStartupRepairsEnabled(env = process.env) {
 }
 
 async function startServer() {
+  assertSecurityConfiguration();
+
   // Must run before listening and before any date-sensitive startup work.
   const timezone = assertProcessMatchesWorkshopTimezone();
   console.log(`Workshop timezone: configured=${timezone.configured} process=${timezone.effective} (canonical ${timezone.canonical})`);

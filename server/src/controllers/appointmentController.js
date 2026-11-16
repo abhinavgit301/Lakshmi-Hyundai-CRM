@@ -4,6 +4,8 @@ import { scopeCacheInvalidation } from '../utils/callListCache.js';
 import { validateAppointmentPayload, validateAppointmentUpdate } from '../utils/appointmentRules.js';
 import { isVehicleAssignedToCre } from '../utils/creAccess.js';
 import { isServiceContactStatusEnabled, saveServiceContactStatus } from '../utils/serviceContactStatus.js';
+import { invalidateSnapshotSourceWrite } from '../utils/performanceSnapshotState.js';
+import { signalSnapshotRefresh } from '../utils/performanceRefreshSignal.js';
 
 async function findBookableCustomer(customerId, user, vehicleId = null) {
   const customer = await prisma.customer.findUnique({
@@ -139,6 +141,7 @@ export async function createAppointment(req, res) {
       if (trackService) {
         await saveServiceContactStatus(transaction, { vehicleId, ccmId, user: req.user, status: 'appointment' });
       }
+      await invalidateSnapshotSourceWrite(transaction, { ccmIds: [ccmId] });
       return appointment;
     });
   } catch (error) {
@@ -157,6 +160,7 @@ export async function createAppointment(req, res) {
     if (!result) throw error;
   }
 
+  signalSnapshotRefresh();
   scopeCacheInvalidation(res, { ccmIds: [ccmId] });
   return res.status(201).json({ appointment: result });
 }
@@ -185,8 +189,10 @@ export async function deleteAppointment(req, res) {
         },
       });
     }
+    await invalidateSnapshotSourceWrite(transaction, { ccmIds: [existing.ccmId] });
   });
 
+  signalSnapshotRefresh();
   scopeCacheInvalidation(res, { ccmIds: [existing.ccmId] });
   return res.json({ id: existing.id });
 }
@@ -227,9 +233,11 @@ export async function updateAppointment(req, res) {
         data: events.map((event) => ({ ...event, appointmentId: existing.id })),
       });
     }
+    await invalidateSnapshotSourceWrite(transaction, { ccmIds: [existing.ccmId] });
     return updated;
   });
 
+  signalSnapshotRefresh();
   scopeCacheInvalidation(res, { ccmIds: [existing.ccmId] });
   return res.json({ appointment });
 }

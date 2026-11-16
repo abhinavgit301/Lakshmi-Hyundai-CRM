@@ -1,10 +1,12 @@
 import compression from 'compression';
 import express from 'express';
 import apiRoutes from './routes/api.js';
+import { createSecurityMiddleware, getAllowedOrigins } from './middleware/securityMiddleware.js';
 import { callListCacheMiddleware } from './utils/callListCache.js';
 import { performanceDirtyMiddleware } from './utils/performanceDirty.js';
 
 const app = express();
+const securityMiddleware = createSecurityMiddleware(getAllowedOrigins());
 
 app.use(compression());
 app.use(callListCacheMiddleware);
@@ -25,21 +27,10 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use(securityMiddleware);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Idempotency-Key');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-
-  return next();
-});
 
 app.use('/api/v1', apiRoutes);
 

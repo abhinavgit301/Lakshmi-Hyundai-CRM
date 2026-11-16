@@ -43,7 +43,7 @@ Lakshmi Hyundai CRM is an internal customer and workshop management application 
 
 ### Service workflows
 
-Dedicated lists support One-Year Due, Six-Month Due, Free Service, Warranty, and follow-up work. Free Service milestones are based on the configured service calendar and grace period. A qualifying free-service visit during the grace period completes the milestone and reduces the remaining count. Workshop service history is retained; expired milestones do not delete history.
+Dedicated lists support One-Year Due, Six-Month Due, Free Service, Warranty, and follow-up work. Dated Free Service visits on or after the sale date are considered chronologically. Each visit completes the earliest uncompleted milestone that has not expired on the visit date, including an early visit; expiry day is inclusive. Distinct visits from different CCMs count separately, and expired milestones no longer count as remaining. Only visible, non-future history is used, and expired milestones do not delete history.
 
 ### Calls, follow-ups, and appointments
 
@@ -159,6 +159,8 @@ Optional performance configuration:
 | `REPORT_CACHE_TTL_SECONDS` | `60` | Short-lived workshop report cache duration; `0` disables the cache. |
 | `DB_POOL_MAX` | Driver default | Optional PostgreSQL pool maximum. Check the database connection limit before increasing it. |
 | `CUSTOMERS_MEMORY_LOG` | Off | Enables memory/count diagnostics without logging customer personal data. |
+| `MASTER_CALL_LIST_SQL_ENABLED` | Enabled | Selects the Master Call List page in SQL before loading record details. Set to `false` or `0` to use the legacy loader. |
+| `MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED` | Enabled | Narrows due-list candidates before applying the existing lifecycle rules. Set to `false` or `0` to use the legacy loader. |
 | `SERVICE_CONTACT_STATUS_ENABLED` | `false` | Enables cohort-specific statuses and ordering for regular-service due lists. Apply the service contact status migration before deploying this schema, even when disabled; see the deployment guide. |
 
 The client variable `VITE_API_BASE_URL` is used at build time. After changing hosting environment variables, restart or redeploy the relevant service.
@@ -183,6 +185,7 @@ Authentication uses JWT. Route middleware and controllers enforce role permissio
 ## Performance and data safeguards
 
 - Customer lists use slim responses and pagination; full profiles load separately.
+- Master Call List pages use SQL selection before loading details, and due-category searches narrow candidate records before applying the existing lifecycle rules.
 - Large Master Call List report reads are paged to stay below Prisma/database parameter limits.
 - Workshop report responses use a short-lived cache and share concurrent identical requests.
 - Large tables use pagination or virtualization.

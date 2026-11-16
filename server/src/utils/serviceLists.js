@@ -2,7 +2,7 @@ import { prisma } from '../config/prisma.js';
 import { addMonths } from './serviceDue.js';
 import {
   FREE_SERVICE_MILESTONES,
-  findCompletingVisit,
+  freeServiceVisitsByMilestone,
   findMissedCases,
   freeServiceDueDate,
   getServiceLifecycle,
@@ -12,6 +12,9 @@ import {
 import { getWorkshopTimezone } from './workshopTime.js';
 import { normalizeRepairOrderNo } from './repairOrderIdentity.js';
 import { workshopVisitVisibilityWhere } from './creAccess.js';
+import { invalidateSnapshotSourceWrite, isPerformanceAggregateMaintenanceEnabled } from './performanceSnapshotState.js';
+import { signalSnapshotRefresh } from './performanceRefreshSignal.js';
+import { reconcilePhysicalVehicleMilestones } from './physicalVehicleMilestones.js';
 
 export async function excludeIneligibleFreeServiceFollowUps(where, user, db = prisma) {
   const sourceFilter = where.source;
@@ -35,7 +38,7 @@ export async function excludeIneligibleFreeServiceFollowUps(where, user, db = pr
         physicalVehicleId: { in: physicalVehicleIds },
         ...workshopVisitVisibilityWhere(user),
       },
-      select: { physicalVehicleId: true, visitDate: true, importedDetails: true },
+      select: { id: true, physicalVehicleId: true, visitDate: true, importedDetails: true },
     })
     : [];
   const visitsByPhysicalVehicle = new Map();
@@ -50,9 +53,7 @@ export async function excludeIneligibleFreeServiceFollowUps(where, user, db = pr
     const vehicleVisits = visitsByPhysicalVehicle.get(vehicle.physicalVehicleId) || [];
     const lifecycle = getServiceLifecycle({ saleDate: vehicle.saleDate, workshopVisits: vehicleVisits });
     if (lifecycle.phase !== 'free') return true;
-    return Boolean(milestone && (milestone.status === 'completed'
-      || lifecycle.completedMilestones.includes(milestone.milestone)
-      || findCompletingVisit(milestone.dueDate, vehicleVisits, new Date())));
+    return Boolean(milestone && lifecycle.completedMilestones.includes(milestone.milestone));
   }).map(({ id }) => id);
   if (!ineligibleIds.length) return where;
 
@@ -63,10 +64,27 @@ export async function excludeIneligibleFreeServiceFollowUps(where, user, db = pr
 }
 
 export function filterMilestoneCompletionByVisits(milestones, records) {
-  const visitsByVehicle = new Map(records.map((record) => [record.vehicleId, record.workshopVisits || []]));
+  const recordsByVehicle = new Map(records.map((record) => [record.vehicleId, record]));
   return milestones.map((milestone) => {
+    const record = recordsByVehicle.get(milestone.vehicleId);
+    if (record?.saleDate) {
+      const visit = freeServiceVisitsByMilestone(record.saleDate, record.workshopVisits).get(milestone.milestone);
+      return visit ? {
+        ...milestone,
+        status: 'completed',
+        completedAt: visit.visitDate,
+        completedByRepairOrderNo: visit.repairOrderNo,
+        completedByWorkshopVisitId: visit.id,
+      } : {
+        ...milestone,
+        status: 'pending',
+        completedAt: null,
+        completedByRepairOrderNo: null,
+        completedByWorkshopVisitId: null,
+      };
+    }
     if (milestone.status !== 'completed') return milestone;
-    const visits = visitsByVehicle.get(milestone.vehicleId) || [];
+    const visits = record?.workshopVisits || [];
     const completingVisitIsVisible = milestone.completedByWorkshopVisitId
       ? visits.some((visit) => visit.id === milestone.completedByWorkshopVisitId)
       : visits.filter((visit) => normalizeRepairOrderNo(visit.repairOrderNo)
@@ -88,6 +106,37 @@ export function filterMilestoneCompletionByVisits(milestones, records) {
 export async function syncFreeServiceMilestones(vehicles, db = prisma) {
   const usable = vehicles.filter((vehicle) => vehicle.saleDate);
   if (!usable.length) return [];
+  if (db.$transaction && db.$queryRawUnsafe) {
+    const physicalVehicleIds = [...new Set(usable.map(({ physicalVehicleId }) => physicalVehicleId))];
+    if (physicalVehicleIds.some((id) => !id)) {
+      throw new Error('Cannot synchronize Free Service milestones without physical vehicle identities.');
+    }
+    const result = await db.$transaction((transaction) => reconcilePhysicalVehicleMilestones(transaction, physicalVehicleIds));
+    if (result.changed && isPerformanceAggregateMaintenanceEnabled()) signalSnapshotRefresh();
+    return db.freeServiceMilestone.findMany({
+      where: { vehicleId: { in: usable.map(({ id }) => id) } },
+      orderBy: [{ dueDate: 'asc' }],
+    });
+  }
+  if (!isPerformanceAggregateMaintenanceEnabled()) {
+    return (await syncMilestones(usable, db, { parallelUpdates: true })).milestones;
+  }
+  for (let offset = 0; offset < usable.length; offset += 100) {
+    const batch = usable.slice(offset, offset + 100);
+    const result = await db.$transaction(async (transaction) => {
+      const synced = await syncMilestones(batch, transaction);
+      if (synced.changed) await invalidateSnapshotSourceWrite(transaction);
+      return synced;
+    });
+    if (result.changed) signalSnapshotRefresh();
+  }
+  return db.freeServiceMilestone.findMany({
+    where: { vehicleId: { in: usable.map((vehicle) => vehicle.id) } },
+    orderBy: [{ dueDate: 'asc' }],
+  });
+}
+
+async function syncMilestones(usable, db, { parallelUpdates = false } = {}) {
   const asOf = new Date();
 
   const existing = await db.freeServiceMilestone.findMany({ where: { vehicleId: { in: usable.map((vehicle) => vehicle.id) } } });
@@ -96,11 +145,12 @@ export async function syncFreeServiceMilestones(vehicles, db = prisma) {
   const missing = [];
   const updates = [];
   for (const vehicle of usable) {
+    const completingVisits = freeServiceVisitsByMilestone(vehicle.saleDate, vehicle.workshopVisits, asOf);
     for (const { milestone } of FREE_SERVICE_MILESTONES) {
       const dueDate = freeServiceDueDate(vehicle.saleDate, milestone);
       const current = byKey.get(`${vehicle.id}:${milestone}`);
       if (!current) {
-        const visit = findCompletingVisit(dueDate, vehicle.workshopVisits, asOf);
+        const visit = completingVisits.get(milestone);
         missing.push({
           vehicleId: vehicle.id,
           physicalVehicleId: vehicle.physicalVehicleId,
@@ -117,10 +167,10 @@ export async function syncFreeServiceMilestones(vehicles, db = prisma) {
         continue;
       }
       if (current.status === 'completed') continue;
-      const visit = findCompletingVisit(current.dueDate, vehicle.workshopVisits, asOf);
+      const visit = completingVisits.get(milestone);
       if (visit) {
-        updates.push(db.freeServiceMilestone.update({
-          where: { id: current.id },
+        updates.push({
+          where: { id: current.id, status: current.status },
           data: {
             status: 'completed',
             completedAt: new Date(visit.visitDate),
@@ -128,17 +178,26 @@ export async function syncFreeServiceMilestones(vehicles, db = prisma) {
             completedByWorkshopVisitId: visit.id,
             physicalVehicleId: vehicle.physicalVehicleId,
           },
-        }));
+        });
       }
     }
   }
 
-  if (missing.length) await db.freeServiceMilestone.createMany({ data: missing, skipDuplicates: true });
-  if (updates.length) await Promise.all(updates);
-  return db.freeServiceMilestone.findMany({
+  const created = missing.length ? await db.freeServiceMilestone.createMany({ data: missing, skipDuplicates: true }) : { count: 0 };
+  let updated = 0;
+  if (parallelUpdates) {
+    for (let offset = 0; offset < updates.length; offset += 20) {
+      const results = await Promise.all(updates.slice(offset, offset + 20).map((update) => db.freeServiceMilestone.updateMany(update)));
+      updated += results.reduce((sum, result) => sum + result.count, 0);
+    }
+  } else {
+    for (const update of updates) updated += (await db.freeServiceMilestone.updateMany(update)).count;
+  }
+  const milestones = await db.freeServiceMilestone.findMany({
     where: { vehicleId: { in: usable.map((vehicle) => vehicle.id) } },
     orderBy: [{ dueDate: 'asc' }],
   });
+  return { milestones, changed: created.count > 0 || updated > 0 };
 }
 
 // Missed-warranty cases whose warranty expired during the given calendar month: one per vehicle, with no
@@ -151,6 +210,7 @@ export async function findMissedWarrantyCases({
   month,
   now = new Date(),
   timeZone = getWorkshopTimezone(),
+  db = prisma,
 }) {
   const monthStart = new Date(year, month - 1, 1);
   const monthEnd = new Date(year, month, 1);
@@ -158,7 +218,7 @@ export async function findMissedWarrantyCases({
   const saleFrom = new Date(addMonths(monthStart, -36).getTime() - 86400000);
   const saleTo = new Date(addMonths(monthEnd, -36).getTime() + 86400000);
 
-  const vehicles = await prisma.vehicle.findMany({
+  const vehicles = await db.vehicle.findMany({
     where: {
       ...vehicleScope,
       saleDate: { gte: saleFrom, lt: saleTo },
@@ -174,7 +234,7 @@ export async function findMissedWarrantyCases({
     .filter((entry) => entry.expiryDate >= monthStart && entry.expiryDate < monthEnd);
   if (!dated.length) return [];
 
-  const calls = await prisma.callLog.findMany({
+  const calls = await db.callLog.findMany({
     where: { ...callScope, vehicleId: { in: dated.map((entry) => entry.vehicle.id) }, callSource: 'WARRANTY' },
     select: { vehicleId: true, outcome: true, createdAt: true, callSource: true },
   });

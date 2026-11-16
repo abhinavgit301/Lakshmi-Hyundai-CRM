@@ -7,11 +7,12 @@ import {
   noteCreDeleted,
   noteCreOwnershipChange,
 } from '../src/utils/creCallAggregates.js';
-import { markCreSnapshotsDirty } from '../src/utils/performanceSnapshotState.js';
+import { beginSnapshotInvalidation, flushSnapshotInvalidation, invalidateSnapshotSourceWrite, markCreSnapshotsDirty } from '../src/utils/performanceSnapshotState.js';
 import {
   findSnapshotsDueForRefresh,
   refreshDueSnapshots,
   refreshSnapshot,
+  requestSnapshotRefresh,
   tick,
 } from '../src/services/performanceSnapshotService.js';
 
@@ -41,6 +42,7 @@ function matches(row, where) {
     if ('not' in condition) return value !== condition.not;
     if ('lt' in condition) return value != null && value < condition.lt;
     if ('lte' in condition) return value != null && value <= condition.lte;
+    if ('gte' in condition) return value != null && value >= condition.gte;
     throw new Error(`unsupported condition ${JSON.stringify(condition)}`);
   });
 }
@@ -48,7 +50,7 @@ function matches(row, where) {
 // Minimal in-memory stand-in for the snapshot table and the user lookup used by the refresh service.
 function fakeDb({ users = [], rows = [] } = {}) {
   const table = rows.map((row) => ({
-    status: 'pending', failureCount: 0, dirtySince: null, computedAt: null, refreshStartedAt: null, lastAttemptAt: null, lastError: null, ...row,
+    status: 'pending', failureCount: 0, dirtySince: null, dirtyVersion: 0n, claimToken: null, computedAt: null, refreshStartedAt: null, lastAttemptAt: null, lastError: null, ...row,
   }));
   const calls = [];
   const snapshots = {
@@ -57,7 +59,7 @@ function fakeDb({ users = [], rows = [] } = {}) {
       for (const entry of data) {
         const exists = table.some((row) => ['creId', 'ccmId', 'year', 'month', 'viewer'].every((field) => row[field] === entry[field]));
         if (!exists) {
-          table.push({ status: 'pending', failureCount: 0, dirtySince: null, computedAt: null, refreshStartedAt: null, lastAttemptAt: null, lastError: null, ...entry });
+          table.push({ status: 'pending', failureCount: 0, dirtySince: null, dirtyVersion: 0n, claimToken: null, computedAt: null, refreshStartedAt: null, lastAttemptAt: null, lastError: null, ...entry });
           count += 1;
         }
       }
@@ -66,7 +68,13 @@ function fakeDb({ users = [], rows = [] } = {}) {
     updateMany: async ({ where, data }) => {
       calls.push({ op: 'updateMany', where, data });
       const hit = table.filter((row) => matches(row, where));
-      hit.forEach((row) => Object.assign(row, data));
+      hit.forEach((row) => {
+        for (const [field, value] of Object.entries(data)) {
+          row[field] = value && typeof value === 'object' && 'increment' in value
+            ? row[field] + (typeof row[field] === 'bigint' ? BigInt(value.increment) : value.increment)
+            : value;
+        }
+      });
       return { count: hit.length };
     },
     deleteMany: async ({ where }) => {
@@ -82,15 +90,25 @@ function fakeDb({ users = [], rows = [] } = {}) {
     },
     findMany: async ({ where, take }) => table.filter((row) => matches(row, where)).slice(0, take),
   };
-  return {
+  const revisions = new Map([['global', 0n]]);
+  const db = {
     table,
     calls,
     crePerformanceSnapshot: snapshots,
+    performanceSnapshotRevision: {
+      createMany: async ({ data }) => { for (const entry of data) if (!revisions.has(entry.scope)) revisions.set(entry.scope, 0n); },
+      findMany: async ({ where }) => where.scope.in.filter((scope) => revisions.has(scope)).map((scope) => ({ scope, revision: revisions.get(scope) })),
+    },
+    $queryRaw: async (_query, scope) => ['global', scope].filter((key) => revisions.has(key)).map((key) => ({ scope: key, revision: revisions.get(key) })),
     user: {
       findFirst: async ({ where }) => users.find((user) => user.id === where.id) ?? null,
       findMany: async () => [],
     },
+    revisions,
+    $executeRaw: async () => 0,
   };
+  db.$transaction = async (work) => work(db);
+  return db;
 }
 
 const KEY = { creId: 'cre-1', ccmId: 'ccm-a', year: 2026, month: 11, viewer: 'CRE' };
@@ -101,6 +119,108 @@ const METRICS = {
 };
 const NOW = new Date('2026-11-06T06:00:00Z');
 
+test('requested snapshots are durable and share the scheduler concurrency limit', async () => {
+  const db = fakeDb();
+  let signals = 0;
+  const signal = () => { signals += 1; };
+  const keys = Array.from({ length: 5 }, (_, i) => ({ ...KEY, creId: `request-${i}` }));
+  await Promise.all([...keys, keys[0]].map((key) => requestSnapshotRefresh(key, { db, signal })));
+  assert.equal(db.table.length, 5);
+  assert.equal(signals, 5);
+
+  let active = 0;
+  let maximum = 0;
+  const started = [];
+  const releases = [];
+  const refresh = async (row) => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    started.push(row.creId);
+    row.status = 'refreshing';
+    await new Promise((resolve) => releases.push(resolve));
+    row.status = 'ok';
+    active -= 1;
+    return { refreshed: true };
+  };
+  const batch = tick({ refresh: () => refreshDueSnapshots({ now: NOW, db, refresh }) });
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  await flush();
+  assert.equal(active, 2);
+  const later = { ...KEY, creId: 'later-request' };
+  await requestSnapshotRefresh(later, { db, signal });
+  await tick({ refresh: () => refreshDueSnapshots({ now: NOW, db, refresh }) });
+  assert.equal(active, 2);
+  for (let i = 0; i < keys.length; i += 1) {
+    releases.shift()();
+    await flush();
+  }
+  await batch;
+  assert.equal(maximum, 2);
+  assert.equal(new Set(started).size, 5);
+  assert.equal(db.table.find((row) => row.creId === later.creId).status, 'pending');
+
+  const next = tick({ refresh: () => refreshDueSnapshots({ now: NOW, db, refresh }) });
+  await flush();
+  assert.equal(started.at(-1), later.creId);
+  releases.shift()();
+  await next;
+});
+
+test('snapshot request logs persistence failures and does not signal success', async (t) => {
+  const log = t.mock.method(console, 'error', () => {});
+  let signalled = false;
+  const result = await requestSnapshotRefresh(KEY, {
+    db: { crePerformanceSnapshot: { createMany: async () => { throw new Error('database unavailable'); } } },
+    signal: () => { signalled = true; },
+  });
+  assert.equal(result, false);
+  assert.equal(signalled, false);
+  assert.match(log.mock.calls[0].arguments[1].message, /database unavailable/);
+});
+
+test('dirty marking survives a refresh finishing between its updates', async () => {
+  const db = fakeDb({ rows: [{ ...KEY, status: 'refreshing', callsThisMonth: 7 }] });
+  const update = db.crePerformanceSnapshot.updateMany;
+  let first = true;
+  db.crePerformanceSnapshot.updateMany = async (args) => {
+    const result = await update(args);
+    if (first) {
+      first = false;
+      db.table[0].status = 'ok';
+    }
+    return result;
+  };
+  await markCreSnapshotsDirty(db, { creIds: [KEY.creId], now: NOW });
+  assert.equal(db.table[0].status, 'dirty');
+  assert.equal(db.table[0].dirtyVersion, 1n);
+});
+
+test('a replaced worker cannot delete a snapshot after a missing-user lookup', async () => {
+  const db = fakeDb({ users: [USER] });
+  let release;
+  let entered;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const started = new Promise((resolve) => { entered = resolve; });
+  let calls = 0;
+  db.user.findFirst = async () => {
+    if (++calls === 1) {
+      entered();
+      await blocked;
+      return null;
+    }
+    return USER;
+  };
+  const older = refreshSnapshot(KEY, { db, now: NOW, compute: async () => METRICS });
+  await started;
+  const newer = await refreshSnapshot(KEY, { db, now: new Date(NOW.getTime() + 11 * 60000), compute: async () => METRICS });
+  release();
+  assert.equal(newer.refreshed, true);
+  assert.deepEqual(await older, { refreshed: false, reason: 'superseded' });
+  assert.equal(db.table.length, 1);
+  assert.equal(db.table[0].callsThisMonth, 12);
+  assert.equal(db.table[0].status, 'ok');
+});
+
 // A transaction stand-in that records every statement, so tests can prove where the work was done.
 function fakeTransaction() {
   const log = [];
@@ -109,6 +229,10 @@ function fakeTransaction() {
     log,
     snapshotCalls,
     $executeRaw: async () => { log.push('lock'); return 1; },
+    performanceSnapshotRevision: {
+      update: async () => { log.push('revision:global'); },
+      upsert: async ({ where }) => { log.push(`revision:${where.scope}`); },
+    },
     creCallDaily: {
       deleteMany: async ({ where }) => { log.push(`daily.deleteMany:${where.userId}`); return { count: 0 }; },
       createMany: async () => ({ count: 0 }),
@@ -138,7 +262,8 @@ test('enabling Free Service for a CRE flags every month of that CRE inside the s
   assert.deepEqual(result.creIds, ['cre-1']);
   assert.equal(result.changed, true);
   const [mark] = dirtyMarks(transaction);
-  assert.deepEqual(mark.where.creId, { in: ['cre-1'] });
+  assert.deepEqual(mark.where.ccmId, { in: ['ccm-a'] });
+  assert.ok(transaction.log.includes('revision:ccm:ccm-a'));
   assert.equal('year' in mark.where, false, 'permission changes must flag historical months as well');
 });
 
@@ -183,6 +308,45 @@ test('a CCM transfer removes the old CCM snapshots and keeps the new ones for th
   await flushCreCallAggregates(transaction);
   const removal = transaction.snapshotCalls.find((call) => call.op === 'deleteMany');
   assert.deepEqual(removal.where, { creId: 'cre-4', ccmId: { in: ['ccm-a'] } });
+  assert.deepEqual(transaction.log.filter((entry) => entry.startsWith('revision:')), ['revision:ccm:ccm-a', 'revision:ccm:ccm-b']);
+  assert.deepEqual(dirtyMarks(transaction)[0].where.ccmId, { in: ['ccm-a', 'ccm-b'] });
+});
+
+test('a transaction does not reacquire a previously invalidated CCM during assignment flush', async (t) => {
+  withMaintenance(t);
+  const transaction = fakeTransaction();
+  await invalidateSnapshotSourceWrite(transaction, { ccmIds: ['ccm-a'] });
+  noteCreOwnershipChange(transaction, { ccmId: 'ccm-a', creIds: ['cre-1'] });
+  await flushCreCallAggregates(transaction);
+  assert.deepEqual(transaction.log.filter((entry) => entry.startsWith('revision:')), ['revision:ccm:ccm-a']);
+  assert.equal(dirtyMarks(transaction).length, 1);
+});
+
+test('deferred invalidation coalesces scopes after aggregate work in deterministic order', async (t) => {
+  withMaintenance(t);
+  const transaction = fakeTransaction();
+  beginSnapshotInvalidation(transaction);
+  await invalidateSnapshotSourceWrite(transaction, { ccmIds: ['ccm-b'] });
+  await invalidateSnapshotSourceWrite(transaction, { ccmIds: ['ccm-a'] });
+  noteCreOwnershipChange(transaction, { ccmId: 'ccm-b', creIds: ['cre-1'] });
+  assert.equal(transaction.log.length, 0);
+  await flushCreCallAggregates(transaction);
+  assert.deepEqual(transaction.log.filter((entry) => entry.startsWith('revision:')), ['revision:ccm:ccm-a', 'revision:ccm:ccm-b']);
+  assert.ok(transaction.log.indexOf('daily.deleteMany:cre-1') < transaction.log.indexOf('revision:ccm:ccm-a'));
+  assert.equal(dirtyMarks(transaction).length, 1);
+  assert.equal(await flushSnapshotInvalidation(transaction), false);
+});
+
+test('unknown deferred scope supersedes scoped revisions with global invalidation', async (t) => {
+  withMaintenance(t);
+  const transaction = fakeTransaction();
+  beginSnapshotInvalidation(transaction);
+  await invalidateSnapshotSourceWrite(transaction, { ccmIds: ['ccm-b'] });
+  await invalidateSnapshotSourceWrite(transaction);
+  await invalidateSnapshotSourceWrite(transaction, { ccmIds: ['ccm-a'] });
+  await flushSnapshotInvalidation(transaction);
+  assert.deepEqual(transaction.log, ['revision:global']);
+  assert.equal('ccmId' in dirtyMarks(transaction)[0].where, false);
 });
 
 test('unrelated user edits and non-CRE accounts never touch snapshots', async (t) => {
@@ -218,12 +382,13 @@ test('ownership changes rebuild counters and flag snapshots on the same transact
   assert.equal((await flushCreCallAggregates(transaction)).changed, false);
 });
 
-test('a deleted CRE has its counters cleared and its snapshots removed, not flagged', async (t) => {
+test('a deleted CRE has its counters cleared and its snapshots removed after invalidation', async (t) => {
   withMaintenance(t);
   const transaction = fakeTransaction();
   noteCreDeleted(transaction, { creId: 'cre-gone' });
   await flushCreCallAggregates(transaction);
-  assert.equal(dirtyMarks(transaction).length, 0);
+  assert.equal(dirtyMarks(transaction).length, 1);
+  assert.ok(transaction.log.includes('revision:global'));
   assert.deepEqual(transaction.snapshotCalls.find((call) => call.op === 'deleteMany').where, { creId: { in: ['cre-gone'] } });
   assert.ok(transaction.log.includes('daily.deleteMany:cre-gone'));
 });
@@ -235,11 +400,37 @@ test('a change committed while a refresh is calculating keeps the snapshot dirty
     return METRICS;
   };
   const result = await refreshSnapshot(KEY, { now: NOW, db, compute });
-  assert.equal(result.refreshed, true);
+  assert.deepEqual(result, { refreshed: false, reason: 'dirty' });
   const [row] = db.table;
   assert.equal(row.status, 'dirty');
   assert.ok(row.dirtySince, 'dirtySince must survive the refresh');
-  assert.equal(row.callsThisMonth, 12, 'the newly computed values are stored, but the row is not reported as clean');
+  assert.equal(row.callsThisMonth, undefined, 'last good values must not be replaced');
+});
+
+test('a consistent-read transaction failure preserves last-good metrics', async (t) => {
+  const previous = process.env.PERFORMANCE_SNAPSHOT_CONSISTENT_READS_ENABLED;
+  process.env.PERFORMANCE_SNAPSHOT_CONSISTENT_READS_ENABLED = 'true';
+  t.after(() => {
+    if (previous === undefined) delete process.env.PERFORMANCE_SNAPSHOT_CONSISTENT_READS_ENABLED;
+    else process.env.PERFORMANCE_SNAPSHOT_CONSISTENT_READS_ENABLED = previous;
+  });
+  const db = fakeDb({ users: [USER], rows: [{ ...KEY, status: 'ok', callsThisMonth: 7, computedAt: NOW }] });
+  db.$transaction = async (work, options) => {
+    if (options) {
+      assert.equal(options.isolationLevel, 'RepeatableRead');
+      assert.equal(options.timeout, 60000);
+      assert.equal(options.maxWait, 2000);
+      throw new Error('transaction timed out');
+    }
+    return work(db);
+  };
+  const log = t.mock.method(console, 'error', () => {});
+  const result = await refreshSnapshot(KEY, { now: NOW, db, compute: async () => METRICS });
+  assert.equal(result.reason, 'failed');
+  assert.equal(db.table[0].status, 'failed');
+  assert.equal(db.table[0].callsThisMonth, 7);
+  assert.match(db.table[0].lastError, /timed out/);
+  assert.equal(log.mock.callCount(), 1);
 });
 
 test('a change made before the refresh started is cleared by it', async () => {
@@ -276,6 +467,25 @@ test('repeated failures increase the failure count and respect the backoff befor
   assert.equal(tooSoon.length, 0, 'inside the backoff window the failed row is not retried');
   const later = await findSnapshotsDueForRefresh({ now: new Date(NOW.getTime() + 10 * 60 * 1000), db });
   assert.equal(later.length, 1);
+});
+
+test('scheduler selects pending work despite a large failed backlog and honors exact retry boundaries', async () => {
+  const rows = Array.from({ length: 70 }, (_, i) => ({
+    ...KEY, creId: `failed-${i}`, status: 'failed', failureCount: 1, lastAttemptAt: NOW,
+  }));
+  rows.push({ ...KEY, creId: 'pending', status: 'pending' });
+  const db = fakeDb({ rows });
+  assert.deepEqual((await findSnapshotsDueForRefresh({ now: NOW, limit: 1, db })).map((row) => row.creId), ['pending']);
+
+  for (const [failures, delay] of [[0, 60], [1, 60], [2, 120], [3, 240], [4, 480], [5, 900], [30, 900]]) {
+    const retry = fakeDb({ rows: [{
+      ...KEY, status: 'failed', failureCount: failures, lastAttemptAt: new Date(NOW.getTime() - delay * 1000),
+    }] });
+    assert.equal((await findSnapshotsDueForRefresh({ now: new Date(NOW.getTime() - 1), db: retry })).length, 0);
+    assert.equal((await findSnapshotsDueForRefresh({ now: NOW, db: retry })).length, 1);
+  }
+  const noAttempt = fakeDb({ rows: [{ ...KEY, status: 'failed', failureCount: 100, lastAttemptAt: null }] });
+  assert.equal((await findSnapshotsDueForRefresh({ now: NOW, db: noAttempt })).length, 1);
 });
 
 test('only one refresh can claim a snapshot at a time', async () => {
@@ -329,12 +539,16 @@ test('snapshot timing records failures without logging the error message', async
 test('snapshot timing reports a failure-handler rejection without hiding it', async (t) => {
   const log = t.mock.method(console, 'log', () => {});
   const db = fakeDb({ users: [USER], rows: [{ ...KEY, status: 'pending' }] });
-  db.crePerformanceSnapshot.findUnique = async () => { throw new Error('failure-storage-unavailable'); };
+  const update = db.crePerformanceSnapshot.updateMany;
+  db.crePerformanceSnapshot.updateMany = async (args) => {
+    if (args.data.status === 'failed') throw new Error('failure-storage-unavailable');
+    return update(args);
+  };
   await assert.rejects(refreshSnapshot(KEY, {
     now: NOW, db, compute: async () => { throw new Error('computation-failed'); },
   }), /failure-storage-unavailable/);
   const events = log.mock.calls.map((call) => JSON.parse(call.arguments[0]));
-  assert.ok(events.some((event) => event.phase === 'failure_lookup' && event.outcome === 'error'));
+  assert.ok(events.some((event) => event.phase === 'persist_failure' && event.outcome === 'error'));
   assert.ok(events.some((event) => event.phase === 'attempt' && event.outcome === 'error'));
   assert.ok(!JSON.stringify(events).includes('failure-storage-unavailable'));
   assert.equal(db.table[0].status, 'refreshing');

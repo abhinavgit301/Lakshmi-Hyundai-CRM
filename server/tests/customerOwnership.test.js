@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCustomer } from '../src/controllers/customerController.js';
 import { prisma } from '../src/config/prisma.js';
+import { snapshotInvalidationMock } from '../test-support/snapshotInvalidationMock.js';
+import { isPerformanceAggregateMaintenanceEnabled } from '../src/utils/performanceSnapshotState.js';
 
 function response() {
   return {
@@ -45,9 +47,11 @@ async function withPrismaMocks(overrides, run) {
 test('Admin can create one customer with vehicles owned by different CCMs', async () => {
   const vehicleCreates = [];
   const physicalVehicles = new Map();
+  const invalidation = {};
   await withPrismaMocks({
     'user.findMany': async () => [{ ccmId: 'ccm-a' }, { ccmId: 'ccm-b' }],
     '$transaction': async (callback) => callback({
+      ...snapshotInvalidationMock(invalidation),
       $queryRaw: async () => [],
       physicalVehicle: {
         findUnique: async ({ where }) => physicalVehicles.get(where.vin) || null,
@@ -90,6 +94,10 @@ test('Admin can create one customer with vehicles owned by different CCMs', asyn
     assert.equal(vehicleCreates[0].data.customerId, 'customer-1');
     assert.equal(vehicleCreates[1].data.customerId, 'customer-1');
     assert.notEqual(vehicleCreates[0].data.physicalVehicleId, vehicleCreates[1].data.physicalVehicleId);
+    if (isPerformanceAggregateMaintenanceEnabled()) {
+      assert.equal(invalidation.revisions['ccm:ccm-a'], 1);
+      assert.equal(invalidation.revisions['ccm:ccm-b'], 1);
+    }
   });
 });
 

@@ -63,8 +63,12 @@ export function isFreeServiceWorkType(workType) {
   return /\b(free|foc)\b/i.test(String(workType || ''));
 }
 
+function visitWorkType(visit) {
+  return visit?.importedDetails?.workType || visit?.importedDetails?.serviceType;
+}
+
 export function isPaidServiceVisit(visit) {
-  return classifyMasterRepairType(visit?.importedDetails?.workType) === 'Paid';
+  return classifyMasterRepairType(visitWorkType(visit)) === 'Paid';
 }
 
 export function getServiceLifecycle(record, asOf = new Date()) {
@@ -87,14 +91,12 @@ export function getServiceLifecycle(record, asOf = new Date()) {
     return { phase: 'unknown', completedMilestones: [], referenceDate: null };
   }
 
-  const completedMilestones = FREE_SERVICE_MILESTONES
-    .filter(({ milestone }) => findCompletingVisit(freeServiceDueDate(saleDate, milestone), visits, asOf))
-    .map(({ milestone }) => milestone);
+  const completedMilestones = [...freeServiceVisitsByMilestone(saleDate, visits, asOf).keys()];
   if (completedMilestones.length === FREE_SERVICE_MILESTONES.length) {
     return {
       phase: 'post-free',
       completedMilestones,
-      referenceDate: getLatestServiceDate(visits.filter((visit) => isFreeServiceWorkType(visit.importedDetails?.workType)), asOf),
+      referenceDate: getLatestServiceDate(visits.filter((visit) => isFreeServiceWorkType(visitWorkType(visit))), asOf),
     };
   }
 
@@ -127,27 +129,30 @@ export function isFreeServiceListVisible(dueDate, today) {
   return isFreeServiceCallable(dueDate, today) || (today > dueDate && today <= freeServiceExpiryDate(dueDate));
 }
 
-// A free-service repair order completes the milestone from one month before its due date through
-// the expiry date, inclusive. Later visits cannot complete an expired milestone.
-export function findCompletingVisit(dueDate, visits, asOf = null) {
-  const milestoneDate = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
-  const windowStart = addMonths(milestoneDate, -1);
-  const windowEnd = freeServiceExpiryDate(milestoneDate);
-  const latestEligibleDate = asOf
-    ? new Date(asOf.getFullYear(), asOf.getMonth(), asOf.getDate())
-    : null;
-  return (visits || [])
-    .filter((visit) => isFreeServiceWorkType(visit.importedDetails?.workType))
-    .map((visit) => {
-      const parsed = parseStoredDate(visit.visitDate);
-      return {
-        visit,
-        date: parsed ? new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()) : null,
-      };
-    })
-    .filter(({ date }) => date && date >= windowStart && date <= windowEnd
-      && (!latestEligibleDate || date <= latestEligibleDate))
-    .sort((left, right) => left.date - right.date)[0]?.visit || null;
+// Each visit completes the earliest uncompleted milestone that had not expired on that date.
+export function freeServiceVisitsByMilestone(saleDate, visits, asOf = new Date()) {
+  const sale = normalizeSaleDate(saleDate, asOf);
+  if (!sale) return new Map();
+  const today = new Date(asOf.getFullYear(), asOf.getMonth(), asOf.getDate());
+  const seenIds = new Set();
+  const eligible = [];
+  for (const visit of visits || []) {
+    if (!isFreeServiceWorkType(visitWorkType(visit))) continue;
+    const parsed = parseStoredDate(visit.visitDate);
+    if (!parsed) continue;
+    const date = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+    if (date < sale || date > today || (visit.id && seenIds.has(visit.id))) continue;
+    if (visit.id) seenIds.add(visit.id);
+    eligible.push({ visit, date });
+  }
+  eligible.sort((a, b) => a.date - b.date || String(a.visit.id || '').localeCompare(String(b.visit.id || '')));
+  const completed = new Map();
+  for (const { visit, date } of eligible) {
+    const next = FREE_SERVICE_MILESTONES.find(({ milestone }) => !completed.has(milestone)
+      && date <= freeServiceExpiryDate(freeServiceDueDate(sale, milestone)));
+    if (next) completed.set(next.milestone, visit);
+  }
+  return completed;
 }
 
 export function freeServiceOverlapsMonth(dueDate, year, month) {
@@ -168,27 +173,27 @@ export function countRemainingFreeServiceMilestones(record, now = new Date()) {
   const saleDate = resolveSaleDate(record, now);
   if (!saleDate) return null;
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const completed = freeServiceVisitsByMilestone(saleDate, record.workshopVisits, now);
   // Remaining = neither completed nor expired; an expired milestone is gone whether or not the customer came.
   return FREE_SERVICE_MILESTONES.filter(({ milestone }) => {
     const dueDate = freeServiceDueDate(saleDate, milestone);
     if (today > freeServiceExpiryDate(dueDate)) return false;
-    return !findCompletingVisit(dueDate, record.workshopVisits, now);
+    return !completed.has(milestone);
   }).length;
 }
 
-// Customers (unique) with at least one free-service milestone whose calling window overlaps the month.
-// This is the free-service share of a CRE's assigned workload; it does not depend on milestone status.
-export function freeServiceCustomerIdsForMonth(records, year, month, now = new Date()) {
+// Customers with at least one uncompleted free-service milestone whose calling window overlaps the month.
+export function freeServiceCustomerIdsForMonth(records, year, month, now = new Date(), getLifecycle = getServiceLifecycle) {
   const ids = new Set();
   for (const record of records) {
     const saleDate = resolveSaleDate(record, now);
     if (!saleDate || !record.customerId) continue;
-    const lifecycle = getServiceLifecycle(record, now);
+    const lifecycle = getLifecycle(record, now);
     if (lifecycle.phase !== 'free') continue;
     if (FREE_SERVICE_MILESTONES.some(({ milestone }) => {
       const dueDate = freeServiceDueDate(saleDate, milestone);
       return freeServiceOverlapsMonth(dueDate, year, month)
-        && !findCompletingVisit(dueDate, record.workshopVisits, now);
+        && !lifecycle.completedMilestones.includes(milestone);
     })) {
       ids.add(record.customerId);
     }

@@ -59,6 +59,8 @@ function setupAllocationReassignment(t, { mclEntries = [], extraAllocations = []
     user: {
       findFirst: async () => ({ id: 'cre-active', name: 'Active CRE' }),
     },
+    vehicle: { findMany: async () => [{ customerId: 'customer-1' }] },
+    callLog: { groupBy: async () => [] },
     allocation: {
       findFirst: async () => ({
         ...current(),
@@ -149,6 +151,7 @@ test('CCM reassignment preserves existing MCL data and records allocation and MC
       vin: 'VIN-1',
       ccmId: 'ccm-1',
       ownerUserId: null,
+      vehicleId: null,
       customerName: 'Existing name',
       mobileNumber: null,
       createdAt: new Date('2026-01-01T00:00:00Z'),
@@ -166,6 +169,7 @@ test('CCM reassignment preserves existing MCL data and records allocation and MC
   assert.equal(state.mcl[0].customerName, 'Existing name');
   assert.equal(state.mcl[0].mobileNumber, null);
   assert.equal(state.mcl[0].ownerUserId, 'cre-active');
+  assert.equal(state.mcl[0].vehicleId, 'vehicle-1');
   assert.deepEqual(state.assignmentHistory.map(({ allocationId, masterCallListId }) => ({
     allocationId,
     masterCallListId,

@@ -27,6 +27,9 @@ test('entity deletion captures callers before the change and rebuilds counters i
       findMany: async () => [],
     },
     $executeRaw: async () => { log.push({ action: 'lock' }); return 1; },
+    performanceSnapshotRevision: {
+      update: async () => { log.push({ action: 'revision' }); },
+    },
     creCallDaily: {
       deleteMany: async ({ where }) => { log.push({ action: 'rebuild', userId: where.userId }); return { count: 0 }; },
       createMany: async () => ({ count: 0 }),
@@ -44,6 +47,7 @@ test('entity deletion captures callers before the change and rebuilds counters i
   assert.deepEqual(log.filter((entry) => entry.action === 'rebuild').map((entry) => entry.userId), ['cre-a', 'cre-b']);
   assert.equal(log.find((entry) => entry.action === 'capture').args.where.OR.length, 3);
   assert.equal(log.some((entry) => entry.action === 'dirty'), true);
+  assert.equal(log.some((entry) => entry.action === 'revision'), true);
 });
 
 test('entity scope capture is a no-op when aggregate maintenance is disabled', async (t) => {

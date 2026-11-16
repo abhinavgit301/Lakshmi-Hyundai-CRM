@@ -2,6 +2,8 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { prisma } from '../src/config/prisma.js';
 import { deleteAppointment } from '../src/controllers/appointmentController.js';
+import { snapshotInvalidationMock } from '../test-support/snapshotInvalidationMock.js';
+import { isPerformanceAggregateMaintenanceEnabled } from '../src/utils/performanceSnapshotState.js';
 
 after(async () => {
   await prisma.$disconnect();
@@ -28,9 +30,11 @@ function replaceMethod(t, target, methodName, implementation) {
 test('appointment removal retains the appointment and appends a deletion event', async (t) => {
   const appointment = { id: 'appointment-1', status: 'CONFIRMED' };
   const events = [{ id: 'created-event', eventType: 'CREATED' }];
+  const invalidation = {};
   let updatedAppointment;
   replaceMethod(t, prisma.appointment, 'findFirst', async () => appointment);
   replaceMethod(t, prisma, '$transaction', async (callback) => callback({
+    ...snapshotInvalidationMock(invalidation),
     appointment: {
       update: async ({ where, data }) => {
         assert.equal(where.id, appointment.id);
@@ -55,6 +59,10 @@ test('appointment removal retains the appointment and appends a deletion event',
 
   assert.deepEqual(response.body, { id: appointment.id });
   assert.equal(updatedAppointment.status, 'CANCELLED');
+  if (isPerformanceAggregateMaintenanceEnabled()) {
+    assert.equal(invalidation.revisions.global, 1);
+    assert.equal(invalidation.snapshotUpdates.length, 2);
+  }
   assert.deepEqual(events, [
     { id: 'created-event', eventType: 'CREATED' },
     {

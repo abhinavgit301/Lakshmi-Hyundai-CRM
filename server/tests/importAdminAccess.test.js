@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import jwt from 'jsonwebtoken';
 
-const jwtSecret = process.env.JWT_SECRET || 'import-route-test-secret';
+const jwtSecret = process.env.JWT_SECRET || 'import-route-test-secret-with-at-least-32-characters';
 process.env.JWT_SECRET = jwtSecret;
 const [{ default: app }, { prisma }] = await Promise.all([
   import('../src/app.js'),

@@ -192,6 +192,7 @@ export async function allocateUnassignedMasterCallListEntries(
     const allocations = allocationsByVin.get(entry.vin) || [];
     for (const allocation of allocations) {
       if (allocation.creId !== creId) {
+        const previousCreId = allocation.creId;
         const updatedAllocation = await applyMutation({
           entityType: 'Allocation',
           entityId: allocation.id,
@@ -205,7 +206,7 @@ export async function allocateUnassignedMasterCallListEntries(
           vehicleId: allocation.vehicleId,
           allocationId: allocation.id,
           ccmId,
-          previousCreId: allocation.creId,
+          previousCreId,
           newCreId: creId,
           actorUserId: actorId,
           eventType: 'AUTO_ASSIGNED',

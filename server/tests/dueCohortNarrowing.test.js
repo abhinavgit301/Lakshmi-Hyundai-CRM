@@ -185,6 +185,65 @@ test('candidate IDs and VINs are batched without losing candidates at the bounda
   }
 });
 
+test('cohorts retain full-scan ordering and details across multiple VIN chunks', async () => {
+  const now = new Date(2026, 10, 4, 10);
+  const originalMaster = prisma.masterCallList.findMany;
+  const originalUser = prisma.user.findMany;
+  const rows = Array.from({ length: 501 }, (_, index) => {
+    const id = `row-${String(index).padStart(3, '0')}`;
+    const vin = `vin-${String(index).padStart(3, '0')}`;
+    const date = index % 3 === 0 ? new Date(2025, 10, 10)
+      : index % 3 === 1 ? new Date(2026, 4, 10) : new Date(2024, 4, 10);
+    return {
+      id, vin, ccmId: 'ccm-a', ownerUserId: null, createdAt: new Date(1700000000000 + index),
+      customerName: id, mobileNumber: '', status: 'pending', registrationNumber: null,
+      vehicle: {
+        id: `vehicle-${id}`, customerId: `customer-${id}`, model: null, saleDate: null,
+        registrationNumber: null, physicalVehicleId: `physical-${id}`,
+        physicalVehicle: { workshopVisits: [{
+          id: `visit-${id}`, visitDate: date, ccmId: 'ccm-a', importedDetails: { workType: 'Paid Service' },
+        }] },
+        allocations: [], monthlyDataEntries: [], appointments: [], customer: { appointments: [] },
+      },
+    };
+  });
+  let detailChunks = 0;
+  prisma.user.findMany = async () => [];
+  prisma.masterCallList.findMany = async (args) => {
+    const conditions = args.where.AND || [args.where];
+    if (!args.select.vehicle) {
+      const after = conditions.find((condition) => condition.id?.gt)?.id.gt;
+      return rows.filter((row) => !after || row.id > after).slice(0, args.take)
+        .map(({ id, vin }) => ({ id, vin }));
+    }
+    const vinFilter = conditions.find((condition) => condition.vin?.in)?.vin.in;
+    if (vinFilter && !conditions.some((condition) => condition.OR?.[0]?.createdAt)) detailChunks += 1;
+    let matching = rows.filter((row) => !vinFilter || vinFilter.includes(row.vin));
+    const cursor = conditions.find((condition) => condition.OR?.[0]?.createdAt);
+    if (cursor) {
+      const { createdAt, id } = cursor.OR[1];
+      matching = matching.filter((row) => row.createdAt < createdAt
+        || (row.createdAt.getTime() === createdAt.getTime() && row.id < id.lt));
+    }
+    return matching.sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1))
+      .slice(0, args.take);
+  };
+  try {
+    const where = { ccmId: 'ccm-a' };
+    const user = { role: 'CCM', ccmId: 'ccm-a' };
+    const expected = classifyDueCohorts(await loadCallListRecords(where, now, user), now);
+    const actual = await loadDueCohorts(where, now, user);
+    assert.deepEqual(actual, expected);
+    assert.equal(detailChunks, 2);
+    assert.ok(actual.oneYear.some(({ id }) => id === 'row-498'));
+    assert.ok(actual.sixMonth.some(({ id }) => id === 'row-499'));
+    assert.equal(actual.oneYear.length + actual.sixMonth.length, 334);
+  } finally {
+    prisma.masterCallList.findMany = originalMaster;
+    prisma.user.findMany = originalUser;
+  }
+});
+
 function dueRecords(count, distinctDueDates) {
   return Array.from({ length: count }, (_, index) => ({
     id: `rec-${String(index * 7919 % 10007).padStart(5, '0')}`,

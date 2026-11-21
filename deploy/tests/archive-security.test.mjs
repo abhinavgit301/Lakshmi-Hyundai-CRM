@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -39,15 +39,51 @@ const requiredFiles = [
   ['server/prisma.config.ts', 'export default {};\n'],
   ['server/deploy/check-prisma-migrations.mjs', ''],
   ['server/deploy/database-identity.mjs', ''],
+  ['server/deploy/migration-policy.mjs', ''],
   ['server/prisma/schema.prisma', ''],
   ['server/prisma/migrations/migration_lock.toml', ''],
-  ['server/prisma/migrations/20261106000000_test/migration.sql', 'SELECT 1;\n'],
+  ['server/prisma/migrations/20261027000000_free_service_warranty_followup_categories/migration.sql', 'SELECT 1;\n'],
+  ['server/prisma/migrations/20261121000000_nullable_unlinked_assignment_history/migration.sql',
+    'ALTER TABLE "cre_assignment_history" ALTER COLUMN "vehicleId" DROP NOT NULL;\n'],
   ['client/index.html', '<html></html>\n'],
   ['client/package.json', '{}\n'],
   ['client/package-lock.json', '{}\n'],
   ['client/vite.config.js', 'export default {};\n'],
   ['client/src/main.jsx', ''],
 ];
+
+test('CI and archive allow only the approved schema-first candidate migration', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/deploy.yml', import.meta.url), 'utf8');
+  const deferredBlock = workflow.match(/excluded_candidate_migrations=\(\s*([\s\S]*?)\s*\)/);
+  assert.ok(deferredBlock, 'release workflow must define the excluded candidate migration list');
+  assert.deepEqual(
+    [...deferredBlock[1].matchAll(/"([^"]+)"/g)].map(([, migration]) => migration),
+    [
+      '20261119000000_cre_vehicle_assignment_projection',
+      '20261120000000_assignment_read_indexes',
+      '20261120000001_allocation_vehicle_ccm_fk',
+      '20261120000002_remove_unused_physical_vehicle_last_service_date',
+    ],
+  );
+  const allowedBlock = workflow.match(/allowed_migrations=\(\s*([\s\S]*?)\s*\)/);
+  assert.ok(allowedBlock, 'release workflow must define its exact migration allow-list');
+  const workflowAllowed = [...allowedBlock[1].matchAll(/"([^"]+)"/g)].map(([, migration]) => migration);
+  const extractor = readFileSync(new URL('../safe-release-archive.mjs', import.meta.url), 'utf8');
+  const extractorBlock = extractor.match(/const allowedMigrationDirectories = \[([\s\S]*?)\];/);
+  assert.ok(extractorBlock, 'archive extractor must define its exact migration allow-list');
+  const extractorAllowed = [...extractorBlock[1].matchAll(/'([^']+)'/g)].map(([, migration]) => migration);
+  assert.deepEqual(workflowAllowed, extractorAllowed);
+  const excluded = [...deferredBlock[1].matchAll(/"([^"]+)"/g)].map(([, migration]) => migration);
+  assert.equal(workflowAllowed.includes('20261121000000_nullable_unlinked_assignment_history'), true);
+  assert.equal(workflowAllowed.some((migration) => excluded.includes(migration)), false);
+  assert.deepEqual(
+    readdirSync(new URL('../../server/prisma/migrations', import.meta.url), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort(),
+    [...workflowAllowed, ...excluded].sort(),
+  );
+});
 
 function makeArchive(entries) {
   const blocks = entries.map(([name, body, type, link]) => tarEntry(name, body, type, link));
@@ -71,10 +107,25 @@ test('extracts the complete expected release tree using fixed safe modes', async
     mkdirSync(stage);
     writeFileSync(archive, makeArchive(requiredFiles));
 
-    await extractReleaseArchive(archive, stage);
+    const extracted = await extractReleaseArchive(archive, stage);
 
     assert.equal(readFileSync(path.join(stage, 'client/index.html'), 'utf8'), '<html></html>\n');
-    assert.equal(readFileSync(path.join(stage, 'server/prisma/migrations/20261106000000_test/migration.sql'), 'utf8'), 'SELECT 1;\n');
+    assert.equal(
+      readFileSync(path.join(stage, 'server/prisma/migrations/20261027000000_free_service_warranty_followup_categories/migration.sql'), 'utf8'),
+      'SELECT 1;\n',
+    );
+    assert.equal(
+      readFileSync(path.join(stage, 'server/prisma/migrations/20261121000000_nullable_unlinked_assignment_history/migration.sql'), 'utf8'),
+      'ALTER TABLE "cre_assignment_history" ALTER COLUMN "vehicleId" DROP NOT NULL;\n',
+    );
+    assert.deepEqual(
+      [...extracted.names.keys()].filter((name) => name.startsWith('server/prisma/migrations/')).sort(),
+      [
+        'server/prisma/migrations/20261027000000_free_service_warranty_followup_categories/migration.sql',
+        'server/prisma/migrations/20261121000000_nullable_unlinked_assignment_history/migration.sql',
+        'server/prisma/migrations/migration_lock.toml',
+      ].sort(),
+    );
   });
 });
 
@@ -83,7 +134,7 @@ test('accepts a rollback.sql inside a migration directory', async () => {
     const archive = path.join(root, 'release.tar.gz');
     const stage = path.join(root, 'stage');
     mkdirSync(stage);
-    const rollback = 'server/prisma/migrations/20261106000000_test/rollback.sql';
+    const rollback = 'server/prisma/migrations/20261027000000_free_service_warranty_followup_categories/rollback.sql';
     writeFileSync(archive, makeArchive([...requiredFiles, [rollback, 'SELECT 2;\n']]));
 
     await extractReleaseArchive(archive, stage);
@@ -93,10 +144,21 @@ test('accepts a rollback.sql inside a migration directory', async () => {
 });
 
 for (const [label, malicious] of [
+  ...[
+    '20261119000000_cre_vehicle_assignment_projection',
+    '20261120000000_assignment_read_indexes',
+    '20261120000001_allocation_vehicle_ccm_fk',
+    '20261120000002_remove_unused_physical_vehicle_last_service_date',
+  ].flatMap((migration) => [
+    [`deferred migration directory ${migration}`, [[`server/prisma/migrations/${migration}`, '', '5']]],
+    [`deferred migration file ${migration}`, [[`server/prisma/migrations/${migration}/migration.sql`, 'SELECT 1;\n']]],
+  ]),
+  ['unexpected migration directory', [['server/prisma/migrations/20261122000000_unreviewed/migration.sql', 'SELECT 1;\n']]],
+  ['unexpected file in permitted candidate migration', [['server/prisma/migrations/20261121000000_nullable_unlinked_assignment_history/rollback.sql', 'SELECT 1;\n']]],
   ['rollback.sql outside a migration directory', [['server/prisma/rollback.sql', 'x']]],
-  ['rollback.sql nested below a migration directory', [['server/prisma/migrations/20261106000000_test/sub/rollback.sql', 'x']]],
+  ['rollback.sql nested below a migration directory', [['server/prisma/migrations/20261027000000_free_service_warranty_followup_categories/sub/rollback.sql', 'x']]],
   ['rollback.sql directly in the migrations directory', [['server/prisma/migrations/rollback.sql', 'x']]],
-  ['rollback.sql as a symlink', [['server/prisma/migrations/20261106000000_test/rollback.sql', '', '2', '../../../../../shared/backend.env']]],
+  ['rollback.sql as a symlink', [['server/prisma/migrations/20261027000000_free_service_warranty_followup_categories/rollback.sql', '', '2', '../../../../../shared/backend.env']]],
   ['parent traversal', [['../shared/backend.env', 'overwrite']]],
   ['malformed NUL-terminated path', [['server/src/valid.js\0../../shared/backend.env', 'overwrite']]],
   ['absolute path', [['/opt/lakshmi-hyundai/shared/backend.env', 'overwrite']]],

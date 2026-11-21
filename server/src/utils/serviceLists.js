@@ -15,6 +15,19 @@ import { workshopVisitVisibilityWhere } from './creAccess.js';
 import { invalidateSnapshotSourceWrite, isPerformanceAggregateMaintenanceEnabled } from './performanceSnapshotState.js';
 import { signalSnapshotRefresh } from './performanceRefreshSignal.js';
 import { reconcilePhysicalVehicleMilestones } from './physicalVehicleMilestones.js';
+import { iterateByIdBatches } from './readByIdBatches.js';
+
+export function isStreamedFollowUpEligibilityEnabled(env = process.env) {
+  return ['true', '1'].includes(String(env.FREE_SERVICE_FOLLOW_UP_STREAMED_ELIGIBILITY_ENABLED || '').trim().toLowerCase());
+}
+
+function isIneligibleFreeServiceFollowUp({ vehicle, milestone }, visitsByPhysicalVehicle) {
+  if (!vehicle?.physicalVehicleId) return true;
+  const vehicleVisits = visitsByPhysicalVehicle.get(vehicle.physicalVehicleId) || [];
+  const lifecycle = getServiceLifecycle({ saleDate: vehicle.saleDate, workshopVisits: vehicleVisits });
+  if (lifecycle.phase !== 'free') return true;
+  return Boolean(milestone && lifecycle.completedMilestones.includes(milestone.milestone));
+}
 
 export async function excludeIneligibleFreeServiceFollowUps(where, user, db = prisma) {
   const sourceFilter = where.source;
@@ -31,30 +44,45 @@ export async function excludeIneligibleFreeServiceFollowUps(where, user, db = pr
   });
   if (!candidates.length) return where;
 
-  const physicalVehicleIds = [...new Set(candidates.map(({ vehicle }) => vehicle?.physicalVehicleId).filter(Boolean))];
-  const visits = physicalVehicleIds.length
-    ? await db.workshopVisit.findMany({
-      where: {
-        physicalVehicleId: { in: physicalVehicleIds },
-        ...workshopVisitVisibilityWhere(user),
-      },
-      select: { id: true, physicalVehicleId: true, visitDate: true, importedDetails: true },
-    })
-    : [];
+  const streamed = isStreamedFollowUpEligibilityEnabled();
+  const candidatesByPhysicalVehicle = new Map();
+  const physicalVehicleIds = new Set();
+  for (const candidate of candidates) {
+    const id = candidate.vehicle?.physicalVehicleId;
+    if (!id) continue;
+    physicalVehicleIds.add(id);
+    if (streamed) {
+      if (!candidatesByPhysicalVehicle.has(id)) candidatesByPhysicalVehicle.set(id, []);
+      candidatesByPhysicalVehicle.get(id).push(candidate);
+    }
+  }
   const visitsByPhysicalVehicle = new Map();
-  for (const visit of visits) {
-    const records = visitsByPhysicalVehicle.get(visit.physicalVehicleId) || [];
-    records.push(visit);
-    visitsByPhysicalVehicle.set(visit.physicalVehicleId, records);
+  const ineligible = new Set();
+  for await (const { ids, rows: visits } of iterateByIdBatches(physicalVehicleIds, (batchIds) => db.workshopVisit.findMany({
+    where: {
+      physicalVehicleId: { in: batchIds },
+      ...workshopVisitVisibilityWhere(user),
+    },
+    select: { id: true, physicalVehicleId: true, visitDate: true, importedDetails: true },
+  }))) {
+    for (const visit of visits) {
+      const records = visitsByPhysicalVehicle.get(visit.physicalVehicleId) || [];
+      records.push(visit);
+      visitsByPhysicalVehicle.set(visit.physicalVehicleId, records);
+    }
+    if (streamed) {
+      for (const id of ids) {
+        for (const candidate of candidatesByPhysicalVehicle.get(id)) {
+          if (isIneligibleFreeServiceFollowUp(candidate, visitsByPhysicalVehicle)) ineligible.add(candidate.id);
+        }
+        visitsByPhysicalVehicle.delete(id);
+      }
+    }
   }
 
-  const ineligibleIds = candidates.filter(({ vehicle, milestone }) => {
-    if (!vehicle?.physicalVehicleId) return true;
-    const vehicleVisits = visitsByPhysicalVehicle.get(vehicle.physicalVehicleId) || [];
-    const lifecycle = getServiceLifecycle({ saleDate: vehicle.saleDate, workshopVisits: vehicleVisits });
-    if (lifecycle.phase !== 'free') return true;
-    return Boolean(milestone && lifecycle.completedMilestones.includes(milestone.milestone));
-  }).map(({ id }) => id);
+  const ineligibleIds = candidates.filter((candidate) => streamed
+    ? !candidate.vehicle?.physicalVehicleId || ineligible.has(candidate.id)
+    : isIneligibleFreeServiceFollowUp(candidate, visitsByPhysicalVehicle)).map(({ id }) => id);
   if (!ineligibleIds.length) return where;
 
   const eligibilityCondition = where.source === 'FREE_SERVICE'
@@ -234,17 +262,27 @@ export async function findMissedWarrantyCases({
     .filter((entry) => entry.expiryDate >= monthStart && entry.expiryDate < monthEnd);
   if (!dated.length) return [];
 
-  const calls = await db.callLog.findMany({
-    where: { ...callScope, vehicleId: { in: dated.map((entry) => entry.vehicle.id) }, callSource: 'WARRANTY' },
+  const entriesByVehicle = new Map();
+  for (const entry of dated) {
+    if (!entriesByVehicle.has(entry.vehicle.id)) entriesByVehicle.set(entry.vehicle.id, entry);
+  }
+  const missed = [];
+  for await (const { ids, rows: calls } of iterateByIdBatches(entriesByVehicle.keys(), (batchIds) => db.callLog.findMany({
+    where: { ...callScope, vehicleId: { in: batchIds }, callSource: 'WARRANTY' },
     select: { vehicleId: true, outcome: true, createdAt: true, callSource: true },
-  });
-  const callsByVehicle = new Map();
-  for (const call of calls) callsByVehicle.set(call.vehicleId, [...(callsByVehicle.get(call.vehicleId) || []), call]);
+  }))) {
+    const callsByVehicle = new Map();
+    for (const call of calls) {
+      if (!callsByVehicle.has(call.vehicleId)) callsByVehicle.set(call.vehicleId, []);
+      callsByVehicle.get(call.vehicleId).push(call);
+    }
+    missed.push(...findMissedCases(
+      ids.map((id) => ({ ...entriesByVehicle.get(id), vehicleId: id, calls: callsByVehicle.get(id) || [] })),
+      { now, timeZone },
+    ));
+  }
 
-  return findMissedCases(
-    dated.map((entry) => ({ ...entry, vehicleId: entry.vehicle.id, calls: callsByVehicle.get(entry.vehicle.id) || [] })),
-    { now, timeZone },
-  ).map((entry) => ({
+  return missed.map((entry) => ({
     vehicleId: entry.vehicle.id,
     vin: entry.vehicle.vin,
     registrationNumber: entry.vehicle.registrationNumber,

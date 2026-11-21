@@ -435,7 +435,7 @@ export async function unassignCreAssignments(transaction, {
       data: { ownerUserId: null, status: 'pending', assignmentNeedsReview: true },
     });
     await recordCreAssignmentEvent(transaction, {
-      vehicleId: entry.vehicle.id,
+      vehicleId: entry.vehicle?.id ?? null,
       masterCallListId: entry.id,
       ccmId,
       previousCreId: departingCreId,

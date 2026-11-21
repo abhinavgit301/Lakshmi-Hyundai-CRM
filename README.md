@@ -159,6 +159,12 @@ Optional performance configuration:
 | `REPORT_CACHE_TTL_SECONDS` | `60` | Short-lived workshop report cache duration; `0` disables the cache. |
 | `DB_POOL_MAX` | Driver default | Optional PostgreSQL pool maximum. Check the database connection limit before increasing it. |
 | `CUSTOMERS_MEMORY_LOG` | Off | Enables memory/count diagnostics without logging customer personal data. |
+| `DASHBOARD_TIMING_LOG` | `false` | Logs instrumented dashboard query-phase durations and outcomes without user or customer data. Durations include database pool waits. |
+| `DASHBOARD_SLIM_CALL_LIST_ENABLED` | `false` | Experimental CRE dashboard loader that omits list-only fields. Keep disabled until the documented parity and production-scale rollout checks pass. |
+| `DASHBOARD_STREAMED_CALL_LIST_ENABLED` | `false` | Experimental CRE dashboard summary that processes vehicle histories in batches. Also requires the slim flag; keep disabled pending production-scale validation. |
+| `PERFORMANCE_SNAPSHOT_STREAMED_CALL_LIST_ENABLED` | `false` | Experimental batched history processing for CRE performance snapshots; requires the snapshot slim flag and separate rollout validation. |
+| `FREE_SERVICE_FOLLOW_UP_STREAMED_ELIGIBILITY_ENABLED` | `false` | Experimental batched follow-up eligibility for dashboards, snapshots and follow-up lists; keep disabled pending the documented validation. |
+| `PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY` | `2` | Snapshot refresh workers per backend process; set to `1` to reduce concurrent database load. This is not a deployment-wide limit. |
 | `MASTER_CALL_LIST_SQL_ENABLED` | Enabled | Selects the Master Call List page in SQL before loading record details. Set to `false` or `0` to use the legacy loader. |
 | `MASTER_CALL_LIST_DUE_CANDIDATES_ENABLED` | Enabled | Narrows due-list candidates before applying the existing lifecycle rules. Set to `false` or `0` to use the legacy loader. |
 | `SERVICE_CONTACT_STATUS_ENABLED` | `false` | Enables cohort-specific statuses and ordering for regular-service due lists. Apply the service contact status migration before deploying this schema, even when disabled; see the deployment guide. |
@@ -185,7 +191,9 @@ Authentication uses JWT. Route middleware and controllers enforce role permissio
 ## Performance and data safeguards
 
 - Customer lists use slim responses and pagination; full profiles load separately.
-- Master Call List pages use SQL selection before loading details, and due-category searches narrow candidate records before applying the existing lifecycle rules.
+- Master Call List pages use SQL selection before loading details; CCM allocation-queue enrichment reads only allocations associated with the selected page. Due-category searches narrow candidate records before applying the existing lifecycle rules.
+- Free-service follow-up filtering scopes its lookup to candidate milestones. Free-service and warranty detail lookups batch identifiers to limit query parameter counts; lifecycle filtering still examines the candidate set before paging.
+- The pending assignment-read index migration supports existing scoped lookups but requires an approved window because index creation blocks writes; see `server/PERFORMANCE-AGGREGATES.md`.
 - Large Master Call List report reads are paged to stay below Prisma/database parameter limits.
 - Workshop report responses use a short-lived cache and share concurrent identical requests.
 - Large tables use pagination or virtualization.

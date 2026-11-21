@@ -118,9 +118,6 @@ model Customer {
 model PhysicalVehicle {
   id        String   @id @default(cuid())
   vin       String   @unique
-  // Latest visitDate across all of this physical vehicle's workshop visits. Derived: a database trigger
-  // keeps it in sync, so application code must never write it. Used only to narrow 1-Year/6-Month candidates.
-  lastServiceDate DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -128,7 +125,6 @@ model PhysicalVehicle {
   workshopVisits WorkshopVisit[]
   milestones     FreeServiceMilestone[]
 
-  @@index([lastServiceDate])
   @@map("physical_vehicles")
 }
 
@@ -217,6 +213,8 @@ model MasterCallList {
   vehicle Vehicle? @relation(fields: [vehicleId, ccmId], references: [id, ccmId], onDelete: Restrict)
 
   @@index([vehicleId])
+  @@index([ccmId, ownerUserId, createdAt, id], map: "mcl_ccm_owner_created_id_idx")
+  @@index([ccmId, createdAt, id], map: "mcl_ccm_created_id_idx")
   @@map("master_call_lists")
 }
 
@@ -266,16 +264,31 @@ model Allocation {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
-  vehicle Vehicle @relation(fields: [vehicleId], references: [id])
+  vehicle Vehicle @relation(fields: [vehicleId, ccmId], references: [id, ccmId])
   cre     User?   @relation(fields: [creId], references: [id], onDelete: SetNull)
 
+  @@index([ccmId, creId, status, vehicleId], map: "allocation_ccm_cre_status_vehicle_idx")
+  @@index([vehicleId, ccmId, status, creId], map: "allocation_vehicle_ccm_status_cre_idx")
   @@map("allocations")
+}
+
+// Derived assignment projection. No application authorization or live read depends on this table.
+model CreVehicleAssignmentProjection {
+  ccmId          String
+  creId          String
+  vehicleId      String
+  fromMaster     Boolean
+  fromAllocation Boolean
+
+  @@id([ccmId, creId, vehicleId])
+  @@index([vehicleId, ccmId, creId])
+  @@map("cre_vehicle_assignment_projection")
 }
 
 // Scalar entity IDs keep the append-only history intact if an import rollback removes an entity.
 model CreAssignmentHistory {
   id               String   @id @default(cuid())
-  vehicleId        String
+  vehicleId        String?
   allocationId     String?
   masterCallListId String?
   ccmId            String

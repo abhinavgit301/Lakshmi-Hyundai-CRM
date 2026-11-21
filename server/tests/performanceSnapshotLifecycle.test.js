@@ -13,6 +13,8 @@ import {
   refreshDueSnapshots,
   refreshSnapshot,
   requestSnapshotRefresh,
+  snapshotRefreshConcurrency,
+  startPerformanceSnapshotScheduler,
   tick,
 } from '../src/services/performanceSnapshotService.js';
 
@@ -118,6 +120,53 @@ const METRICS = {
   details: { lifetimeCalls: 100 }, cycleStartedAt: new Date('2026-11-01T00:00:00Z'), asOf: new Date('2026-11-06T06:00:00Z'),
 };
 const NOW = new Date('2026-11-06T06:00:00Z');
+
+test('snapshot concurrency is bounded and invalid configuration fails explicitly', async (t) => {
+  assert.equal(snapshotRefreshConcurrency({}), 2);
+  assert.equal(snapshotRefreshConcurrency({ PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY: ' 1 ' }), 1);
+  assert.equal(snapshotRefreshConcurrency({ PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY: '2' }), 2);
+  for (const value of ['0', '3', '1.5', '2workers']) {
+    assert.throws(() => snapshotRefreshConcurrency({ PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY: value }), /must be 1 or 2/);
+  }
+  withMaintenance(t);
+  const previous = process.env.PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY;
+    else process.env.PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY = previous;
+  });
+  process.env.PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY = '3';
+  assert.throws(() => startPerformanceSnapshotScheduler(), /must be 1 or 2/);
+  await assert.rejects(refreshDueSnapshots({ db: fakeDb() }), /must be 1 or 2/);
+});
+
+test('one snapshot worker processes all queued snapshots serially', async (t) => {
+  const previous = process.env.PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY;
+  process.env.PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY = '1';
+  t.after(() => {
+    if (previous === undefined) delete process.env.PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY;
+    else process.env.PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY = previous;
+  });
+  const rows = Array.from({ length: 5 }, (_, i) => ({ ...KEY, creId: `serial-${i}` }));
+  const db = fakeDb({ rows });
+  let active = 0;
+  let maximum = 0;
+  const processed = [];
+  const result = await refreshDueSnapshots({
+    now: NOW,
+    db,
+    refresh: async (row) => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setImmediate(resolve));
+      processed.push(row.creId);
+      active -= 1;
+      return { refreshed: true };
+    },
+  });
+  assert.deepEqual(result, { due: 5, refreshed: 5 });
+  assert.equal(maximum, 1);
+  assert.equal(new Set(processed).size, 5);
+});
 
 test('requested snapshots are durable and share the scheduler concurrency limit', async () => {
   const db = fakeDb();

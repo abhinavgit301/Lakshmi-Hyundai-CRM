@@ -6,6 +6,7 @@ import {
   selectNextCre,
   unassignCreAssignments,
 } from '../src/utils/customerAllocation.js';
+import { recordCreAssignmentEvent } from '../src/utils/creAssignmentHistory.js';
 
 function distribute(creIds, workloads, customerCount) {
   const assignments = [];
@@ -304,6 +305,48 @@ test('deactivation preserves an allocation-only vehicle as an unassigned allocat
     previousCreId: 'cre-old',
     newCreId: null,
   }]);
+});
+
+test('deactivation records unlinked call-list assignments without a vehicle ID', async () => {
+  const history = [];
+  const updates = [];
+  const transaction = {
+    $queryRaw: async () => [],
+    masterCallList: {
+      findMany: async () => [{ id: 'unlinked', vin: 'VIN-UNLINKED', vehicle: null }],
+      update: async (args) => { updates.push(args); return {}; },
+    },
+    allocation: { findMany: async () => [] },
+    creAssignmentHistory: {
+      create: async ({ data }) => { history.push(data); return data; },
+    },
+    auditLog: { create: async () => ({}) },
+  };
+
+  const count = await unassignCreAssignments(transaction, {
+    ccmId: 'ccm-1',
+    departingCreId: 'cre-old',
+    actorId: 'admin-1',
+  });
+
+  assert.equal(count, 1);
+  assert.deepEqual(updates, [{
+    where: { id: 'unlinked' },
+    data: { ownerUserId: null, status: 'pending', assignmentNeedsReview: true },
+  }]);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].vehicleId, null);
+  assert.equal(history[0].masterCallListId, 'unlinked');
+  assert.equal(history[0].previousCreId, 'cre-old');
+  assert.equal(history[0].newCreId, null);
+});
+
+test('allocation assignment history still requires a vehicle ID', async () => {
+  await assert.rejects(recordCreAssignmentEvent({}, {
+    allocationId: 'allocation-1',
+    ccmId: 'ccm-1',
+    previousCreId: 'cre-old',
+  }), /allocations require a vehicle/);
 });
 
 test('automatic allocation leaves deactivated assignments in the CCM review queue', async () => {

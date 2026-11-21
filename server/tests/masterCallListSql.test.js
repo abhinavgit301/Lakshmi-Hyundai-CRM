@@ -57,11 +57,21 @@ async function request({ user, query = {}, page, rows = [], allocations = [], te
   };
   prisma.masterCallList.findMany = async (args) => {
     calls.master.push(args);
+    if (args.select?.vin && args.where?.id?.in) {
+      return rows.filter((r) => args.where.id.in.includes(r.id) && r.ccmId === args.where.ccmId)
+        .map(({ vin }) => ({ vin }));
+    }
     const wanted = args.where?.AND?.[1]?.id?.in;
     return rows.filter((r) => !wanted || wanted.includes(r.id)).slice(0, args.take);
   };
   prisma.user.findMany = async (args) => (args?.where?.role === 'CCM' ? teams : []);
-  prisma.allocation.findMany = async (args) => { calls.allocation.push(args); return allocations; };
+  prisma.allocation.findMany = async (args) => {
+    calls.allocation.push(args);
+    if (!args.where.OR) return allocations;
+    return allocations.filter((allocation) => allocation.ccmId === args.where.ccmId
+      && args.where.OR.some((condition) => condition.id?.in.includes(allocation.id)
+        || condition.vehicle?.is?.vin?.in.includes(allocation.vehicle?.vin)));
+  };
   const res = {
     statusCode: 200,
     status(code) { this.statusCode = code; return this; },
@@ -192,10 +202,40 @@ test('flag ON: CCM queue entries come from allocations, keep SQL order and never
   assert.equal(response.body.records[0].allocationQueue, true);
   assert.equal(response.body.records[1].allocationOnly, true);
   assert.equal(response.calls.allocation.length, 1);
-  assert.deepEqual(response.calls.allocation[0].where, { ccmId: 'ccm-a', status: 'assigned', creId: null });
+  assert.deepEqual(response.calls.allocation[0].where, {
+    ccmId: 'ccm-a', status: 'assigned', creId: null,
+    OR: [{ vehicle: { is: { vin: { in: ['VIN-1'] } } } }, { id: { in: ['al-q'] } }],
+  });
   // The statement itself is bound to the requesting CCM.
   assert.ok(response.calls.sql[0].values.includes('ccm-a'));
   assert.ok(!response.calls.sql[0].values.includes('ccm-b'));
+});
+
+test('flag ON: CCM queue-only and empty pages do not load unrelated allocations', async () => {
+  const allocations = [
+    { id: 'selected', ccmId: 'ccm-a', serviceType: 'Free', vehicle: { id: 'v-selected', vin: 'VIN-S', customer: null } },
+    { id: 'other', ccmId: 'ccm-a', serviceType: 'Free', vehicle: { id: 'v-other', vin: 'VIN-O', customer: null } },
+    { id: 'selected', ccmId: 'ccm-b', serviceType: 'Free', vehicle: { id: 'v-foreign', vin: 'VIN-F', customer: null } },
+  ];
+  const queue = await withFlag('true', () => request({
+    user: { role: 'CCM', ccmId: 'ccm-a' },
+    allocations,
+    page: { total: 2, ids: ['allocation:selected'], queueIds: ['allocation:selected'] },
+  }));
+  assert.deepEqual(ids(queue), ['allocation:selected']);
+  assert.equal(queue.calls.master.length, 0);
+  assert.deepEqual(queue.calls.allocation[0].where, {
+    ccmId: 'ccm-a', status: 'assigned', creId: null, OR: [{ id: { in: ['selected'] } }],
+  });
+
+  const empty = await withFlag('true', () => request({
+    user: { role: 'CCM', ccmId: 'ccm-a' },
+    allocations,
+    page: { total: 2, ids: [], queueIds: [] },
+  }));
+  assert.deepEqual(ids(empty), []);
+  assert.equal(empty.calls.master.length, 0);
+  assert.equal(empty.calls.allocation.length, 0);
 });
 
 test('flag ON: Admin, GM and CRE never query allocations', async () => {
@@ -226,7 +266,8 @@ test('flag ON: role scope is re-applied when records are loaded, and CRE/CCM sco
     rows: [row('m-1', 'VIN-1')],
     page: { total: 1, ids: ['m-1'] },
   }));
-  assert.deepEqual(ccm.calls.master[0].where.AND[0], { ccmId: 'ccm-a' });
+  assert.deepEqual(ccm.calls.master[0].where, { ccmId: 'ccm-a', id: { in: ['m-1'] } });
+  assert.deepEqual(ccm.calls.master[1].where.AND[0], { ccmId: 'ccm-a' });
 
   const admin = await withFlag('true', () => request({
     user: { role: 'ADMIN' },

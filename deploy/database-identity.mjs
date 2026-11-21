@@ -52,12 +52,35 @@ export function assertDatabaseIdentity(connection, actual, expected) {
   const actualServerAddress = typeof actual.server_address === 'string'
     ? actual.server_address.split('/')[0].toLowerCase()
     : '';
+  if (typeof actual.session_user !== 'string' || !actual.session_user ||
+      typeof actual.current_user !== 'string' || !actual.current_user ||
+      typeof actual.database !== 'string' || !actual.database ||
+      typeof actual.rolsuper !== 'boolean' ||
+      typeof actual.rolinherit !== 'boolean' ||
+      typeof actual.rolbypassrls !== 'boolean' ||
+      typeof actual.rolcreaterole !== 'boolean' ||
+      typeof actual.rolcreatedb !== 'boolean' ||
+      typeof actual.rolreplication !== 'boolean' ||
+      typeof actual.rolcanlogin !== 'boolean' ||
+      !Number.isInteger(actual.membership_count) ||
+      actual.membership_count < 0) {
+    throw new Error('Refusing migrations: live migration identity information is missing or ambiguous.');
+  }
   if (actualDatabase !== expected.database ||
       actualHost !== expected.host.toLowerCase() ||
       actualPort !== expected.port ||
       actualUsername !== expected.username ||
       actual.database !== expected.database ||
-      actual.username !== expected.username ||
+      actual.session_user !== expected.username ||
+      actual.current_user !== expected.username ||
+      actual.rolsuper !== false ||
+      actual.rolinherit !== false ||
+      actual.rolbypassrls !== false ||
+      actual.rolcreaterole !== false ||
+      actual.rolcreatedb !== false ||
+      actual.rolreplication !== false ||
+      actual.rolcanlogin !== true ||
+      actual.membership_count !== 0 ||
       typeof actual.server_address !== 'string' ||
       !actual.server_address.trim() ||
       actualServerAddress !== expected.host.toLowerCase() ||

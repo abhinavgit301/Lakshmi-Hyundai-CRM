@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSnapshotLifecycleResolver, isSnapshotSlimCallListEnabled, loadSnapshotCallListRecords } from '../src/utils/snapshotCallList.js';
+import { createSnapshotLifecycleResolver, isSnapshotSlimCallListEnabled, isSnapshotStreamedCallListEnabled, loadSnapshotCallListRecords, summarizeSnapshotCallList } from '../src/utils/snapshotCallList.js';
 import { refreshSnapshot } from '../src/services/performanceSnapshotService.js';
+import { classifyDueCohorts } from '../src/controllers/recordsController.js';
+import { freeServiceCustomerIdsForMonth, getServiceLifecycle } from '../src/utils/serviceCalendar.js';
 
 test('snapshot optimization is disabled unless explicitly enabled', () => {
   for (const value of [undefined, '', 'false', 'yes']) {
@@ -10,6 +12,37 @@ test('snapshot optimization is disabled unless explicitly enabled', () => {
   for (const value of ['true', '1', ' TRUE ']) {
     assert.equal(isSnapshotSlimCallListEnabled({ PERFORMANCE_SNAPSHOT_SLIM_CALL_LIST_ENABLED: value }), true);
   }
+});
+
+test('streamed snapshot optimization requires both experimental flags', () => {
+  assert.equal(isSnapshotStreamedCallListEnabled({}), false);
+  assert.equal(isSnapshotStreamedCallListEnabled({ PERFORMANCE_SNAPSHOT_STREAMED_CALL_LIST_ENABLED: 'true' }), false);
+  assert.equal(isSnapshotStreamedCallListEnabled({ PERFORMANCE_SNAPSHOT_SLIM_CALL_LIST_ENABLED: 'true' }), false);
+  assert.equal(isSnapshotStreamedCallListEnabled({ PERFORMANCE_SNAPSHOT_SLIM_CALL_LIST_ENABLED: 'true', PERFORMANCE_SNAPSHOT_STREAMED_CALL_LIST_ENABLED: 'yes' }), false);
+  assert.equal(isSnapshotStreamedCallListEnabled({ PERFORMANCE_SNAPSHOT_SLIM_CALL_LIST_ENABLED: 'true', PERFORMANCE_SNAPSHOT_STREAMED_CALL_LIST_ENABLED: '1' }), true);
+});
+
+test('streamed snapshots classify historical cohorts separately from current overdue services', async () => {
+  const now = new Date('2026-11-14T06:00:00Z');
+  const asOf = new Date('2026-10-31T18:29:59.999Z');
+  const vehicle = { customerId: 'customer', physicalVehicleId: 'physical', saleDate: new Date('2023-01-01T00:00:00Z') };
+  const db = {
+    masterCallList: { findMany: async () => [{ id: 'm', ccmId: 'team', vin: 'vin', ownerUserId: 'cre', createdAt: now, vehicle }] },
+    workshopVisit: { findMany: async () => [
+      { id: 'new', physicalVehicleId: 'physical', visitDate: new Date('2026-11-01T00:00:00Z'), importedDetails: { workType: 'Paid Service' } },
+      { id: 'old', physicalVehicleId: 'physical', visitDate: new Date('2025-10-10T00:00:00Z'), importedDetails: { workType: 'Paid Service' } },
+    ] },
+  };
+  const user = { role: 'CRE', id: 'cre', ccmId: 'team' };
+  const records = await loadSnapshotCallListRecords({}, now, user, { db });
+  const cohorts = classifyDueCohorts(records, asOf);
+  const summary = await summarizeSnapshotCallList({}, now, user, {
+    db, year: 2026, month: 10, asOf, includeFreeService: true,
+  });
+  assert.equal(cohorts.oneYear.length, 1);
+  assert.equal(summary.oneYearCustomers, 1);
+  assert.equal(summary.assignedWorkload, 1);
+  assert.equal(summary.dueServicesCount, 0);
 });
 
 test('lifecycle reuse is scoped to a record and identical evaluation time', () => {
@@ -48,6 +81,33 @@ test('snapshot loader canonicalizes before loading scoped shared history and pre
   assert.equal(result[1].customerId, null);
   assert.deepEqual(result[1].workshopVisits, []);
   assert.equal(result[1].dueDate, null);
+});
+
+test('slim loader and current-month classifications reuse each record lifecycle', async () => {
+  const now = new Date('2026-11-14T06:00:00Z');
+  const db = {
+    masterCallList: { findMany: async () => [
+      { id: 'one', ccmId: 'team', vin: 'vin', ownerUserId: 'cre', createdAt: now,
+        vehicle: { customerId: 'customer', saleDate: new Date('2026-09-14T00:00:00Z'), physicalVehicleId: 'physical' } },
+    ] },
+    workshopVisit: { findMany: async () => [] },
+  };
+  let calculations = 0;
+  const resolveLifecycle = createSnapshotLifecycleResolver((record, asOf) => {
+    calculations += 1;
+    return getServiceLifecycle(record, asOf);
+  });
+  const records = await loadSnapshotCallListRecords({}, now, { role: 'CRE', id: 'cre', ccmId: 'team' }, { db, resolveLifecycle });
+  assert.equal(calculations, 1);
+  const cohorts = classifyDueCohorts(records, now, resolveLifecycle);
+  const free = freeServiceCustomerIdsForMonth(records, 2026, 11, now, resolveLifecycle);
+  assert.equal(calculations, 1);
+  assert.equal(cohorts.oneYear.length, 0);
+  assert.deepEqual([...free], ['customer']);
+  const historical = new Date('2026-10-14T06:00:00Z');
+  classifyDueCohorts(records, historical, resolveLifecycle);
+  freeServiceCustomerIdsForMonth(records, 2026, 10, historical, resolveLifecycle);
+  assert.equal(calculations, 2);
 });
 
 test('snapshot loader surfaces database errors', async () => {

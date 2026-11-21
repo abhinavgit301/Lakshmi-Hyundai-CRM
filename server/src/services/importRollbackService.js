@@ -160,11 +160,11 @@ async function recordRollbackAssignmentEvent(transaction, entityType, record, pr
       where: { vin: record.vin, ccmId: record.ccmId },
       select: { id: true },
     }))?.id;
-  if (!vehicleId) {
+  if (!vehicleId && entityType === 'Allocation') {
     throw new ImportRollbackConflict('The assignment history could not be recorded because its vehicle no longer exists.');
   }
   await recordCreAssignmentEvent(transaction, {
-    vehicleId,
+    vehicleId: vehicleId ?? null,
     allocationId: entityType === 'Allocation' ? record.id : null,
     masterCallListId: entityType === 'MasterCallList' ? record.id : null,
     ccmId: record.ccmId,

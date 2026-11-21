@@ -7,7 +7,7 @@ export function assignmentHistoryEventType(previousCreId, newCreId) {
 }
 
 export async function recordCreAssignmentEvent(transaction, {
-  vehicleId,
+  vehicleId = null,
   allocationId = null,
   masterCallListId = null,
   ccmId,
@@ -18,8 +18,8 @@ export async function recordCreAssignmentEvent(transaction, {
   eventType,
 }) {
   if (previousCreId === newCreId) return null;
-  if (!vehicleId || !ccmId || (!allocationId && !masterCallListId)) {
-    throw new Error('CRE assignment history requires a vehicle, CCM, and allocation or call-list reference.');
+  if (!ccmId || (!allocationId && !masterCallListId) || (!vehicleId && (!masterCallListId || allocationId))) {
+    throw new Error('CRE assignment history requires a CCM and assignment reference; allocations require a vehicle.');
   }
   // Ownership decides which calls count for a CRE; the enclosing transaction flushes the aggregates.
   noteCreOwnershipChange(transaction, { ccmId, creIds: [previousCreId, newCreId] });

@@ -27,7 +27,7 @@ import { getSnapshot, requestSnapshotRefresh } from '../services/performanceSnap
 import { parsePagination } from '../utils/pagination.js';
 import { classifyDueCohorts, countOverdueRecords, creDueWhere, loadCallListRecords } from './recordsController.js';
 import { isServiceContactStatusEnabled, saveServiceContactStatus, statusForServiceCall } from '../utils/serviceContactStatus.js';
-import { createSnapshotLifecycleResolver, isSnapshotSlimCallListEnabled, loadSnapshotCallListRecords } from '../utils/snapshotCallList.js';
+import { createSnapshotLifecycleResolver, isSnapshotSlimCallListEnabled, isSnapshotStreamedCallListEnabled, loadSnapshotCallListRecords, summarizeSnapshotCallList } from '../utils/snapshotCallList.js';
 
 function normalizeRole(role) {
   const value = String(role || '').toUpperCase();
@@ -377,6 +377,7 @@ const cachedCrePerformanceSummary = withCachedResponse('performance-cre', loadCr
 // CRE viewer is evaluated with the CRE's own (default-off) Free Service and Warranty flags, as the live path does.
 export async function computeCrePerformanceMetrics({ targetCre, viewer, year, month, now = new Date(), trace, db = prisma, deferClassification = false }) {
   const slimCallList = isSnapshotSlimCallListEnabled();
+  const streamedCallList = isSnapshotStreamedCallListEnabled();
   const targetUser = {
     id: targetCre.id,
     role: 'CRE',
@@ -418,13 +419,18 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
     ...followUpVisibility(targetUser),
     status: 'pending',
   }, targetUser, db);
+  const resolveLifecycle = slimCallList ? createSnapshotLifecycleResolver() : undefined;
 
-  const [callsThisMonth, customersReached, scopedRecords, pendingFollowUps, appointmentsSetThisMonth, missedWarrantyCases, lifetimeCalls, lifetimeAppointments] = await Promise.all([
+  const [callsThisMonth, customersReached, callListResult, pendingFollowUps, appointmentsSetThisMonth, missedWarrantyCases, lifetimeCalls, lifetimeAppointments] = await Promise.all([
     traceSnapshotPhase(trace, 'monthly_calls', () => db.callLog.count({ where: monthFilter })),
     traceSnapshotPhase(trace, 'customers_reached', () => db.callLog.groupBy({ by: ['customerId'], where: monthFilter })),
     traceSnapshotPhase(trace, 'call_list', () => (
-      slimCallList
-        ? loadSnapshotCallListRecords(dueWhere, now, targetUser, { snapshotTrace: trace, db })
+      streamedCallList
+        ? summarizeSnapshotCallList(dueWhere, now, targetUser, {
+          year, month, asOf, includeFreeService: canAccessServiceSource(targetUser, 'FREE_SERVICE'), snapshotTrace: trace, db,
+        })
+        : slimCallList
+        ? loadSnapshotCallListRecords(dueWhere, now, targetUser, { snapshotTrace: trace, db, resolveLifecycle })
         : loadCallListRecords(dueWhere, now, targetUser, { snapshotTrace: trace, db })
     )),
     traceSnapshotPhase(trace, 'pending_followups', () => db.followUp.count({ where: pendingFollowUpWhere })),
@@ -453,22 +459,25 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
   ]);
 
   const finish = async () => {
-    const { cohorts, freeServiceIds, assignedCustomerCount } = await traceSnapshotPhase(trace, 'classification', () => {
-      const resolveLifecycle = slimCallList ? createSnapshotLifecycleResolver() : undefined;
-      const classified = classifyDueCohorts(scopedRecords, asOf, resolveLifecycle);
+    const metrics = await traceSnapshotPhase(trace, 'classification', () => {
+      if (streamedCallList) return callListResult;
+      const classified = classifyDueCohorts(callListResult, asOf, resolveLifecycle);
       const freeIds = canAccessServiceSource(targetUser, 'FREE_SERVICE')
-        ? freeServiceCustomerIdsForMonth(scopedRecords, year, month, asOf, resolveLifecycle)
+        ? freeServiceCustomerIdsForMonth(callListResult, year, month, asOf, resolveLifecycle)
         : new Set();
       return {
-        cohorts: classified,
-        freeServiceIds: freeIds,
-        assignedCustomerCount: new Set([
+        assignedWorkload: new Set([
           ...classified.oneYear.map((record) => record.customerId),
           ...classified.sixMonth.map((record) => record.customerId),
           ...freeIds,
         ].filter(Boolean)).size,
+        dueServicesCount: countOverdueRecords(callListResult, now),
+        oneYearCustomers: new Set(classified.oneYear.map((record) => record.customerId)).size,
+        sixMonthCustomers: new Set(classified.sixMonth.map((record) => record.customerId)).size,
+        freeService: canAccessServiceSource(targetUser, 'FREE_SERVICE') ? freeIds.size : null,
       };
     });
+    const assignedCustomerCount = metrics.assignedWorkload;
 
     return {
       asOf,
@@ -476,7 +485,7 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
       callsThisMonth,
       assignedCustomerCount,
       pendingFollowUps,
-      dueServicesCount: countOverdueRecords(scopedRecords, now),
+      dueServicesCount: metrics.dueServicesCount,
       missedWarrantyCount: canAccessServiceSource(targetUser, 'WARRANTY') ? missedWarrantyCases.length : null,
       details: {
         lifetimeCalls,
@@ -484,9 +493,9 @@ export async function computeCrePerformanceMetrics({ targetCre, viewer, year, mo
         appointmentConversionRatePercent: appointmentConversionRatePercent(lifetimeAppointments, lifetimeCalls),
         customersReachedThisMonth: customersReached.length,
         assignedBreakdown: {
-          oneYear: new Set(cohorts.oneYear.map((record) => record.customerId)).size,
-          sixMonth: new Set(cohorts.sixMonth.map((record) => record.customerId)).size,
-          freeService: canAccessServiceSource(targetUser, 'FREE_SERVICE') ? freeServiceIds.size : null,
+          oneYear: metrics.oneYearCustomers,
+          sixMonth: metrics.sixMonthCustomers,
+          freeService: metrics.freeService,
         },
         customerReachPercent: assignedCustomerCount
           ? Math.min(100, Math.round((customersReached.length / assignedCustomerCount) * 100))

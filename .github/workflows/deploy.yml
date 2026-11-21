@@ -124,6 +124,31 @@ jobs:
         working-directory: server
         run: node --input-type=module -e "const { PrismaClient } = await import('@prisma/client'); if (typeof PrismaClient !== 'function') process.exit(1)"
 
+      - name: Verify disposable CI database identity
+        working-directory: server
+        run: |
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+
+          const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+          try {
+            await client.connect();
+            const { rows: [identity] } = await client.query(`
+              SELECT current_database() AS database, current_user AS username,
+                inet_server_port() AS port, current_setting('server_version') AS version
+            `);
+            if (identity.database !== 'status_test_ci'
+              || identity.username !== 'ci'
+              || identity.port !== 5432
+              || !/^18\.6(?:\s|$)/.test(identity.version)) {
+              throw new Error('Connected database does not match the disposable PostgreSQL 18.6 CI target.');
+            }
+            console.log('Verified disposable PostgreSQL 18.6 CI database identity.');
+          } finally {
+            await client.end();
+          }
+          NODE
+
       - name: Prepare disposable CI schema
         working-directory: server
         run: npm exec -- prisma db push
@@ -196,10 +221,58 @@ jobs:
           cp -a server/src "$package/server/src"
           mkdir -p "$package/server/prisma"
           cp server/prisma/schema.prisma "$package/server/prisma/"
-          cp -a server/prisma/migrations "$package/server/prisma/migrations"
+          mkdir -p "$package/server/prisma/migrations"
+          cp server/prisma/migrations/migration_lock.toml "$package/server/prisma/migrations/"
+          excluded_candidate_migrations=(
+            "20261119000000_cre_vehicle_assignment_projection"
+            "20261120000000_assignment_read_indexes"
+            "20261120000001_allocation_vehicle_ccm_fk"
+            "20261120000002_remove_unused_physical_vehicle_last_service_date"
+          )
+          allowed_migrations=(
+            "20261027000000_free_service_warranty_followup_categories"
+            "20261028000000_cre_service_category_permissions"
+            "20261029000000_free_service_cre_role"
+            "20261030_import_rollback_tracking"
+            "20261031000000_import_batch_ccm_history"
+            "20261101000000_add_immutable_workflow_ccm_ownership"
+            "20261101150000_add_customer_contact_address"
+            "20261102000000_ccm_scoped_repair_order_identity"
+            "20261103000000_milestone_workshop_visit_reference"
+            "20261104000000_cre_assignment_history"
+            "20261105000000_shared_physical_vehicle_service_history"
+            "20261106000000_remove_global_vehicle_unique_indexes"
+            "20261107000000_scope_milestones_to_physical_vehicle"
+            "20261108000000_align_shared_vehicle_schema"
+            "20261109000000_unified_monthly_import_provenance"
+            "20261110000000_permanent_cre_deletion"
+            "20261111000000_manual_cre_redistribution"
+            "20261112000000_physical_vehicle_last_service_date"
+            "20261113000000_performance_aggregates"
+            "20261114000000_service_contact_status"
+            "20261115000000_snapshot_publication_fencing"
+            "20261116000000_free_service_sequence_invalidation"
+            "20261117000000_free_service_expiry_invalidation"
+            "20261118000000_audit_log_created_at_index"
+            "20261121000000_nullable_unlinked_assignment_history"
+          )
+          for migration in server/prisma/migrations/*; do
+            [[ -d "$migration" ]] || continue
+            migration_name="${migration##*/}"
+            if [[ " ${excluded_candidate_migrations[*]} " == *" $migration_name "* ]]; then
+              continue
+            fi
+            if [[ " ${allowed_migrations[*]} " != *" $migration_name "* ]]; then
+              echo "Unexpected migration directory: ${migration_name}" >&2
+              exit 1
+            fi
+            cp -a "$migration" "$package/server/prisma/migrations/"
+          done
           cp server/package.json server/package-lock.json server/prisma.config.ts "$package/server/"
+          mkdir -p "$package/server/scripts"
+          cp server/scripts/guard-prisma-schema-mutation.js "$package/server/scripts/"
           mkdir -p "$package/server/deploy"
-          cp deploy/check-prisma-migrations.mjs deploy/database-identity.mjs "$package/server/deploy/"
+          cp deploy/check-prisma-migrations.mjs deploy/database-identity.mjs deploy/migration-policy.mjs "$package/server/deploy/"
           cp -a client/src "$package/client/src"
           if [[ -d client/public ]]; then cp -a client/public "$package/client/public"; fi
           cp client/index.html client/package.json client/package-lock.json client/vite.config.js "$package/client/"
@@ -209,13 +282,23 @@ jobs:
           tar -tzf "$RUNNER_TEMP/lhcrm-release.tar.gz" > "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Fxq './server/deploy/check-prisma-migrations.mjs' "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Fxq './server/deploy/database-identity.mjs' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './server/deploy/migration-policy.mjs' "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Fxq './server/package.json' "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Fxq './server/prisma.config.ts' "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Fxq './server/prisma/schema.prisma' "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Fxq './server/prisma/migrations/' "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Eq '^\./server/prisma/migrations/[^/]+/migration\.sql$' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          for migration_name in "${excluded_candidate_migrations[@]}"; do
+            if grep -Eq "^\./server/prisma/migrations/${migration_name}(/|$)" "$RUNNER_TEMP/lhcrm-release-files.txt"; then
+              echo "Excluded candidate migration ${migration_name} must not be included in this release." >&2
+              exit 1
+            fi
+          done
+          grep -Fxq './server/prisma/migrations/20261121000000_nullable_unlinked_assignment_history/migration.sql' \
+            "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Fxq './server/package-lock.json' "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Fxq './server/src/server.js' "$RUNNER_TEMP/lhcrm-release-files.txt"
+          grep -Fxq './server/scripts/guard-prisma-schema-mutation.js' "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Fxq './client/index.html' "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Fxq './client/package.json' "$RUNNER_TEMP/lhcrm-release-files.txt"
           grep -Fxq './client/package-lock.json' "$RUNNER_TEMP/lhcrm-release-files.txt"

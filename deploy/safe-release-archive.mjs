@@ -19,6 +19,34 @@ const maxCompressedBytes = 256 * 1024 * 1024;
 const maxExpandedBytes = 1024 * 1024 * 1024;
 const maxEntries = 100_000;
 const decoder = new TextDecoder('utf-8', { fatal: true });
+const allowedMigrationDirectories = [
+  '20261027000000_free_service_warranty_followup_categories',
+  '20261028000000_cre_service_category_permissions',
+  '20261029000000_free_service_cre_role',
+  '20261030_import_rollback_tracking',
+  '20261031000000_import_batch_ccm_history',
+  '20261101000000_add_immutable_workflow_ccm_ownership',
+  '20261101150000_add_customer_contact_address',
+  '20261102000000_ccm_scoped_repair_order_identity',
+  '20261103000000_milestone_workshop_visit_reference',
+  '20261104000000_cre_assignment_history',
+  '20261105000000_shared_physical_vehicle_service_history',
+  '20261106000000_remove_global_vehicle_unique_indexes',
+  '20261107000000_scope_milestones_to_physical_vehicle',
+  '20261108000000_align_shared_vehicle_schema',
+  '20261109000000_unified_monthly_import_provenance',
+  '20261110000000_permanent_cre_deletion',
+  '20261111000000_manual_cre_redistribution',
+  '20261112000000_physical_vehicle_last_service_date',
+  '20261113000000_performance_aggregates',
+  '20261114000000_service_contact_status',
+  '20261115000000_snapshot_publication_fencing',
+  '20261116000000_free_service_sequence_invalidation',
+  '20261117000000_free_service_expiry_invalidation',
+  '20261118000000_audit_log_created_at_index',
+  '20261121000000_nullable_unlinked_assignment_history',
+];
+const nullableHistoryMigration = '20261121000000_nullable_unlinked_assignment_history';
 
 function fail(message) {
   throw new Error(message);
@@ -101,6 +129,17 @@ function containsForbiddenPath(name) {
 
 function allowedMember(name, kind) {
   if (name && containsForbiddenPath(name)) return false;
+  const migrationRoot = 'server/prisma/migrations';
+  if (name === migrationRoot) return kind === 'directory';
+  if (name === `${migrationRoot}/migration_lock.toml`) return kind === 'file';
+  if (name.startsWith(`${migrationRoot}/`)) {
+    const [migration, ...remaining] = name.slice(migrationRoot.length + 1).split('/');
+    if (!allowedMigrationDirectories.includes(migration)) return false;
+    if (!remaining.length) return kind === 'directory';
+    if (remaining.length !== 1 || kind !== 'file') return false;
+    if (migration === nullableHistoryMigration) return remaining[0] === 'migration.sql';
+    return ['migration.sql', 'rollback.sql'].includes(remaining[0]);
+  }
   if (name === '') return kind === 'directory';
   if (name === 'server' || name === 'client') return kind === 'directory';
   if (name === 'RELEASE_COMMIT') return kind === 'file';
@@ -115,12 +154,9 @@ function allowedMember(name, kind) {
       name === 'server/prisma.config.ts' ||
       name === 'server/deploy/check-prisma-migrations.mjs' ||
       name === 'server/deploy/database-identity.mjs' ||
-      name === 'server/prisma/schema.prisma' ||
-      name === 'server/prisma/migrations/migration_lock.toml') return kind === 'file';
-  if (name === 'server/deploy' || name === 'server/prisma' ||
-      name === 'server/prisma/migrations') return kind === 'directory';
-  if (/^server\/prisma\/migrations\/[^/]+$/.test(name)) return kind === 'directory';
-  if (/^server\/prisma\/migrations\/[^/]+\/(?:migration|rollback)\.sql$/.test(name)) return kind === 'file';
+      name === 'server/deploy/migration-policy.mjs' ||
+      name === 'server/prisma/schema.prisma') return kind === 'file';
+  if (name === 'server/deploy' || name === 'server/prisma') return kind === 'directory';
   return false;
 }
 
@@ -275,8 +311,10 @@ export async function extractReleaseArchive(archive, stage) {
     'server/prisma.config.ts',
     'server/deploy/check-prisma-migrations.mjs',
     'server/deploy/database-identity.mjs',
+    'server/deploy/migration-policy.mjs',
     'server/prisma/schema.prisma',
     'server/prisma/migrations/migration_lock.toml',
+    `server/prisma/migrations/${nullableHistoryMigration}/migration.sql`,
     'client/index.html',
     'client/package.json',
     'client/package-lock.json',

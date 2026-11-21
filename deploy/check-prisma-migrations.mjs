@@ -2,14 +2,15 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
 import { assertDatabaseIdentity, loadExpectedDatabaseIdentity, migrationChecksumMatches } from './database-identity.mjs';
+import { assertApprovedPendingMigrations } from './migration-policy.mjs';
 
 const mode = process.argv[2];
 if (mode !== 'status' && mode !== 'preflight' && mode !== 'apply') {
   throw new Error('Usage: check-prisma-migrations.mjs status|preflight|apply');
 }
 
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) throw new Error('DATABASE_URL is not available in the systemd environment.');
+const connectionString = process.env.MIGRATION_DATABASE_URL?.trim();
+if (!connectionString) throw new Error('MIGRATION_DATABASE_URL is not available in the systemd environment.');
 const connection = new URL(connectionString);
 const expectedIdentity = loadExpectedDatabaseIdentity();
 const database = decodeURIComponent(connection.pathname.slice(1));
@@ -26,12 +27,32 @@ const quotedSchema = `"${schema}"`;
 try {
   await client.connect();
   const identity = await client.query(
-    `SELECT current_database() AS database, current_user AS username,
+    `SELECT session_user::text AS session_user,
+      current_user::text AS current_user,
+      current_database() AS database,
       inet_server_addr()::text AS server_address, inet_server_port() AS server_port,
       current_setting('server_version') AS server_version,
-      to_regclass($1)::text AS migration_table`,
+      r.rolsuper,
+      r.rolinherit,
+      r.rolbypassrls,
+      r.rolcreaterole,
+      r.rolcreatedb,
+      r.rolreplication,
+      r.rolcanlogin,
+      (
+        SELECT count(*)::int
+        FROM pg_auth_members m
+        JOIN pg_roles member_role ON member_role.oid = m.member
+        WHERE member_role.rolname = session_user
+      ) AS membership_count,
+      to_regclass($1)::text AS migration_table
+      FROM pg_roles r
+      WHERE r.rolname = session_user`,
     [`${quotedSchema}."_prisma_migrations"`],
   );
+  if (identity.rows.length !== 1) {
+    throw new Error('Refusing migrations: live migration identity is missing or ambiguous.');
+  }
   const databaseIdentity = identity.rows[0];
   assertDatabaseIdentity(connection, databaseIdentity, expectedIdentity);
   if (!databaseIdentity.migration_table) {
@@ -86,10 +107,7 @@ try {
       throw new Error('Cannot verify the active release migration baseline; refusing to apply migrations.');
     }
     const newlyCommitted = new Set(migrations.filter(({ name }) => !activeNames.has(name)).map(({ name }) => name));
-    const unexpected = pending.filter((name) => !newlyCommitted.has(name));
-    if (unexpected.length) {
-      throw new Error(`Pending migrations are not new in this release: ${unexpected.join(', ')}.`);
-    }
+    assertApprovedPendingMigrations(pending, newlyCommitted);
   }
 } finally {
   await client.end();

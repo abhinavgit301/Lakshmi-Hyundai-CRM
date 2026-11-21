@@ -20,6 +20,7 @@ const child = spawn(process.execPath, [prismaCli, 'db', 'push'], {
     ...process.env,
     DATABASE_URL: databaseUrl,
     TEST_DATABASE_URL: databaseUrl,
+    ALLOW_LOCAL_PRISMA_SCHEMA_MUTATION: 'true',
   },
   shell: false,
   stdio: ['inherit', 'pipe', 'pipe'],

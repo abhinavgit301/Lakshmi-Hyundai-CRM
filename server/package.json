@@ -10,9 +10,9 @@
     "test:snapshot": "node scripts/run-tests.js --snapshots",
     "test:integration": "node scripts/run-import-integration-tests.js",
     "prisma:push:integration": "node scripts/push-import-integration-schema.js",
-    "prisma:push": "npx prisma db push",
+    "prisma:push": "node scripts/guard-prisma-schema-mutation.js push",
     "prisma:generate": "npx prisma generate",
-    "prisma:reset": "npx prisma db push --force-reset",
+    "prisma:reset": "node scripts/guard-prisma-schema-mutation.js reset",
     "postinstall": "prisma skills sync || exit 0"
   },
   "keywords": [],

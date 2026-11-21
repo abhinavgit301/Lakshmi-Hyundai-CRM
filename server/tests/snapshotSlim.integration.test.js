@@ -25,7 +25,8 @@ test('slim snapshot matches the existing calculation on a multi-team PostgreSQL 
   };
   const { prisma } = await import('../src/config/prisma.js');
   const { computeCrePerformanceMetrics, computeFreeServiceCrePerformanceMetrics } = await import('../src/controllers/callWorkflowController.js');
-  const { loadCallListRecords, creDueWhere, classifyDueCohorts } = await import('../src/controllers/recordsController.js');
+  const { loadCallListRecords, creDueWhere, classifyDueCohorts, getDashboardSummary } = await import('../src/controllers/recordsController.js');
+  const { invalidateCallListCache } = await import('../src/utils/callListCache.js');
   const { createSnapshotLifecycleResolver, loadSnapshotCallListRecords } = await import('../src/utils/snapshotCallList.js');
   const { freeServiceCustomerIdsForMonth, getServiceLifecycle } = await import('../src/utils/serviceCalendar.js');
   const { refreshSnapshot } = await import('../src/services/performanceSnapshotService.js');
@@ -181,6 +182,28 @@ test('slim snapshot matches the existing calculation on a multi-team PostgreSQL 
       console.log(JSON.stringify({ label: `team-${i}-records`, inputRows: loaded.rows, canonicalRecords: loaded.canonicalRecords,
         slimVisits: loaded.visits, legacyRetainedVisits: legacy.reduce((sum, record) => sum + record.workshopVisits.length, 0) }));
 
+      const readDashboard = async (enabled, streamed = false) => {
+        process.env.DASHBOARD_SLIM_CALL_LIST_ENABLED = String(enabled);
+        process.env.DASHBOARD_STREAMED_CALL_LIST_ENABLED = String(streamed);
+        invalidateCallListCache();
+        const response = {
+          statusCode: 200,
+          status(code) { this.statusCode = code; return this; },
+          json(body) { this.body = body; return this; },
+        };
+        await getDashboardSummary({ user: cre, query: {} }, response);
+        assert.equal(response.statusCode, 200);
+        return response.body;
+      };
+      assert.deepEqual(
+        await measure(`team-${i}-slim-dashboard`, () => readDashboard(true)),
+        await measure(`team-${i}-legacy-dashboard`, () => readDashboard(false)),
+      );
+      assert.deepEqual(
+        await measure(`team-${i}-streamed-dashboard`, () => readDashboard(true, true)),
+        await measure(`team-${i}-legacy-dashboard-repeat`, () => readDashboard(false)),
+      );
+
       let legacyLifecycleCalls = 0;
       const calculateLegacy = (record, date) => { legacyLifecycleCalls += 1; return getServiceLifecycle(record, date); };
       const legacyCohorts = classifyDueCohorts(slim, now, calculateLegacy);
@@ -202,6 +225,16 @@ test('slim snapshot matches the existing calculation on a multi-team PostgreSQL 
           process.env.PERFORMANCE_SNAPSHOT_SLIM_CALL_LIST_ENABLED = 'true';
           const after = await measure(`team-${i}-${viewer}-${month}-slim-snapshot`, () => computeCrePerformanceMetrics({ targetCre: cre, viewer, year: 2026, month, now }));
           assert.deepEqual(after, before);
+          process.env.PERFORMANCE_SNAPSHOT_STREAMED_CALL_LIST_ENABLED = 'true';
+          const streamed = await measure(`team-${i}-${viewer}-${month}-streamed-snapshot`, () => computeCrePerformanceMetrics({ targetCre: cre, viewer, year: 2026, month, now }));
+          assert.deepEqual(streamed, before);
+          const streamedConsistent = await prisma.$transaction(async (db) => {
+            await db.$executeRaw`SET TRANSACTION READ ONLY`;
+            const finish = await computeCrePerformanceMetrics({ targetCre: cre, viewer, year: 2026, month, now, db, deferClassification: true });
+            return finish;
+          }, { isolationLevel: 'RepeatableRead', timeout: 60000, maxWait: 2000 });
+          assert.deepEqual(await streamedConsistent(), before);
+          delete process.env.PERFORMANCE_SNAPSHOT_STREAMED_CALL_LIST_ENABLED;
           for (const slimEnabled of ['false', 'true']) {
             process.env.PERFORMANCE_SNAPSHOT_SLIM_CALL_LIST_ENABLED = slimEnabled;
             const consistent = await measure(`team-${i}-${viewer}-${month}-${slimEnabled === 'true' ? 'slim' : 'legacy'}-repeatable-read`, () => prisma.$transaction(async (db) => {
@@ -222,14 +255,15 @@ test('slim snapshot matches the existing calculation on a multi-team PostgreSQL 
     assert.equal(freeBefore.callsThisMonth, 1);
     process.env.PERFORMANCE_SNAPSHOT_SLIM_CALL_LIST_ENABLED = 'true';
     assert.deepEqual(await computeFreeServiceCrePerformanceMetrics({ targetCre: freeCre, year: 2026, month: 11, now }), freeBefore);
-    if (scaleRun) {
+    {
       process.env.PERFORMANCE_SNAPSHOT_CONSISTENT_READS_ENABLED = 'true';
       await prisma.performanceSnapshotRevision.createMany({ data: [{ scope: 'global' }], skipDuplicates: true });
       const key = { creId: cres[0].id, ccmId: cres[0].ccmId, year: 2026, month: 11, viewer: 'CRE' };
       let legacyMetrics;
-      for (const slimEnabled of ['false', 'true']) {
-        process.env.PERFORMANCE_SNAPSHOT_SLIM_CALL_LIST_ENABLED = slimEnabled;
-        const result = await measure(`team-0-${slimEnabled === 'true' ? 'slim' : 'legacy'}-fenced-refresh`, () => refreshSnapshot(key, { now }));
+      for (const mode of ['legacy', 'slim', 'streamed']) {
+        process.env.PERFORMANCE_SNAPSHOT_SLIM_CALL_LIST_ENABLED = String(mode !== 'legacy');
+        process.env.PERFORMANCE_SNAPSHOT_STREAMED_CALL_LIST_ENABLED = String(mode === 'streamed');
+        const result = await measure(`team-0-${mode}-fenced-refresh`, () => refreshSnapshot(key, { now }));
         assert.deepEqual(result, { refreshed: true });
         const snapshot = await prisma.crePerformanceSnapshot.findUniqueOrThrow({
           where: { creId_ccmId_year_month_viewer: key },
@@ -244,7 +278,10 @@ test('slim snapshot matches the existing calculation on a multi-team PostgreSQL 
   } finally {
     pg.Client.prototype.query = originalQuery;
     delete process.env.PERFORMANCE_SNAPSHOT_SLIM_CALL_LIST_ENABLED;
-    if (scaleRun) delete process.env.PERFORMANCE_SNAPSHOT_CONSISTENT_READS_ENABLED;
+    delete process.env.PERFORMANCE_SNAPSHOT_STREAMED_CALL_LIST_ENABLED;
+    delete process.env.DASHBOARD_SLIM_CALL_LIST_ENABLED;
+    delete process.env.DASHBOARD_STREAMED_CALL_LIST_ENABLED;
+    delete process.env.PERFORMANCE_SNAPSHOT_CONSISTENT_READS_ENABLED;
     await prisma.$disconnect();
   }
 });

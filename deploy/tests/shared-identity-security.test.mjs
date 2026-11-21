@@ -38,6 +38,40 @@ test('backend unit and Nginx root consistently use the top-level current symlink
   assert.match(workflow, /"\$package\/client"/);
 });
 
+test('migration and runtime credentials are separated without fallback', () => {
+  for (const unit of migrationUnits) {
+    assert.match(unit, /^EnvironmentFile=\/opt\/lakshmi-hyundai\/shared\/migration\.env$/m);
+    assert.doesNotMatch(unit, /\/opt\/lakshmi-hyundai\/shared\/backend\.env/);
+  }
+
+  const backendUnit = read('../systemd/lakshmi-hyundai-backend-current.conf');
+  assert.match(backendUnit, /^EnvironmentFile=\/opt\/lakshmi-hyundai\/shared\/backend\.env$/m);
+  assert.doesNotMatch(backendUnit, /migration\.env/);
+
+  const precheck = read('../check-prisma-migrations.mjs');
+  assert.match(precheck, /process\.env\.MIGRATION_DATABASE_URL/);
+  assert.doesNotMatch(precheck, /process\.env\.DATABASE_URL/);
+
+  const prismaConfig = read('../../server/prisma.config.ts');
+  assert.match(prismaConfig, /MIGRATION_DATABASE_URL/);
+  assert.match(prismaConfig, /schemaMutationDatasourceUrl/);
+  assert.match(prismaConfig, /prismaMigrationOperation/);
+
+  const prismaRuntime = read('../../server/src/config/prisma.js');
+  assert.match(prismaRuntime, /process\.env\.DATABASE_URL/);
+  assert.doesNotMatch(prismaRuntime, /MIGRATION_DATABASE_URL/);
+
+  const importLock = read('../../server/src/utils/importProcessingLock.js');
+  assert.match(importLock, /process\.env\.DATABASE_URL/);
+  assert.doesNotMatch(importLock, /MIGRATION_DATABASE_URL/);
+
+  const serverStartup = read('../../server/src/server.js');
+  assert.match(serverStartup, /from '\.\/config\/prisma\.js'/);
+  const snapshotService = read('../../server/src/services/performanceSnapshotService.js');
+  assert.match(snapshotService, /from '\.\.\/config\/prisma\.js'/);
+  assert.doesNotMatch(snapshotService, /MIGRATION_DATABASE_URL/);
+});
+
 test('runtime preflight verifies the exact Node version before any artifact transfer', () => {
   const preflight = workflow.indexOf('name: Verify VPS runtime before transfer');
   const transfer = workflow.indexOf('name: Transfer package and deploy release');
@@ -47,7 +81,7 @@ test('runtime preflight verifies the exact Node version before any artifact tran
 });
 
 test('backend and migration services cannot write deployment or credential paths', () => {
-  for (const unit of [backendHardening, ...migrationUnits]) {
+  for (const unit of [backendHardening]) {
     assert.match(unit, /^ProtectSystem=strict$/m);
     assert.match(unit, /^ProtectHome=true$/m);
     assert.match(unit, /^PrivateTmp=true$/m);
@@ -56,6 +90,13 @@ test('backend and migration services cannot write deployment or credential paths
     assert.doesNotMatch(unit, /^ReadWritePaths=/m);
   }
   for (const unit of migrationUnits) {
+    assert.match(unit, /^ProtectSystem=strict$/m);
+    assert.match(unit, /^ProtectHome=true$/m);
+    assert.match(unit, /^PrivateTmp=true$/m);
+    assert.match(unit, /^ReadOnlyPaths=\/opt\/lakshmi-hyundai\/releases/m);
+    assert.match(unit, /^ReadOnlyPaths=\/opt\/lakshmi-hyundai\/shared\/migration\.env$/m);
+    assert.doesNotMatch(unit, /^ReadOnlyPaths=\/opt\/lakshmi-hyundai\/shared\/backend\.env$/m);
+    assert.doesNotMatch(unit, /^ReadWritePaths=/m);
     assert.match(unit, /^NoNewPrivileges=true$/m);
     assert.match(unit, /^CapabilityBoundingSet=$/m);
     assert.match(unit, /^RestrictSUIDSGID=true$/m);
@@ -74,7 +115,11 @@ test('preflight enforces protected SSH home, environment, helper, verifier, and 
   assert.match(helper, /"\$verifier_uid" == 0/);
   assert.match(helper, /"\$public_key_uid" == 0/);
   assert.match(helper, /"\$database_identity_uid" == 0/);
+  assert.match(helper, /migration_env=\/opt\/lakshmi-hyundai\/shared\/migration\.env/);
+  assert.match(helper, /migration_env_uid=/);
+  assert.match(helper, /"\$migration_env_uid" == 0/);
   assert.match(helper, /"\$\(\(8#\$backend_env_mode & 0077\)\)" -eq 0/);
+  assert.match(helper, /"\$\(\(8#\$migration_env_mode & 0077\)\)" -eq 0/);
   assert.match(helper, /"\$\(\(8#\$helper_mode & 07022\)\)" -eq 0/);
   assert.match(helper, /"\$\(\(8#\$verifier_mode & 07022\)\)" -eq 0/);
 });

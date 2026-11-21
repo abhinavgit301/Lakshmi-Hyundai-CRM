@@ -92,6 +92,7 @@ validate_release() {
      -d "$root/server/prisma/migrations" &&
      -s "$root/server/deploy/check-prisma-migrations.mjs" &&
      -s "$root/server/deploy/database-identity.mjs" &&
+     -s "$root/server/deploy/migration-policy.mjs" &&
      -s "$root/server/node_modules/prisma/build/index.js" &&
      -s "$root/server/node_modules/@prisma/client/package.json" &&
      -s "$root/server/node_modules/@prisma/adapter-pg/package.json" &&
@@ -256,6 +257,7 @@ else
      -s "$stage/server/package.json" &&
      -s "$stage/server/package-lock.json" &&
      -s "$stage/server/deploy/check-prisma-migrations.mjs" &&
+     -s "$stage/server/deploy/migration-policy.mjs" &&
      -s "$stage/server/prisma.config.ts" &&
      -s "$stage/server/prisma/schema.prisma" &&
      -d "$stage/server/prisma/migrations" &&
@@ -270,7 +272,7 @@ else
   (
     cd "$stage/server"
     npm ci --omit=dev --no-audit --no-fund
-    DATABASE_URL=postgresql://lhcrm_preflight:unused@127.0.0.1:5432/lhcrm_preflight \
+    MIGRATION_DATABASE_URL=postgresql://lhcrm_preflight:unused@127.0.0.1:5432/lhcrm_preflight \
       /usr/bin/node node_modules/prisma/build/index.js generate
   )
   (

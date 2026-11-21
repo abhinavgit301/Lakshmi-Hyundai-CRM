@@ -3,6 +3,8 @@ import jwt from 'jsonwebtoken';
 import { prisma } from '../config/prisma.js';
 import { getJwtSecret } from '../middleware/securityMiddleware.js';
 
+const DUMMY_PASSWORD_HASH = '$2b$10$Y/o89L7OmAJgc2vqwkMGuuhK94GYg1IMc0H8bLQ4TXybDAEV4X6Ke';
+
 function normalizeRole(role) {
   const value = String(role || '').toUpperCase();
 
@@ -63,13 +65,10 @@ export async function login(req, res) {
     },
   });
 
-  if (!user || user.status !== 'active') {
-    return res.status(401).json({ message: 'Invalid email or password.' });
-  }
+  const passwordHash = user?.status === 'active' ? user.password : DUMMY_PASSWORD_HASH;
+  const passwordMatches = await bcrypt.compare(String(password), passwordHash);
 
-  const passwordMatches = await bcrypt.compare(String(password), user.password);
-
-  if (!passwordMatches) {
+  if (!user || user.status !== 'active' || !passwordMatches) {
     return res.status(401).json({ message: 'Invalid email or password.' });
   }
 

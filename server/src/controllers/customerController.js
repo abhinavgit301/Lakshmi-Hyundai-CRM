@@ -59,7 +59,7 @@ export async function updateCreCustomerProfile(req, res) {
 
   const updated = await prisma.customer.updateMany({
     where: {
-      id: customer.id,
+      ...customerWhere,
       mobileNumber: customer.mobileNumber,
     },
     data: {

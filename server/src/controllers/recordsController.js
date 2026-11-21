@@ -36,6 +36,8 @@ import { isServiceContactStatusEnabled, resolveServiceContactStatus } from '../u
 import { invalidateSnapshotSourceWrite } from '../utils/performanceSnapshotState.js';
 import { signalSnapshotRefresh } from '../utils/performanceRefreshSignal.js';
 import { noteCreOwnershipChange } from '../utils/creCallAggregates.js';
+import { createSnapshotLifecycleResolver, loadSnapshotCallListRecords, summarizeDashboardCallList } from '../utils/snapshotCallList.js';
+import { createDashboardTrace, traceDashboardPhase } from '../utils/dashboardTrace.js';
 
 const CALL_LIST_QUERY_CHUNK_SIZE = 100;
 const RELATED_ID_QUERY_CHUNK_SIZE = 500;
@@ -282,6 +284,15 @@ export function operationalReadScope(user) {
 
 const cachedCreDashboardSummary = withCachedResponse('dashboard-cre', loadDashboardSummary, { kind: 'workflow' });
 
+export function isDashboardSlimCallListEnabled(env = process.env) {
+  return ['true', '1'].includes(String(env.DASHBOARD_SLIM_CALL_LIST_ENABLED || '').trim().toLowerCase());
+}
+
+export function isDashboardStreamedCallListEnabled(env = process.env) {
+  return isDashboardSlimCallListEnabled(env)
+    && ['true', '1'].includes(String(env.DASHBOARD_STREAMED_CALL_LIST_ENABLED || '').trim().toLowerCase());
+}
+
 // Only the CRE dashboard is cached: it loads the CRE's whole due cohort. The `workflow` kind is
 // cleared by every write that can change calls, follow-ups, appointments, allocations or visits.
 export function getDashboardSummary(req, res) {
@@ -292,6 +303,7 @@ export function getDashboardSummary(req, res) {
 async function loadDashboardSummary(req, res) {
   const user = req.user;
   const role = normalizeRole(user?.role);
+  const trace = createDashboardTrace();
   const now = new Date();
   const dayRange = workshopDayRange(now);
   const monthInfo = workshopMonthOf(now);
@@ -340,10 +352,10 @@ async function loadDashboardSummary(req, res) {
     });
   }
 
-  const pendingFollowUpWhere = await excludeIneligibleFreeServiceFollowUps({
+  const pendingFollowUpWhere = await traceDashboardPhase(trace, 'follow_up_eligibility', () => excludeIneligibleFreeServiceFollowUps({
     ...scope.followUp,
     status: 'pending',
-  }, user);
+  }, user));
   const [
     totalCustomers,
     activeVehicles,
@@ -355,7 +367,7 @@ async function loadDashboardSummary(req, res) {
     importTotals,
     pendingVinConflicts,
     assignedAllocations,
-  ] = await Promise.all([
+  ] = await traceDashboardPhase(trace, 'general_counts', () => Promise.all([
     prisma.customer.count({ where: scope.customer }),
     prisma.vehicle.count({ where: { ...scope.vehicle, status: 'ACTIVE' } }),
     prisma.callLog.count({
@@ -382,7 +394,7 @@ async function loadDashboardSummary(req, res) {
     prisma.importBatch.aggregate({ where: scope.importBatch, _sum: { totalRows: true, flaggedRows: true } }),
     prisma.vINConflictReview.count({ where: { ...scope.vinConflict, status: 'pending' } }),
     prisma.allocation.count({ where: { ...scope.allocation, status: 'assigned' } }),
-  ]);
+  ]));
 
   const summary = {
     role,
@@ -400,14 +412,17 @@ async function loadDashboardSummary(req, res) {
 
   if (role === 'CRE') {
     const dueWhere = creDueWhere(user.id, user.ccmId);
-    const creFollowUpWhere = await excludeIneligibleFreeServiceFollowUps({
-      status: 'pending',
-      ...scope.followUp,
-      source: { in: allowedServiceSources(user) },
-    }, user);
-    const [scopedRecords, creCounts, followUps, todayAppointments, missedWarranty] = await Promise.all([
-      loadCallListRecords(dueWhere, now, user),
-      getCreCallCountsForScope({
+    const slimCallList = isDashboardSlimCallListEnabled();
+    const streamedCallList = isDashboardStreamedCallListEnabled();
+    const includeFreeService = canAccessServiceSource(user, 'FREE_SERVICE');
+    const resolveLifecycle = slimCallList ? createSnapshotLifecycleResolver() : undefined;
+    const [callListResult, creCounts, followUps, todayAppointments, missedWarranty] = await traceDashboardPhase(trace, 'cre_queries', () => Promise.all([
+      traceDashboardPhase(trace, 'call_list', () => streamedCallList
+        ? summarizeDashboardCallList(dueWhere, now, user, { ...monthInfo, includeFreeService })
+        : slimCallList
+          ? loadSnapshotCallListRecords(dueWhere, now, user, { resolveLifecycle })
+          : loadCallListRecords(dueWhere, now, user)),
+      traceDashboardPhase(trace, 'call_counts', () => getCreCallCountsForScope({
         creIds: [user.id],
         start: dayRange.start,
         end: dayRange.end,
@@ -424,17 +439,17 @@ async function loadDashboardSummary(req, res) {
             ],
           }],
         },
-      }),
-      prisma.followUp.findMany({
-        where: creFollowUpWhere,
+      })),
+      traceDashboardPhase(trace, 'follow_ups', () => prisma.followUp.findMany({
+        where: pendingFollowUpWhere,
         include: {
           customer: { select: { id: true, fullName: true, mobileNumber: true } },
           vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
         },
         orderBy: { followUpAt: 'asc' },
         take: 8,
-      }),
-      prisma.appointment.findMany({
+      })),
+      traceDashboardPhase(trace, 'appointments', () => prisma.appointment.findMany({
         where: {
           scheduledAt: { gte: dayRange.start, lt: dayRange.end },
           ...appointmentVisibilityWhere(user),
@@ -444,28 +459,38 @@ async function loadDashboardSummary(req, res) {
           vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true } },
         },
         orderBy: { scheduledAt: 'asc' },
-      }),
+      })),
       canAccessServiceSource(user, 'WARRANTY')
-        ? findMissedWarrantyCases({
+        ? traceDashboardPhase(trace, 'missed_warranty', () => findMissedWarrantyCases({
           scope: dueWhere,
           vehicleScope: scope.vehicle,
           callScope: scope.call,
           year: monthInfo.year,
           month: monthInfo.month,
           now,
-        })
+        }))
         : Promise.resolve([]),
-    ]);
+    ]));
 
-    const cohorts = classifyDueCohorts(scopedRecords, now);
-    const freeServiceIds = canAccessServiceSource(user, 'FREE_SERVICE')
-      ? freeServiceCustomerIdsForMonth(scopedRecords, monthInfo.year, monthInfo.month, now)
-      : new Set();
-    const workloadCustomerIds = new Set([
-      ...cohorts.oneYear.map((record) => record.customerId),
-      ...cohorts.sixMonth.map((record) => record.customerId),
-      ...freeServiceIds,
-    ].filter(Boolean));
+    let callListMetrics = callListResult;
+    if (!streamedCallList) {
+      const cohorts = classifyDueCohorts(callListResult, now, resolveLifecycle);
+      const freeServiceIds = includeFreeService
+        ? freeServiceCustomerIdsForMonth(callListResult, monthInfo.year, monthInfo.month, now, resolveLifecycle)
+        : new Set();
+      const workloadCustomerIds = new Set([
+        ...cohorts.oneYear.map((record) => record.customerId),
+        ...cohorts.sixMonth.map((record) => record.customerId),
+        ...freeServiceIds,
+      ].filter(Boolean));
+      callListMetrics = {
+        oneYear: cohorts.oneYear.length,
+        sixMonth: cohorts.sixMonth.length,
+        freeService: includeFreeService ? freeServiceIds.size : null,
+        assignedWorkload: workloadCustomerIds.size,
+        dueServicesCount: countOverdueRecords(callListResult, now),
+      };
+    }
 
     const dayCallCounts = creCounts.get(user.id) || { callsMade: 0, callsPickedUp: 0 };
     const overdueFollowUpsCount = followUps.filter((f) => new Date(f.followUpAt) < now).length;
@@ -485,11 +510,11 @@ async function loadDashboardSummary(req, res) {
           shortfall: Math.max(0, DAILY_TARGETS.callsPickedUp - dayCallCounts.callsPickedUp),
         },
       },
-      assignedWorkload: workloadCustomerIds.size,
+      assignedWorkload: callListMetrics.assignedWorkload,
       categoryCounts: {
-        oneYear: cohorts.oneYear.length,
-        sixMonth: cohorts.sixMonth.length,
-        freeService: canAccessServiceSource(user, 'FREE_SERVICE') ? freeServiceIds.size : null,
+        oneYear: callListMetrics.oneYear,
+        sixMonth: callListMetrics.sixMonth,
+        freeService: callListMetrics.freeService,
         missedWarranty: canAccessServiceSource(user, 'WARRANTY') ? missedWarranty.length : null,
       },
       pendingFollowUps: followUps.length,
@@ -517,7 +542,7 @@ async function loadDashboardSummary(req, res) {
         time: new Date(a.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         status: a.status,
       })),
-      dueServicesCount: countOverdueRecords(scopedRecords, now),
+      dueServicesCount: callListMetrics.dueServicesCount,
     };
   }
 
@@ -1161,11 +1186,28 @@ export async function loadCallListPageTwoPhase({
   const page = await runPage({ user, filters, pagination, requestedCcmId, now, today, options });
   if (page.forbidden) return { error: 'You are not permitted to view this CCM team.' };
 
+  const queueIds = new Set(page.queueIds);
+  const masterIds = page.ids.filter((id) => !queueIds.has(id));
   let allocationQueueRecords = [];
-  if (role === 'CCM') {
+  if (role === 'CCM' && page.ids.length) {
     const ccmId = user?.ccmId || 'no-access';
-    const unassignedAllocations = await prisma.allocation.findMany({
-      where: { ccmId, status: 'assigned', creId: null },
+    const selectedMasters = masterIds.length
+      ? await prisma.masterCallList.findMany({
+        where: { ccmId, id: { in: masterIds } },
+        select: { vin: true },
+      })
+      : [];
+    const vins = [...new Set(selectedMasters.map(({ vin }) => vin).filter(Boolean))];
+    const selectedAllocationIds = page.queueIds.map((id) => {
+      if (!id.startsWith('allocation:')) throw new Error('Invalid allocation queue ID in Master Call List page.');
+      return id.slice('allocation:'.length);
+    });
+    const queueScope = [
+      ...(vins.length ? [{ vehicle: { is: { vin: { in: vins } } } }] : []),
+      ...(selectedAllocationIds.length ? [{ id: { in: selectedAllocationIds } }] : []),
+    ];
+    const unassignedAllocations = queueScope.length ? await prisma.allocation.findMany({
+      where: { ccmId, status: 'assigned', creId: null, OR: queueScope },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: {
         id: true,
@@ -1173,12 +1215,10 @@ export async function loadCallListPageTwoPhase({
         serviceType: true,
         vehicle: { select: { id: true, vin: true, model: true, registrationNumber: true, customer: { select: { id: true } } } },
       },
-    });
+    }) : [];
     allocationQueueRecords = buildAllocationQueueRecords([], unassignedAllocations, ccmId);
   }
 
-  const queueIds = new Set(page.queueIds);
-  const masterIds = page.ids.filter((id) => !queueIds.has(id));
   const byId = new Map();
   if (masterIds.length) {
     const roleScope = ['CCM', 'CRE'].includes(role) ? getVisibilityWhere(user) : {};
@@ -1334,7 +1374,7 @@ export async function loadMasterDueCandidatePage({
         selectionOnly: true,
       },
     );
-    for (const record of page.records) matching.push(record);
+    for (const { id, createdAt } of page.records) matching.push({ id, createdAt });
   }
   matching.sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)
     || String(left.id).localeCompare(String(right.id)));
@@ -1417,11 +1457,11 @@ export function dueCohortCandidateWhere(asOf) {
 
 // Any lifecycle reference in a due cohort must be a visit in one of these ranges. Include
 // all scoped rows for each candidate VIN so canonical selection remains unchanged.
-export async function loadDueCohorts(where, asOf = new Date(), user = null) {
+export async function loadDueCohorts(where, asOf = new Date(), user = null, { db = prisma } = {}) {
   const vins = new Set();
   let afterId = null;
   while (true) {
-    const page = await prisma.masterCallList.findMany({
+    const page = await db.masterCallList.findMany({
       where: {
         AND: [where, dueCohortCandidateWhere(asOf), ...(afterId ? [{ id: { gt: afterId } }] : [])],
       },
@@ -1433,11 +1473,16 @@ export async function loadDueCohorts(where, asOf = new Date(), user = null) {
     if (page.length < RELATED_ID_QUERY_CHUNK_SIZE) break;
     afterId = page.at(-1).id;
   }
-  const records = [];
+  const cohorts = { oneYear: [], sixMonth: [] };
   for (const chunk of splitIntoChunks([...vins], RELATED_ID_QUERY_CHUNK_SIZE)) {
-    records.push(...await loadCallListRecords({ AND: [where, { vin: { in: chunk } }] }, asOf, user));
+    const records = await loadCallListRecords({ AND: [where, { vin: { in: chunk } }] }, asOf, user, { db });
+    const classified = classifyDueCohorts(records, asOf);
+    cohorts.oneYear.push(...classified.oneYear);
+    cohorts.sixMonth.push(...classified.sixMonth);
   }
-  return classifyDueCohorts(records, asOf);
+  cohorts.oneYear.sort(compareByDueDateThenId);
+  cohorts.sixMonth.sort(compareByDueDateThenId);
+  return cohorts;
 }
 
 export function classifyDueCohorts(records, asOf = new Date(), getLifecycle = getServiceLifecycle) {

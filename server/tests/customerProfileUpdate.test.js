@@ -74,7 +74,19 @@ test('CRE can save contact details only for a customer with a vehicle assigned i
 
     assert.equal(res.statusCode, 200);
     assert.deepEqual(res.body.customer, savedCustomer);
-    assert.deepEqual(updateArgs.where, { id: 'customer-1', mobileNumber: null });
+    assert.deepEqual(updateArgs.where, {
+      id: 'customer-1',
+      vehicles: {
+        some: {
+          ccmId: 'ccm-a',
+          OR: [
+            { allocations: { some: { creId: 'cre-a', ccmId: 'ccm-a', status: 'assigned' } } },
+            { masterCallListEntries: { some: { ownerUserId: 'cre-a', ccmId: 'ccm-a' } } },
+          ],
+        },
+      },
+      mobileNumber: null,
+    });
     assert.deepEqual(updateArgs.data, profile);
   });
 });
@@ -157,5 +169,30 @@ test('simultaneous profile saves cannot overwrite a phone number entered by anot
     }, res);
     assert.equal(res.statusCode, 409);
     assert.equal(res.body.message, 'This profile was updated already. Reload it to view the saved details.');
+  });
+});
+
+test('profile update remains scoped to the CRE at the write boundary after reassignment', async () => {
+  let updateWhere;
+  await withCustomerMocks({
+    findFirst: async () => ({ id: 'customer-1', mobileNumber: null }),
+    updateMany: async ({ where }) => {
+      updateWhere = where;
+      return { count: 0 };
+    },
+  }, async () => {
+    const res = createResponse();
+    await updateCreCustomerProfile({
+      user: { id: 'cre-a', role: 'CRE', ccmId: 'ccm-a' },
+      params: { id: 'customer-1' },
+      body: profile,
+    }, res);
+
+    assert.equal(updateWhere.vehicles.some.ccmId, 'ccm-a');
+    assert.deepEqual(updateWhere.vehicles.some.OR, [
+      { allocations: { some: { creId: 'cre-a', ccmId: 'ccm-a', status: 'assigned' } } },
+      { masterCallListEntries: { some: { ownerUserId: 'cre-a', ccmId: 'ccm-a' } } },
+    ]);
+    assert.equal(res.statusCode, 409);
   });
 });

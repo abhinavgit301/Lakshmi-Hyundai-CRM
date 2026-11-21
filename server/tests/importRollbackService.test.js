@@ -710,6 +710,33 @@ test('a later call-list owner assignment is preserved and blocks conflicting rol
   assert.equal(state.records.MasterCallList[entry.id].ownerUserId, 'cre-c');
 });
 
+test('rollback records an unlinked call-list assignment without a vehicle ID', async () => {
+  const entry = fullRecord('MasterCallList', 'call-unlinked', {
+    vehicleId: null, ownerUserId: 'cre-b', updatedAt: '2025-01-02T00:00:00.000Z',
+  });
+  const { database, state } = createDatabase({
+    batch: makeBatch({
+      outcome: 'skipped',
+      changes: [{
+        evidenceScope: 'batch',
+        entityType: 'MasterCallList',
+        entityId: entry.id,
+        operation: 'UPDATE',
+        before: { ownerUserId: 'cre-a', updatedAt: '2025-01-01T00:00:00.000Z' },
+        after: { ownerUserId: 'cre-b', updatedAt: entry.updatedAt },
+      }],
+    }),
+    records: { MasterCallList: { [entry.id]: entry } },
+  });
+
+  await rollbackImportBatch('batch-1', 'admin-1', database);
+  assert.equal(state.records.MasterCallList[entry.id].ownerUserId, 'cre-a');
+  assert.equal(state.assignmentHistory.length, 1);
+  assert.equal(state.assignmentHistory[0].vehicleId, null);
+  assert.equal(state.assignmentHistory[0].masterCallListId, entry.id);
+  assert.equal(state.assignmentHistory[0].eventType, 'IMPORT_ROLLBACK');
+});
+
 test('rollback reverses an import-created call-list entry assigned by the batch allocation pass', async () => {
   const entry = fullRecord('MasterCallList', 'call-list-created');
   const assignedEntry = { ...entry, ownerUserId: 'cre-a', updatedAt: '2025-01-02T00:00:00.000Z' };

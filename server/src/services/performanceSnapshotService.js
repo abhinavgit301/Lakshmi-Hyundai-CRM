@@ -21,13 +21,22 @@ const REFRESH_LOCK_TIMEOUT_MS = 10 * 60 * 1000;
 const SCHEDULER_INTERVAL_MS = 60 * 1000;
 const KICK_DELAY_MS = 2000;
 const BATCH_SIZE = 20;
-const REFRESH_CONCURRENCY = 2;
+const DEFAULT_REFRESH_CONCURRENCY = 2;
 const MAX_ERROR_LENGTH = 500;
 const CONSISTENT_READ_TIMEOUT_MS = 60 * 1000;
 const CONSISTENT_READ_MAX_WAIT_MS = 2000;
 
 export function isSnapshotConsistentReadsEnabled(env = process.env) {
   return ['true', '1'].includes(String(env.PERFORMANCE_SNAPSHOT_CONSISTENT_READS_ENABLED || '').trim().toLowerCase());
+}
+
+export function snapshotRefreshConcurrency(env = process.env) {
+  const value = String(env.PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY ?? '').trim();
+  if (!value) return DEFAULT_REFRESH_CONCURRENCY;
+  if (value !== '1' && value !== '2') {
+    throw new Error('PERFORMANCE_SNAPSHOT_REFRESH_CONCURRENCY must be 1 or 2.');
+  }
+  return Number(value);
 }
 
 const VIEWERS = ['CRE', 'CCM'];
@@ -287,6 +296,7 @@ export async function findSnapshotsDueForRefresh({ now = new Date(), limit = BAT
 }
 
 export async function refreshDueSnapshots({ now = new Date(), db = prisma, refresh = refreshSnapshot } = {}) {
+  const concurrency = snapshotRefreshConcurrency();
   await seedCurrentMonthSnapshots({ now, db });
   const due = await findSnapshotsDueForRefresh({ now, db });
   let refreshed = 0;
@@ -302,7 +312,7 @@ export async function refreshDueSnapshots({ now = new Date(), db = prisma, refre
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(REFRESH_CONCURRENCY, due.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(concurrency, due.length) }, worker));
   return { due: due.length, refreshed };
 }
 
@@ -334,6 +344,7 @@ setSnapshotRefreshHandler(kickSnapshotRefresh);
 // backfill, while the read path is still off); it does nothing when both flags are off.
 export function startPerformanceSnapshotScheduler() {
   if (schedulerTimer || !isPerformanceAggregateMaintenanceEnabled()) return false;
+  snapshotRefreshConcurrency();
   schedulerTimer = setInterval(tick, SCHEDULER_INTERVAL_MS);
   schedulerTimer.unref?.();
   return true;

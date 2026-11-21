@@ -31,10 +31,6 @@ test('service actions and appointment retries are transactional', { skip: !datab
       importedDetails: { workType: 'Paid Service' },
     },
   });
-  await prisma.physicalVehicle.update({
-    where: { id: physical.id },
-    data: { lastServiceDate: new Date(now.getFullYear(), now.getMonth() - 6, 5) },
-  });
   await prisma.masterCallList.create({
     data: { customerName: customer.fullName, mobileNumber: '0000000000', vin: id, ccmId: id, vehicleId: vehicle.id },
   });
@@ -105,7 +101,7 @@ test('service actions and appointment retries are transactional', { skip: !datab
       })));
     await prisma.customer.createMany({ data: entries.map(({ key }) => ({ id: key, customerCode: key, fullName: key, ccmId: orderTeam })) });
     await prisma.physicalVehicle.createMany({ data: entries.map(({ key }) => ({
-      id: key, vin: key, lastServiceDate: new Date(now.getFullYear(), now.getMonth() - 6, 5),
+      id: key, vin: key,
     })) });
     await prisma.vehicle.createMany({ data: entries.map(({ key, status }) => ({
       id: key, vin: key, customerId: key, physicalVehicleId: key, ccmId: orderTeam,

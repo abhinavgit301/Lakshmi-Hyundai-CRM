@@ -190,9 +190,12 @@ case "${1:-}" in
   preflight)
     require_deployer
     backend_env=/opt/lakshmi-hyundai/shared/backend.env
+    migration_env=/opt/lakshmi-hyundai/shared/migration.env
     deployer_home=$(/usr/bin/getent passwd lakshmi-deploy | /usr/bin/cut -d: -f6) || exit 1
     backend_env_uid=$(/usr/bin/stat -c %u -- "$backend_env") || exit 1
     backend_env_mode=$(/usr/bin/stat -c %a -- "$backend_env") || exit 1
+    migration_env_uid=$(/usr/bin/stat -c %u -- "$migration_env") || exit 1
+    migration_env_mode=$(/usr/bin/stat -c %a -- "$migration_env") || exit 1
     helper_uid=$(/usr/bin/stat -c %u -- /usr/local/sbin/lakshmi-hyundai-deploy-control) || exit 1
     helper_mode=$(/usr/bin/stat -c %a -- /usr/local/sbin/lakshmi-hyundai-deploy-control) || exit 1
     helper_dir_uid=$(/usr/bin/stat -c %u -- /usr/local/sbin) || exit 1
@@ -238,7 +241,9 @@ case "${1:-}" in
        -s /opt/lakshmi-hyundai/current/server/src/server.js &&
        -s /opt/lakshmi-hyundai/current/client/dist/index.html &&
        -f "$backend_env" && ! -L "$backend_env" &&
+       -f "$migration_env" && ! -L "$migration_env" &&
        "$backend_env_uid" == 0 && "$((8#$backend_env_mode & 0077))" -eq 0 &&
+       "$migration_env_uid" == 0 && "$((8#$migration_env_mode & 0077))" -eq 0 &&
        "$helper_uid" == 0 && "$((8#$helper_mode & 07022))" -eq 0 &&
        "$((8#$helper_mode & 0111))" -ne 0 &&
        "$helper_dir_uid" == 0 && "$((8#$helper_dir_mode & 0022))" -eq 0 &&

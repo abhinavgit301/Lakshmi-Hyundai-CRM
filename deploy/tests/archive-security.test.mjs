@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { extractReleaseArchive } from '../safe-release-archive.mjs';
 
@@ -37,6 +39,8 @@ const requiredFiles = [
   ['server/package.json', '{}\n'],
   ['server/package-lock.json', '{}\n'],
   ['server/prisma.config.ts', 'export default {};\n'],
+  ['server/scripts/', '', '5'],
+  ['server/scripts/guard-prisma-schema-mutation.js', 'export {};\n'],
   ['server/deploy/check-prisma-migrations.mjs', ''],
   ['server/deploy/database-identity.mjs', ''],
   ['server/deploy/migration-policy.mjs', ''],
@@ -85,6 +89,32 @@ test('CI and archive allow only the approved schema-first candidate migration', 
   );
 });
 
+test('extracts the actual CI-built release package', async () => {
+  await withScratch(async (root) => {
+    const workflow = readFileSync(new URL('../../.github/workflows/deploy.yml', import.meta.url), 'utf8');
+    const match = workflow.match(/- name: Prepare release package\r?\n[\s\S]*?        run: \|\r?\n([\s\S]*?)(?=\r?\n      # actions\/upload-artifact)/);
+    assert.ok(match, 'CI release packaging step must exist');
+    const script = match[1].split(/\r?\n/).map((line) => line.replace(/^          /, '')).join('\n');
+    const bash = process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\bash.exe' : 'bash';
+    const temp = process.platform === 'win32'
+      ? execFileSync(bash, ['-c', 'cygpath -u "$1"', 'bash', root], { encoding: 'utf8' }).trim()
+      : root;
+    execFileSync(bash, ['-c', script], {
+      cwd: fileURLToPath(new URL('../..', import.meta.url)),
+      env: { ...process.env, RUNNER_TEMP: temp, DEPLOY_SHA: 'a'.repeat(40) },
+      stdio: 'pipe',
+    });
+    const stage = path.join(root, 'stage');
+    mkdirSync(stage);
+    const extracted = await extractReleaseArchive(path.join(root, 'lhcrm-release.tar.gz'), stage);
+    assert.equal(extracted.names.get('server/scripts'), 'directory');
+    assert.equal(
+      readFileSync(path.join(stage, 'server/scripts/guard-prisma-schema-mutation.js'), 'utf8'),
+      readFileSync(new URL('../../server/scripts/guard-prisma-schema-mutation.js', import.meta.url), 'utf8'),
+    );
+  });
+});
+
 function makeArchive(entries) {
   const blocks = entries.map(([name, body, type, link]) => tarEntry(name, body, type, link));
   blocks.push(Buffer.alloc(1024));
@@ -110,6 +140,7 @@ test('extracts the complete expected release tree using fixed safe modes', async
     const extracted = await extractReleaseArchive(archive, stage);
 
     assert.equal(readFileSync(path.join(stage, 'client/index.html'), 'utf8'), '<html></html>\n');
+    assert.equal(readFileSync(path.join(stage, 'server/scripts/guard-prisma-schema-mutation.js'), 'utf8'), 'export {};\n');
     assert.equal(
       readFileSync(path.join(stage, 'server/prisma/migrations/20261027000000_free_service_warranty_followup_categories/migration.sql'), 'utf8'),
       'SELECT 1;\n',
@@ -128,6 +159,40 @@ test('extracts the complete expected release tree using fixed safe modes', async
     );
   });
 });
+
+test('rejects a release missing the Prisma configuration guard before extracting', async () => {
+  await withScratch(async (root) => {
+    const archive = path.join(root, 'release.tar.gz');
+    const stage = path.join(root, 'stage');
+    mkdirSync(stage);
+    writeFileSync(archive, makeArchive(requiredFiles.filter(([name]) =>
+      name !== 'server/scripts/guard-prisma-schema-mutation.js')));
+
+    await assert.rejects(extractReleaseArchive(archive, stage), /Required release archive member is missing: server\/scripts\/guard-prisma-schema-mutation\.js/);
+    assert.deepEqual(readdirSync(stage), []);
+  });
+});
+
+for (const [label, entry] of [
+  ['directory', ['server/scripts/guard-prisma-schema-mutation.js', '', '5']],
+  ['symbolic link', ['server/scripts/guard-prisma-schema-mutation.js', '', '2', '../../shared/backend.env']],
+  ['hard link', ['server/scripts/guard-prisma-schema-mutation.js', '', '1', 'server/src/server.js']],
+]) {
+  test(`rejects the Prisma guard as a ${label} before extracting`, async () => {
+    await withScratch(async (root) => {
+      const archive = path.join(root, 'release.tar.gz');
+      const stage = path.join(root, 'stage');
+      mkdirSync(stage);
+      writeFileSync(archive, makeArchive([
+        ...requiredFiles.filter(([name]) => name !== 'server/scripts/guard-prisma-schema-mutation.js'),
+        entry,
+      ]));
+
+      await assert.rejects(extractReleaseArchive(archive, stage));
+      assert.deepEqual(readdirSync(stage), []);
+    });
+  });
+}
 
 test('accepts a rollback.sql inside a migration directory', async () => {
   await withScratch(async (root) => {
@@ -167,6 +232,8 @@ for (const [label, malicious] of [
   ['device entry', [['server/prisma/schema.prisma', '', '3']]],
   ['extended metadata entry', [['PaxHeaders/release', 'path=../../shared/backend.env\n', 'x']]],
   ['wrong directory entry type', [['server/src', 'not-a-directory']]],
+  ['unapproved server script', [['server/scripts/unapproved.js', 'malicious']]],
+  ['nested server script directory', [['server/scripts/nested', '', '5']]],
   ['unexpected top-level path', [['backups/restore.sql', 'overwrite']]],
   ['legacy renamed application directory', [['backend/package.json', '{}']]],
   ['environment file', [['server/src/.env.production', 'secret']]],

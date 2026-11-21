@@ -30,6 +30,8 @@ export const requiredFiles = [
   ['server/package.json', '{"name":"test-server"}\n'],
   ['server/package-lock.json', '{}\n'],
   ['server/prisma.config.ts', 'export default {};\n'],
+  ['server/scripts/', '', '5'],
+  ['server/scripts/guard-prisma-schema-mutation.js', 'export {};\n'],
   ['server/deploy/check-prisma-migrations.mjs', 'export {};\n'],
   ['server/deploy/database-identity.mjs', 'export {};\n'],
   ['server/deploy/migration-policy.mjs', 'export {};\n'],

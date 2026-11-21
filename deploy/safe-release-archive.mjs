@@ -152,11 +152,12 @@ function allowedMember(name, kind) {
   if (name.startsWith('server/src/')) return kind === 'file' || kind === 'directory';
   if (name === 'server/package.json' || name === 'server/package-lock.json' ||
       name === 'server/prisma.config.ts' ||
+      name === 'server/scripts/guard-prisma-schema-mutation.js' ||
       name === 'server/deploy/check-prisma-migrations.mjs' ||
       name === 'server/deploy/database-identity.mjs' ||
       name === 'server/deploy/migration-policy.mjs' ||
       name === 'server/prisma/schema.prisma') return kind === 'file';
-  if (name === 'server/deploy' || name === 'server/prisma') return kind === 'directory';
+  if (name === 'server/deploy' || name === 'server/prisma' || name === 'server/scripts') return kind === 'directory';
   return false;
 }
 
@@ -293,22 +294,13 @@ export async function extractReleaseArchive(archive, stage) {
     fail('Release archive must be a regular file within the configured size limit.');
   }
   const validation = await parseArchive(archive, null);
-  const currentStat = lstatSync(archive);
-  if (!currentStat.isFile() || currentStat.ino !== initialStat.ino ||
-      currentStat.size !== initialStat.size || currentStat.mtimeMs !== initialStat.mtimeMs) {
-    fail('Release archive changed during validation.');
-  }
-  const stageStat = lstatSync(stage);
-  if (!stageStat.isDirectory() || stageStat.isSymbolicLink()) fail('Staging path must be a new real directory.');
-  if (readdirSync(stage).length !== 0) fail('Staging directory must be empty before extraction.');
-  const extracted = await parseArchive(archive, stage);
-  if (extracted.digest !== validation.digest) fail('Release archive changed between validation and extraction.');
   for (const required of [
     'RELEASE_COMMIT',
     'server/src/server.js',
     'server/package.json',
     'server/package-lock.json',
     'server/prisma.config.ts',
+    'server/scripts/guard-prisma-schema-mutation.js',
     'server/deploy/check-prisma-migrations.mjs',
     'server/deploy/database-identity.mjs',
     'server/deploy/migration-policy.mjs',
@@ -321,12 +313,22 @@ export async function extractReleaseArchive(archive, stage) {
     'client/vite.config.js',
     'client/src/main.jsx',
   ]) {
-    if (!extracted.names.has(required)) fail(`Required release archive member is missing: ${required}.`);
+    if (!validation.names.has(required)) fail(`Required release archive member is missing: ${required}.`);
   }
-  if (![...extracted.names.keys()].some((name) =>
+  if (![...validation.names.keys()].some((name) =>
     /^server\/prisma\/migrations\/[^/]+\/migration\.sql$/.test(name))) {
     fail('Release archive contains no Prisma migration SQL files.');
   }
+  const currentStat = lstatSync(archive);
+  if (!currentStat.isFile() || currentStat.ino !== initialStat.ino ||
+      currentStat.size !== initialStat.size || currentStat.mtimeMs !== initialStat.mtimeMs) {
+    fail('Release archive changed during validation.');
+  }
+  const stageStat = lstatSync(stage);
+  if (!stageStat.isDirectory() || stageStat.isSymbolicLink()) fail('Staging path must be a new real directory.');
+  if (readdirSync(stage).length !== 0) fail('Staging directory must be empty before extraction.');
+  const extracted = await parseArchive(archive, stage);
+  if (extracted.digest !== validation.digest) fail('Release archive changed between validation and extraction.');
   return extracted;
 }
 

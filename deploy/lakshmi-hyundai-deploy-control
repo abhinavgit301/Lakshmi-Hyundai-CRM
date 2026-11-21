@@ -187,6 +187,43 @@ case "${1:-}" in
     }
     exec /usr/bin/node /usr/local/lib/lakshmi-hyundai-deploy/migration-authorization.mjs cleanup "$release_id"
     ;;
+  verify-database-identity)
+    mode=${2:-}
+    release_id=${3:-}
+    credential_dir=${4:-}
+    [[ $# -eq 4 && -z "${SUDO_USER:-}" && "$release_id" =~ ^[0-9a-f]{40}$ ]] || {
+      echo "Invalid database identity verification request." >&2
+      exit 2
+    }
+    case "$mode" in
+      status) unit=lakshmi-hyundai-migrate-status ;;
+      preflight) unit=lakshmi-hyundai-migrate-preflight ;;
+      apply) unit=lakshmi-hyundai-migrate ;;
+      *) echo "Invalid migration mode." >&2; exit 2 ;;
+    esac
+    source=/etc/lakshmi-hyundai/database-identity.json
+    credential="$credential_dir/database-identity.json"
+    [[ "$credential_dir" == "/run/credentials/$unit@$release_id.service" &&
+       -d /run/credentials && ! -L /run/credentials &&
+       "$(/usr/bin/stat -c %u -- /run/credentials)" == 0 &&
+       "$((8#$(/usr/bin/stat -c %a -- /run/credentials) & 0022))" -eq 0 &&
+       -d "$credential_dir" && ! -L "$credential_dir" &&
+       -d /etc/lakshmi-hyundai && ! -L /etc/lakshmi-hyundai &&
+       "$(/usr/bin/stat -c %u -- /etc/lakshmi-hyundai)" == 0 &&
+       "$((8#$(/usr/bin/stat -c %a -- /etc/lakshmi-hyundai) & 0022))" -eq 0 &&
+       -f "$source" && ! -L "$source" &&
+       "$(/usr/bin/stat -c %u -- "$source")" == 0 &&
+       "$(/usr/bin/stat -c %a -- "$source")" == 600 &&
+       "$(/usr/bin/stat -c %s -- "$source")" -le 4096 &&
+       -f "$credential" && ! -L "$credential" ]] || {
+      echo "Database identity source or systemd credential is not protected." >&2
+      exit 1
+    }
+    /usr/bin/cmp -s -- "$source" "$credential" || {
+      echo "Systemd database identity credential does not match the protected source." >&2
+      exit 1
+    }
+    ;;
   preflight)
     require_deployer
     backend_env=/opt/lakshmi-hyundai/shared/backend.env
@@ -214,6 +251,25 @@ case "${1:-}" in
       -p ExecStart --value) || exit 1
     backend_environment_files=$(/usr/bin/systemctl show lakshmi-hyundai-backend.service \
       -p EnvironmentFiles --value) || exit 1
+    for migration_mode in status preflight apply; do
+      case "$migration_mode" in
+        status) migration_unit=lakshmi-hyundai-migrate-status ;;
+        preflight) migration_unit=lakshmi-hyundai-migrate-preflight ;;
+        apply) migration_unit=lakshmi-hyundai-migrate ;;
+      esac
+      migration_instance="$migration_unit@0000000000000000000000000000000000000000.service"
+      unit_user=$(/usr/bin/systemctl show "$migration_instance" -p User --value) || exit 1
+      unit_group=$(/usr/bin/systemctl show "$migration_instance" -p Group --value) || exit 1
+      unit_env=$(/usr/bin/systemctl show "$migration_instance" -p EnvironmentFiles --value) || exit 1
+      unit_prestart=$(/usr/bin/systemctl show "$migration_instance" -p ExecStartPre --value) || exit 1
+      [[ "$unit_user" == lakshmi-deploy && "$unit_group" == lakshmi-deploy &&
+         "$unit_env" == *"/opt/lakshmi-hyundai/shared/migration.env"* &&
+         "$unit_env" != *"/opt/lakshmi-hyundai/shared/backend.env"* &&
+         "$unit_prestart" == *"verify-database-identity $migration_mode "* ]] || {
+        echo "Installed migration unit $migration_unit has incompatible credential configuration." >&2
+        exit 1
+      }
+    done
     home_is_protected=false
     case "$deployer_home" in
       /home|/home/*|/root|/run/user|/run/user/*) home_is_protected=true ;;
@@ -250,7 +306,8 @@ case "${1:-}" in
        "$verifier_uid" == 0 && "$((8#$verifier_mode & 07022))" -eq 0 &&
        "$verifier_dir_uid" == 0 && "$((8#$verifier_dir_mode & 0022))" -eq 0 &&
        "$public_key_uid" == 0 && "$((8#$public_key_mode & 0022))" -eq 0 &&
-       "$database_identity_uid" == 0 && "$((8#$database_identity_mode & 0022))" -eq 0 &&
+       -f /etc/lakshmi-hyundai/database-identity.json && ! -L /etc/lakshmi-hyundai/database-identity.json &&
+       "$database_identity_uid" == 0 && "$database_identity_mode" == 600 &&
        "$config_dir_uid" == 0 && "$((8#$config_dir_mode & 0022))" -eq 0 &&
        "$home_is_protected" == true &&
        "$(/usr/bin/systemctl show lakshmi-hyundai-backend.service -p User --value)" == lakshmi-deploy &&

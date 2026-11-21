@@ -72,6 +72,22 @@ test('migration and runtime credentials are separated without fallback', () => {
   assert.doesNotMatch(snapshotService, /MIGRATION_DATABASE_URL/);
 });
 
+test('all migration units use the protected, verified systemd identity credential', () => {
+  for (const [index, mode] of ['apply', 'status', 'preflight'].entries()) {
+    const unit = migrationUnits[index];
+    assert.match(unit, /^LoadCredential=database-identity\.json:\/etc\/lakshmi-hyundai\/database-identity\.json$/m);
+    assert.ok(unit.indexOf(`verify-database-identity ${mode} %i %d`) >= 0);
+    assert.ok(unit.indexOf(`verify-database-identity ${mode} %i %d`) <
+      unit.indexOf(`check-prisma-migrations.mjs ${mode} %d`));
+  }
+  assert.match(helper, /"\$database_identity_mode" == 600/);
+  assert.match(helper, /! -L "\$source"/);
+  assert.match(helper, /! -L "\$credential"/);
+  assert.match(helper, /\/usr\/bin\/cmp -s -- "\$source" "\$credential"/);
+  assert.match(helper, /-p ExecStartPre --value/);
+  assert.match(read('../check-prisma-migrations.mjs'), /loadExpectedDatabaseIdentity\(process\.argv\[3\], mode\)/);
+});
+
 test('runtime preflight verifies the exact Node version before any artifact transfer', () => {
   const preflight = workflow.indexOf('name: Verify VPS runtime before transfer');
   const transfer = workflow.indexOf('name: Transfer package and deploy release');

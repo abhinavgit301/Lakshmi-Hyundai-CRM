@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync } from 'node:fs';
-
-const IDENTITY_FILE = '/etc/lakshmi-hyundai/database-identity.json';
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const toLf = (bytes) => Buffer.from(Buffer.from(bytes).toString('latin1').replace(/\r\n/g, '\n'), 'latin1');
@@ -35,13 +34,28 @@ export function validateExpectedDatabaseIdentity(value) {
   return identity;
 }
 
-export function loadExpectedDatabaseIdentity(filePath = IDENTITY_FILE) {
-  const stat = lstatSync(filePath);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== 0 ||
-      (stat.mode & 0o022) !== 0 || stat.size > 4096) {
-    throw new Error('Database identity configuration must be a small, root-owned, non-writable regular file.');
+export function validateSystemdCredentialStat(stat, serviceUid) {
+  if (!stat.isFile() || (stat.uid !== 0 && stat.uid !== serviceUid) ||
+      (stat.mode & 0o222) !== 0 || stat.size > 4096) {
+    throw new Error('Systemd database identity credential must be a small, protected regular file.');
   }
-  return validateExpectedDatabaseIdentity(readFileSync(filePath, 'utf8'));
+}
+
+export function loadExpectedDatabaseIdentity(credentialDirectory, mode) {
+  const suffixes = new Map([['status', '-status'], ['preflight', '-preflight'], ['apply', '']]);
+  const suffix = suffixes.get(mode);
+  if (suffix === undefined || typeof credentialDirectory !== 'string' ||
+      !new RegExp(`^/run/credentials/lakshmi-hyundai-migrate${suffix}@[0-9a-f]{40}\\.service$`).test(credentialDirectory)) {
+    throw new Error('Missing or invalid systemd database identity credential directory.');
+  }
+  const file = path.posix.join(credentialDirectory, 'database-identity.json');
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    validateSystemdCredentialStat(fstatSync(fd), process.getuid?.());
+    return validateExpectedDatabaseIdentity(readFileSync(fd, 'utf8'));
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function assertDatabaseIdentity(connection, actual, expected) {

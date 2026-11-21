@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { assertDatabaseIdentity, validateExpectedDatabaseIdentity } from '../database-identity.mjs';
+import { assertDatabaseIdentity, loadExpectedDatabaseIdentity, validateExpectedDatabaseIdentity, validateSystemdCredentialStat } from '../database-identity.mjs';
 
 const expected = {
   database: 'lakshmi_hyundai_crm',
@@ -29,6 +29,40 @@ const actual = {
 test('validates the pinned production database identity', () => {
   assert.deepEqual(validateExpectedDatabaseIdentity(JSON.stringify(expected)), expected);
   assert.doesNotThrow(() => assertDatabaseIdentity(connection, actual, expected));
+});
+
+test('requires a fixed systemd credential directory for the matching migration mode', () => {
+  const release = 'a'.repeat(40);
+  for (const [directory, mode] of [
+    [undefined, 'status'],
+    ['/etc/lakshmi-hyundai', 'status'],
+    [`/run/credentials/lakshmi-hyundai-migrate@${release}.service`, 'status'],
+    [`/run/credentials/lakshmi-hyundai-migrate-status@${release}.service/..`, 'status'],
+    [`/run/credentials/lakshmi-hyundai-migrate-status@${release}.service`, 'unknown'],
+    [`/run/credentials/lakshmi-hyundai-migrate-status@${'A'.repeat(40)}.service`, 'status'],
+  ]) {
+    assert.throws(() => loadExpectedDatabaseIdentity(directory, mode), /Missing or invalid systemd/);
+  }
+  for (const [suffix, mode] of [['-status', 'status'], ['-preflight', 'preflight'], ['', 'apply']]) {
+    const directory = `/run/credentials/lakshmi-hyundai-migrate${suffix}@${release}.service`;
+    assert.throws(() => loadExpectedDatabaseIdentity(directory, mode), /ENOENT/);
+  }
+});
+
+test('requires a protected regular systemd credential owned by root or the service', () => {
+  const stat = { isFile: () => true, uid: 0, mode: 0o440, size: 4096 };
+  assert.doesNotThrow(() => validateSystemdCredentialStat(stat, 1000));
+  assert.doesNotThrow(() => validateSystemdCredentialStat({ ...stat, uid: 1000, mode: 0o400 }, 1000));
+  for (const invalid of [
+    { isFile: () => false },
+    { uid: 1001 },
+    { mode: 0o600 },
+    { mode: 0o420 },
+    { mode: 0o402 },
+    { size: 4097 },
+  ]) {
+    assert.throws(() => validateSystemdCredentialStat({ ...stat, ...invalid }, 1000), /protected regular file/);
+  }
 });
 
 test('accepts PostgreSQL IPv4 inet addresses with a /32 host prefix', () => {

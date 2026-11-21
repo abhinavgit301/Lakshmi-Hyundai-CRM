@@ -5,14 +5,14 @@ import { assertDatabaseIdentity, loadExpectedDatabaseIdentity, migrationChecksum
 import { assertApprovedPendingMigrations } from './migration-policy.mjs';
 
 const mode = process.argv[2];
-if (mode !== 'status' && mode !== 'preflight' && mode !== 'apply') {
-  throw new Error('Usage: check-prisma-migrations.mjs status|preflight|apply');
+if ((mode !== 'status' && mode !== 'preflight' && mode !== 'apply') || process.argv.length !== 4) {
+  throw new Error('Usage: check-prisma-migrations.mjs status|preflight|apply SYSTEMD_CREDENTIAL_DIRECTORY');
 }
 
 const connectionString = process.env.MIGRATION_DATABASE_URL?.trim();
 if (!connectionString) throw new Error('MIGRATION_DATABASE_URL is not available in the systemd environment.');
 const connection = new URL(connectionString);
-const expectedIdentity = loadExpectedDatabaseIdentity();
+const expectedIdentity = loadExpectedDatabaseIdentity(process.argv[3], mode);
 const database = decodeURIComponent(connection.pathname.slice(1));
 const schema = connection.searchParams.get('schema') || 'public';
 if (database !== expectedIdentity.database) {
